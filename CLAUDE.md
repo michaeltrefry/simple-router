@@ -7,7 +7,7 @@ Single-user .NET 10 localhost router exposing the Anthropic Messages API. One pr
 - Build: `dotnet build`
 - Test: `dotnet test` (unit: `tests/SimpleRouter.Tests`, end-to-end: `tests/SimpleRouter.AcceptanceTests`)
 - Run server: `dotnet run --project src/SimpleRouter`
-- CLI: `dotnet run --project src/SimpleRouter -- login claude` / `-- key show`
+- CLI: `dotnet run --project src/SimpleRouter -- login claude` / `-- login codex` / `-- key show`
 - New migration: `dotnet tool restore && dotnet ef migrations add <Name> --project src/SimpleRouter -o Data/Migrations`
 
 Any setting can be overridden with `--SimpleRouter:<Name>=<value>` or `SimpleRouter__<Name>` env vars (see `RouterOptions.cs`).
@@ -17,6 +17,7 @@ Any setting can be overridden with `--SimpleRouter:<Name>=<value>` or `SimpleRou
 - `src/SimpleRouter/RouterApp.cs` — composition root (built-in DI only); used by server, CLI and tests.
 - `Gateway/` — router-generated gateway key and `/v1` auth middleware.
 - `Claude/` — subscription OAuth (PKCE login, refresh), encrypted credential store, upstream forwarder.
+- `Codex/` — Codex subscription: device-code login, refresh, Anthropic ⇄ Responses translation (request, stream, non-streaming fold) and the upstream.
 - `Api/` — endpoint mappings and Anthropic-shaped errors.
 - `Routing/` — tier resolution, session-key derivation, round-robin selection with persisted pins (local-first in Mid/Low), catalog seeding (`seed.json`, plus the per-machine `seed.local.json` override in the data directory), and `IModelUpstream`, the per-provider upstream contract.
 - `Local/` — OpenAI-compatible local endpoints: Anthropic ⇄ Chat Completions translation (request, response, SSE stream), health checks.

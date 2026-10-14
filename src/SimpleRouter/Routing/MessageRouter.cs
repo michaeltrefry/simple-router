@@ -44,13 +44,17 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
             : await selector.SelectAsync(tier, session, needs, ct);
         if (chosen is null)
         {
+            var missing = await selector.MissingLoginsAsync(tier, needs, ct);
+            var hint = missing.Count == 0
+                ? ""
+                : " Run " + string.Join(" or ", missing.Select(p => $"'simple-router login {p.ToString().ToLowerInvariant()}'")) + ".";
             await AnthropicError.WriteAsync(context, StatusCodes.Status503ServiceUnavailable, "api_error",
-                $"No enabled model is available in the {tier.Name()} tier.");
+                $"No enabled model is available in the {tier.Name()} tier.{hint}");
             return;
         }
 
         var upstream = upstreams.First(u => u.Provider == chosen.Provider);
-        await upstream.SendAsync(new UpstreamCall(context, request, chosen, countTokens, needs.EstimatedTokens));
+        await upstream.SendAsync(new UpstreamCall(context, request, session, chosen, countTokens, needs.EstimatedTokens));
     }
 
     /// <summary>

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using SimpleRouter.Api;
 using SimpleRouter.Claude;
+using SimpleRouter.Codex;
 using SimpleRouter.Data;
 using SimpleRouter.Gateway;
 using SimpleRouter.Local;
@@ -59,6 +60,11 @@ public static class RouterApp
         builder.Services.AddSingleton<ClaudeLoginCommand>();
         builder.Services.AddSingleton<ClaudeUpstream>();
         builder.Services.AddSingleton<IModelUpstream>(sp => sp.GetRequiredService<ClaudeUpstream>());
+        builder.Services.AddSingleton<CodexCredentialStore>();
+        builder.Services.AddSingleton<CodexOAuthClient>();
+        builder.Services.AddSingleton<CodexTokenProvider>();
+        builder.Services.AddSingleton<CodexLoginCommand>();
+        builder.Services.AddSingleton<IModelUpstream, CodexUpstream>();
         builder.Services.AddSingleton<IModelUpstream, LocalUpstream>();
         builder.Services.AddSingleton<LocalHealth>();
         builder.Services.AddHostedService<LocalHealthMonitor>();
@@ -68,6 +74,8 @@ public static class RouterApp
         builder.Services.AddHttpClient(ClaudeOAuthClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30));
         // Streams can run for many minutes; cancellation follows the inbound request instead.
         builder.Services.AddHttpClient(ClaudeUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
+        builder.Services.AddHttpClient(CodexOAuthClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30));
+        builder.Services.AddHttpClient(CodexUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
         builder.Services.AddHttpClient(LocalUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
         builder.Services.AddHttpClient(LocalHealth.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(5));
 

@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using SimpleRouter.Claude;
 using SimpleRouter.Tests.Support;
 
@@ -41,6 +42,81 @@ public class MessagesPassthroughTests
         Assert.Equal(upstreamBody, await response.Content.ReadAsByteArrayAsync());
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
         Assert.Equal("req_upstream_1", response.Headers.GetValues("request-id").Single());
+    }
+
+    [Fact]
+    public async Task Unsigned_thinking_from_another_provider_is_dropped_but_signed_thinking_is_kept()
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginAsync();
+        host.Upstream.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
+        var client = await host.AuthorizedClientAsync();
+        const string body = """
+            {"model":"claude-sonnet-4-5","max_tokens":64,"messages":[
+              {"role":"user","content":"hi"},
+              {"role":"assistant","content":[{"type":"thinking","thinking":"from codex","signature":""},{"type":"text","text":"a"}]},
+              {"role":"user","content":"again"},
+              {"role":"assistant","content":[{"type":"thinking","thinking":"from claude","signature":"sig-1"},{"type":"thinking","thinking":"bare"},{"type":"text","text":"b"}]},
+              {"role":"user","content":"more"}]}
+            """;
+
+        using var response = await client.SendAsync(MessagesRequest(body: body));
+
+        using var sent = JsonDocument.Parse(Assert.Single(host.Upstream.Requests).Body);
+        var messages = sent.RootElement.GetProperty("messages");
+        Assert.Equal(["text"], messages[1].GetProperty("content").EnumerateArray().Select(b => b.GetProperty("type").GetString()));
+        Assert.Equal(["thinking", "text"], messages[3].GetProperty("content").EnumerateArray().Select(b => b.GetProperty("type").GetString()));
+        Assert.Equal("sig-1", messages[3].GetProperty("content")[0].GetProperty("signature").GetString());
+    }
+
+    private async Task<JsonNode> SendThroughClaudeAsync(string body)
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginAsync();
+        host.Upstream.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
+        var client = await host.AuthorizedClientAsync();
+        using var response = await client.SendAsync(MessagesRequest(body: body));
+        return JsonNode.Parse(Assert.Single(host.Upstream.Requests).Body)!;
+    }
+
+    [Fact]
+    public async Task Codex_encrypted_reasoning_is_dropped_and_a_reasoning_only_turn_keeps_a_placeholder()
+    {
+        var sent = await SendThroughClaudeAsync("""
+            {"model":"claude-sonnet-4-5","max_tokens":64,"messages":[
+              {"role":"user","content":"hi"},
+              {"role":"assistant","content":[{"type":"thinking","thinking":"from codex","signature":"codex:ENC"}]},
+              {"role":"user","content":"again"}]}
+            """);
+
+        Assert.Equal("""[{"type":"text","text":"[reasoning omitted]"}]""", sent["messages"]![1]!["content"]!.ToJsonString());
+    }
+
+    [Fact]
+    public async Task Thinking_is_turned_off_when_the_last_tool_use_turn_lost_its_foreign_thinking()
+    {
+        var sent = await SendThroughClaudeAsync("""
+            {"model":"claude-sonnet-4-5","max_tokens":2048,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[
+              {"role":"user","content":"hi"},
+              {"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"codex:ENC"},{"type":"tool_use","id":"call_1","name":"ls","input":{}}]},
+              {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"a"}]}]}
+            """);
+
+        Assert.Null(sent["thinking"]);
+        Assert.Equal("tool_use", sent["messages"]![1]!["content"]![0]!["type"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Thinking_stays_on_when_the_last_tool_use_turn_keeps_its_claude_thinking()
+    {
+        var sent = await SendThroughClaudeAsync("""
+            {"model":"claude-sonnet-4-5","max_tokens":2048,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[
+              {"role":"user","content":"hi"},
+              {"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"sig-1"},{"type":"tool_use","id":"call_1","name":"ls","input":{}}]},
+              {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"a"}]}]}
+            """);
+
+        Assert.Equal("enabled", sent["thinking"]!["type"]!.GetValue<string>());
     }
 
     [Fact]
@@ -145,7 +221,7 @@ public class MessagesPassthroughTests
     }
 
     [Fact]
-    public async Task Without_a_claude_login_the_router_answers_503_without_calling_upstream()
+    public async Task Without_any_login_the_tier_is_empty_and_the_503_names_the_login_commands()
     {
         await using var host = await RouterHost.StartAsync();
         var client = await host.AuthorizedClientAsync();
@@ -153,7 +229,10 @@ public class MessagesPassthroughTests
         using var response = await client.SendAsync(MessagesRequest());
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        Assert.Contains("login claude", await response.Content.ReadAsStringAsync());
+        var message = JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["message"]!.GetValue<string>();
+        Assert.StartsWith("No enabled model is available in the mid tier.", message);
+        Assert.Contains("'simple-router login claude'", message);
+        Assert.Contains("'simple-router login codex'", message);
         Assert.Empty(host.Upstream.Requests);
     }
 

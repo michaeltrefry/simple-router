@@ -6,6 +6,7 @@ A single-user localhost router that serves the Anthropic Messages API and routes
 
 ```sh
 dotnet run --project src/SimpleRouter -- login claude   # sign in to your Claude subscription
+dotnet run --project src/SimpleRouter -- login codex    # sign in to your ChatGPT (Codex) subscription
 dotnet run --project src/SimpleRouter -- key show       # print the gateway key for your client
 dotnet run --project src/SimpleRouter                   # serve on http://127.0.0.1:8790
 ```
@@ -27,6 +28,12 @@ Each request is served in a tier (`max`, `high`, `mid`, `low`), chosen by:
 Responses carry `X-Weave-Model-Class: <tier>`. A new session gets the next enabled model in its tier (round-robin, cursor persisted), and keeps it for the life of the session, across restarts. The session key combines the client session ID (`X-Claude-Code-Session-Id`, else the session in `metadata.user_id`, else a hash of the system prompt) with the first user message, so sub-agents get their own pins.
 
 The model catalog, tier membership, aliases and default tier are loaded from `seed.json` into the database on first run (`--SimpleRouter:SeedFile=...`); edit the `Models`, `TierMembers`, `TierAliases` tables and the `default_tier` setting to change them.
+
+### Codex subscription
+
+`login codex` runs the Codex CLI's device-code flow: open the printed URL, sign in to ChatGPT and enter the code; the command polls until you do (15 minutes at most) and stores the refresh token and ChatGPT account ID encrypted. Access tokens are refreshed automatically before they expire.
+
+The Codex models (`gpt-6-astra` in max, `gpt-6.1-sol` in high, `gpt-5.6-terra` in mid, `gpt-6-luna` in low) share their tiers with the Claude models in round-robin. Requests are translated to the Codex Responses API (`chatgpt.com/backend-api/codex/responses`, always streamed; a non-streaming client gets the stream folded into one message) and back: reasoning summaries arrive as thinking blocks whose signature carries Codex's encrypted reasoning (prefixed `codex:`), which goes back to Codex on the next turn and is dropped if the session later moves to a Claude model. The Codex backend does not accept `max_tokens`, `temperature`, `top_p`, stop sequences or `metadata`, so they are not sent. Upstream HTTP errors keep their status (a 429 stays a 429). A 401 is retried once after a forced token refresh; a 401/403 that is still a rejected credential becomes a 502 asking for `login codex`, while a plan or usage refusal keeps its error code. A subscription without a stored login is not eligible, so its tier members are skipped; a tier left empty for that reason answers 503 naming the login command. `count_tokens` returns the estimate without calling Codex.
 
 ### Local models
 

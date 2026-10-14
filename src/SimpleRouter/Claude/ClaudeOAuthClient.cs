@@ -79,8 +79,10 @@ public sealed class ClaudeOAuthClient(IHttpClientFactory httpClientFactory, IOpt
         {
             if (!response.IsSuccessStatusCode)
             {
-                throw new ClaudeOAuthException((int)response.StatusCode,
-                    $"Claude token request failed with status {(int)response.StatusCode}.");
+                var status = (int)response.StatusCode;
+                throw new ClaudeOAuthException(status, fallbackRefreshToken is not null && status is 400 or 401
+                    ? "Claude subscription credentials expired or were revoked; run 'simple-router login claude'."
+                    : $"Claude token request failed with status {status}.");
             }
             return await ReadTokensAsync(response, fallbackRefreshToken, ct);
         }
