@@ -17,6 +17,12 @@ public sealed partial class CatalogSettings(
     LocalHealth health,
     DashboardEvents events)
 {
+    /// <summary>Alias globs run against every request's model; these caps bound their matching cost.</summary>
+    public const int MaxAliasPatternLength = 200, MaxAliasWildcards = 4;
+
+    /// <summary>USD per million tokens; far above any real price, low enough that recorded costs stay in range.</summary>
+    public const decimal MaxPricePerMTok = 1_000_000;
+
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,199}$")]
     private static partial Regex ModelIdPattern();
 
@@ -112,6 +118,11 @@ public sealed partial class CatalogSettings(
         {
             throw new SettingsException("An alias pattern cannot be empty.");
         }
+        if (rows.FirstOrDefault(a => a.Pattern.Length > MaxAliasPatternLength || a.Pattern.Count(c => c == '*') > MaxAliasWildcards) is { } costly)
+        {
+            throw new SettingsException(
+                $"The alias pattern '{costly.Pattern}' is too long or has too many '*': at most {MaxAliasPatternLength} characters and {MaxAliasWildcards} '*'.");
+        }
         if (rows.Any(a => !Enum.IsDefined(a.Tier)))
         {
             throw new SettingsException("An alias names an unknown tier.");
@@ -122,10 +133,12 @@ public sealed partial class CatalogSettings(
         }
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
             db.TierAliases.RemoveRange(await db.TierAliases.ToListAsync(ct));
             await db.SaveChangesAsync(ct);
             db.TierAliases.AddRange(rows.Select((a, i) => new TierAlias { Pattern = a.Pattern, Tier = a.Tier, Position = i }));
             await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
         }
         await ChangedAsync(false, ct);
     }
@@ -154,9 +167,14 @@ public sealed partial class CatalogSettings(
 
     public async Task SavePriceAsync(PriceRow price, CancellationToken ct = default)
     {
-        if (new[] { price.Input, price.Output, price.CacheRead, price.CacheWrite, price.CacheWrite1h }.Any(p => p < 0))
+        var all = new[] { price.Input, price.Output, price.CacheRead, price.CacheWrite, price.CacheWrite1h };
+        if (all.Any(p => p < 0))
         {
             throw new SettingsException("Prices cannot be negative.");
+        }
+        if (all.Any(p => p > MaxPricePerMTok))
+        {
+            throw new SettingsException($"Prices cannot exceed {MaxPricePerMTok:N0} USD per million tokens.");
         }
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
@@ -246,11 +264,13 @@ public sealed partial class CatalogSettings(
             {
                 throw new SettingsException($"'{modelId}' is not a local model.");
             }
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
             await db.TierMembers.Where(m => m.ModelId == modelId).ExecuteDeleteAsync(ct);
             await db.ModelPrices.Where(p => p.ModelId == modelId).ExecuteDeleteAsync(ct);
             await db.ModelCooldowns.Where(c => c.ModelId == modelId).ExecuteDeleteAsync(ct);
             db.Models.Remove(model);
             await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
         }
         await ChangedAsync(true, ct);
     }

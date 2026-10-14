@@ -34,9 +34,19 @@ public static class TierResolver
         return true;
     }
 
+    /// <summary>Bounds a backtracking glob on a client-supplied model name; a timed-out alias does not match.</summary>
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(50);
+
     private static bool GlobMatches(string pattern, string value)
     {
         var regex = "^" + Regex.Escape(pattern).Replace("\\*", ".*").Replace("\\?", ".") + "$";
-        return Regex.IsMatch(value, regex, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        try
+        {
+            return Regex.IsMatch(value, regex, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, MatchTimeout);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
     }
 }

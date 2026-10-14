@@ -92,6 +92,11 @@
         {
             (_testOk, _test) = (false, e.Message);
         }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Logger.LogWarning("Testing a local model connection failed: {error}", e.GetType().Name);
+            (_testOk, _test) = (false, "The connection could not be tested; see the server log.");
+        }
         finally
         {
             _busy = false;

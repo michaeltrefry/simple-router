@@ -87,4 +87,17 @@ public class UsageTapTests
 
         Assert.Null(tap.Usage());
     }
+
+    [Fact]
+    public void A_cost_beyond_the_recordable_range_saturates_instead_of_throwing()
+    {
+        var price = new SimpleRouter.Data.ModelPrice { ModelId = "m", InputPerMTok = 1_000_000, OutputPerMTok = 1_000_000 };
+        var beyondLong = new TokenUsage(long.MaxValue / 1_000_000 + 1, 0, 0, 0);
+        var beyondDecimal = new TokenUsage(long.MaxValue, 0, 0, 0);
+        var hugePrice = new SimpleRouter.Data.ModelPrice { ModelId = "m", InputPerMTok = 10_000_000_000m };
+
+        Assert.Equal(long.MaxValue, beyondLong.CostUsdMicros(price));
+        Assert.Equal(long.MaxValue, beyondDecimal.CostUsdMicros(hugePrice));
+        Assert.Equal(2_000_000, new TokenUsage(1, 1, 0, 0).CostUsdMicros(price));
+    }
 }

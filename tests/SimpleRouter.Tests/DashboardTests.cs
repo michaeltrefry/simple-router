@@ -322,13 +322,17 @@ public class DashboardTests
         foreignPage.Headers.Add("Origin", "https://evil.example");
         using var local = new HttpRequestMessage(HttpMethod.Get, "/ui/settings");
         local.Headers.Add("Origin", $"http://localhost:{port}");
+        using var otherPort = new HttpRequestMessage(HttpMethod.Post, "/_blazor/negotiate?negotiateVersion=1");
+        otherPort.Headers.Add("Origin", $"http://localhost:{port + 1}");
 
         using var foreignResponse = await host.Client.SendAsync(foreign);
         using var foreignPageResponse = await host.Client.SendAsync(foreignPage);
         using var localResponse = await host.Client.SendAsync(local);
+        using var otherPortResponse = await host.Client.SendAsync(otherPort);
 
         Assert.Equal(HttpStatusCode.BadRequest, foreignResponse.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, foreignPageResponse.StatusCode);
         Assert.Equal(HttpStatusCode.OK, localResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, otherPortResponse.StatusCode);
     }
 }

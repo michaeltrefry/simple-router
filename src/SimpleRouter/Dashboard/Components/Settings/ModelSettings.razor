@@ -12,7 +12,7 @@
                 {
                     <tr data-model="@m.Id">
                         <td>
-                            <input type="checkbox" class="enabled" checked="@m.Enabled" disabled="@Busy" aria-label="Enable @m.Id"
+                            <input type="checkbox" class="enabled" checked="@(_refused.TryGetValue(m.Id, out var shown) ? shown : m.Enabled)" disabled="@Busy" aria-label="Enable @m.Id"
                                    @onchange="e => SetEnabledAsync(m.Id, e.Value is true)" />
                         </td>
                         <td class="mono">@m.Id</td>
@@ -53,6 +53,7 @@
     private bool _form;
     private ModelRow? _editing;
     private string? _confirmRemove;
+    private readonly Dictionary<string, bool> _refused = [];
 
     private void Open(ModelRow? model)
     {
@@ -68,8 +69,19 @@
         await OnChanged.InvokeAsync();
     }
 
-    private Task SetEnabledAsync(string id, bool enabled) =>
-        RunAsync(() => Catalog.SetEnabledAsync(id, enabled), $"{id} {(enabled ? "enabled" : "disabled")}.");
+    private async Task SetEnabledAsync(string id, bool enabled)
+    {
+        if (await RunAsync(() => Catalog.SetEnabledAsync(id, enabled), $"{id} {(enabled ? "enabled" : "disabled")}."))
+        {
+            return;
+        }
+        // The browser already shows the refused value and an unchanged render sends no edit, so render that value once
+        // and then the stored one, which makes the browser put the checkbox back.
+        _refused[id] = enabled;
+        StateHasChanged();
+        await Task.Yield();
+        _refused.Remove(id);
+    }
 
     private async Task RemoveAsync(string id)
     {

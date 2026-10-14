@@ -48,4 +48,16 @@ public class TierResolverTests
         Assert.Equal(ModelTier.Mid, second);
         Assert.Equal(ModelTier.Low, fallback);
     }
+
+    [Fact]
+    public async Task An_alias_that_backtracks_too_long_is_skipped_as_no_match()
+    {
+        var rules = new TierRules([("*a*a*a*a*a*a*a*a*a*a*a*b", ModelTier.Max), ("*a*", ModelTier.Low)], ModelTier.High);
+        var model = new string('a', 2_000);
+
+        var resolve = Task.Run(() => (TierResolver.TryResolve(null, model, rules, out var tier), tier));
+        Assert.Same(resolve, await Task.WhenAny(resolve, Task.Delay(TimeSpan.FromSeconds(10))));
+
+        Assert.Equal((true, ModelTier.Low), await resolve);
+    }
 }

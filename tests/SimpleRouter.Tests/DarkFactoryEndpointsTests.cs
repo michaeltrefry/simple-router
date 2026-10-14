@@ -338,14 +338,14 @@ public class DarkFactoryEndpointsTests
         await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
         {
             model = await db.Models.SingleAsync(m => m.Id == "claude-a");
+            await db.Database.ExecuteSqlRawAsync("CREATE TRIGGER refuse_usage BEFORE INSERT ON RequestUsages BEGIN SELECT RAISE(ABORT, 'refused'); END;");
         }
-        // Priced in micro-USD this is over long.MaxValue.
-        var huge = new SimpleRouter.Usage.TokenUsage(0, long.MaxValue / 2, 0, 0);
+        var usage = new SimpleRouter.Usage.TokenUsage(1, 1, 0, 0);
 
         await host.Services.GetRequiredService<SimpleRouter.Usage.UsageRecorder>()
-            .RecordAsync(new SimpleRouter.Usage.ServedRequest("df-huge", model, ModelTier.High, 200, huge, TimeSpan.Zero, null));
+            .RecordAsync(new SimpleRouter.Usage.ServedRequest("df-refused", model, ModelTier.High, 200, usage, TimeSpan.Zero, null));
 
-        Assert.Null(await CostAsync(host, "df-huge"));
+        Assert.Null(await CostAsync(host, "df-refused"));
     }
 
     private static async Task WaitUntilAsync(Func<Task<bool>> condition)

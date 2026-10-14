@@ -1,9 +1,11 @@
 using System.Net;
 using Bunit;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using SimpleRouter.Claude;
 using SimpleRouter.Codex;
+using SimpleRouter.Data;
 using SimpleRouter.Gateway;
 using SimpleRouter.Tests.Support;
 using static SimpleRouter.Tests.Support.SettingsHarness;
@@ -45,6 +47,31 @@ public class SettingsAccountsTests
         Assert.DoesNotContain("ui-access-secret", cut.Markup);
         Assert.DoesNotContain("ui-refresh-secret", cut.Markup);
         Assert.Equal(["upstream-a", "upstream-b"], cut.FindAll("#discovered-claude option").Select(o => o.GetAttribute("value")));
+    }
+
+    [Fact]
+    public async Task A_Claude_login_that_cannot_be_stored_shows_an_error_and_keeps_the_page_working()
+    {
+        var (host, _) = await StartAsync();
+        await using var _host = host;
+        host.OAuth.Respond = _ => Json("""{"access_token":"ui-access-secret","refresh_token":"ui-refresh-secret","expires_in":28800}""");
+        await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        {
+            await db.Database.ExecuteSqlRawAsync("CREATE TRIGGER refuse_claude_login BEFORE UPDATE ON ClaudeCredentials BEGIN SELECT RAISE(ABORT, 'refused'); END;");
+        }
+        using var context = Context(host);
+        var cut = Render(context);
+
+        await cut.ClickAsync("#claude-connect .connect");
+        var state = QueryHelpers.ParseQuery(new Uri(cut.Find("#claude-connect .authorize").GetAttribute("href")!).Query)["state"].ToString();
+        await cut.ChangeAsync("#claude-connect .code", $"ui-code#{state}");
+        await cut.ClickAsync("#claude-connect .submit");
+
+        Assert.Equal("Claude login failed; see the server log.", cut.Find("#claude-connect .form-error").TextContent);
+        Assert.Equal("claude-refresh-secret", (await host.Services.GetRequiredService<ClaudeCredentialStore>().GetAsync())!.RefreshToken);
+        await cut.ClickAsync("#claude-connect .cancel");
+        await cut.ClickAsync("#claude-connect .connect");
+        Assert.NotNull(cut.Find("#claude-connect .authorize"));
     }
 
     [Fact]

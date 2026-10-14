@@ -3,6 +3,7 @@
 @inject ClaudeLoginCommand Login
 @inject ModelDiscovery Discovery
 @inject DashboardEvents Events
+@inject ILogger<ClaudeConnect> Logger
 
 <section class="card" id="claude-connect">
     <h2>Claude subscription</h2>
@@ -57,6 +58,11 @@
         catch (Exception e) when (e is ArgumentException or ClaudeOAuthException)
         {
             _error = $"Claude login failed: {e.Message}";
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Logger.LogWarning("The dashboard Claude login failed: {error}", e.GetType().Name);
+            _error = "Claude login failed; see the server log.";
         }
         finally
         {
