@@ -129,7 +129,7 @@ public class ClaudeLoginTests
         Assert.Equal(await host.GatewayKeyAsync(), output.ToString().Trim());
     }
 
-    private sealed class CallbackReader(Func<string> line) : TextReader
+    internal sealed class CallbackReader(Func<string> line) : TextReader
     {
         public override ValueTask<string?> ReadLineAsync(CancellationToken ct) => ValueTask.FromResult<string?>(line());
     }

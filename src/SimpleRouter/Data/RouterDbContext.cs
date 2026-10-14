@@ -14,6 +14,7 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
     public DbSet<TierAlias> TierAliases => Set<TierAlias>();
     public DbSet<TierCursor> TierCursors => Set<TierCursor>();
     public DbSet<SessionPin> SessionPins => Set<SessionPin>();
+    public DbSet<ProviderModelList> ProviderModelLists => Set<ProviderModelList>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -33,6 +34,8 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
         modelBuilder.Entity<SessionPin>().HasKey(p => new { p.SessionKey, p.Tier });
         modelBuilder.Entity<SessionPin>().Property(p => p.Tier).HasConversion(TierConverter);
         modelBuilder.Entity<SessionPin>().HasIndex(p => p.ClientSessionId);
+        modelBuilder.Entity<ProviderModelList>().HasKey(l => l.Provider);
+        modelBuilder.Entity<ProviderModelList>().Property(l => l.Provider).HasConversion(p => p.ToString().ToLowerInvariant(), p => Enum.Parse<ProviderKind>(p, true));
     }
 
     private static readonly ValueConverter<ModelTier, string> TierConverter =

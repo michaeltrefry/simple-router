@@ -68,6 +68,10 @@ public static class RouterApp
         builder.Services.AddSingleton<IModelUpstream, LocalUpstream>();
         builder.Services.AddSingleton<LocalHealth>();
         builder.Services.AddHostedService<LocalHealthMonitor>();
+        builder.Services.AddSingleton<IModelListSource, ClaudeModelList>();
+        builder.Services.AddSingleton<IModelListSource, CodexModelList>();
+        builder.Services.AddSingleton<ModelDiscovery>();
+        builder.Services.AddHostedService<ModelDiscoveryMonitor>();
         builder.Services.AddSingleton<CatalogSeeder>();
         builder.Services.AddSingleton<ModelSelector>();
         builder.Services.AddSingleton<MessageRouter>();

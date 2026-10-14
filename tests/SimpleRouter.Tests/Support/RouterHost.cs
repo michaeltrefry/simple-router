@@ -55,6 +55,8 @@ public sealed class RouterHost : IAsyncDisposable
             $"--SimpleRouter:Codex:ApiBaseUrl={CodexApiBase}",
             // Only the startup probe runs; tests re-check explicitly so results never race the assertions.
             "--SimpleRouter:Local:HealthCheckIntervalSeconds=0",
+            // Model lists are fetched only where a test asks, so no upstream sees an unexpected request.
+            "--SimpleRouter:ModelListRefreshInterval=00:00:00",
         };
         args.AddRange(models.Select((m, i) => $"--SimpleRouter:Models:{i}={m}"));
         return args.ToArray();

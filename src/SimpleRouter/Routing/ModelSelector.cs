@@ -6,8 +6,8 @@ namespace SimpleRouter.Routing;
 
 /// <summary>
 /// Picks the model for a (session, tier): its existing pin if still eligible, else the next eligible tier member in
-/// round-robin order. Eligible means enabled, served by a registered upstream, logged in (subscriptions), healthy (locals) and able to serve the
-/// request (<see cref="RequestNeeds"/>). Mid and Low give new sessions to eligible local models first and use subscriptions only when none is.
+/// round-robin order. Eligible means enabled, served by a registered upstream, logged in and present in the provider's
+/// discovered model list (subscriptions), healthy (locals) and able to serve the request (<see cref="RequestNeeds"/>). Mid and Low give new sessions to eligible local models first and use subscriptions only when none is.
 /// Both the pin and the per-tier round-robin cursor are persisted, so assignments survive restarts.
 /// </summary>
 public sealed class ModelSelector(
@@ -146,6 +146,15 @@ public sealed class ModelSelector(
         return eligible.Select(m => m.Provider).Where(p => !loggedIn(p)).Distinct().ToList();
     }
 
+    /// <summary>Every catalog model's status, for the dashboard.</summary>
+    public async Task<List<ModelStatusEntry>> StatusesAsync(CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var models = await db.Models.AsNoTracking().OrderBy(m => m.Id).ToListAsync(ct);
+        var status = await StatusOfAsync(db, ct);
+        return models.Select(m => new ModelStatusEntry(m.Id, m.Provider, status(m))).ToList();
+    }
+
     private async Task<List<CatalogModel>> EligibleAsync(RouterDbContext db, ModelTier tier, RequestNeeds needs, CancellationToken ct, bool requireLogin = true)
     {
         var members = await db.TierMembers
@@ -156,16 +165,40 @@ public sealed class ModelSelector(
             .Select(x => x.Model)
             .AsNoTracking()
             .ToListAsync(ct);
-        Func<ProviderKind, bool> loggedIn = requireLogin ? await LoggedInAsync(db, ct) : _ => true;
+        var status = await StatusOfAsync(db, ct);
         return members.Where(m => _wired.Contains(m.Provider)
-                && loggedIn(m.Provider)
-                && needs.CanUse(m)
-                && (m.Provider != ProviderKind.Local || health.IsHealthy(m.Id)))
+                && (status(m) == ModelStatus.Eligible || (!requireLogin && status(m) == ModelStatus.NotLoggedIn))
+                && needs.CanUse(m))
             .ToList();
     }
 
-    /// <summary>Queried per selection, never cached: login runs as a separate CLI process.</summary>
-    private static async Task<Func<ProviderKind, bool>> LoggedInAsync(RouterDbContext db, CancellationToken ct)
+    /// <summary>Lists and logins are read per selection, never cached: login and its model list fetch run in a separate CLI process.</summary>
+    private async Task<Func<CatalogModel, ModelStatus>> StatusOfAsync(RouterDbContext db, CancellationToken ct)
+    {
+        var loggedIn = await LoggedInAsync(db, ct);
+        // A provider without a successfully fetched list allows every model, so routing never goes dark before the first fetch.
+        var lists = (await db.ProviderModelLists.AsNoTracking().ToListAsync(ct))
+            .Where(l => l.ModelIds is not null)
+            .ToDictionary(l => l.Provider, l => (IReadOnlyCollection<string>)l.ModelIds!.ToHashSet(StringComparer.OrdinalIgnoreCase));
+        return m =>
+        {
+            if (!m.Enabled)
+            {
+                return ModelStatus.Disabled;
+            }
+            if (!loggedIn(m.Provider))
+            {
+                return ModelStatus.NotLoggedIn;
+            }
+            if (m.Provider != ProviderKind.Local && lists.TryGetValue(m.Provider, out var list) && !ModelDiscovery.Lists(list, m.UpstreamModelId))
+            {
+                return ModelStatus.UnknownModel;
+            }
+            return m.Provider == ProviderKind.Local && !health.IsHealthy(m.Id) ? ModelStatus.Unhealthy : ModelStatus.Eligible;
+        };
+    }
+
+    internal static async Task<Func<ProviderKind, bool>> LoggedInAsync(RouterDbContext db, CancellationToken ct)
     {
         var hasClaude = await db.ClaudeCredentials.AnyAsync(ct);
         var hasCodex = await db.CodexCredentials.AnyAsync(ct);
