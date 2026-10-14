@@ -99,6 +99,26 @@ public class ClaudeTokenRefreshTests
     }
 
     [Fact]
+    public async Task A_token_count_whose_refresh_fails_answers_the_local_estimate_without_calling_claude()
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginAsync(accessToken: "access-old", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1), refreshToken: "refresh-old");
+        host.OAuth.Respond = _ => new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent("""{"error":"invalid_grant"}""") };
+        var client = await host.AuthorizedClientAsync();
+        const string body = """{"model":"claude-opus-5-5","messages":[{"role":"user","content":"count these words please"}]}""";
+
+        using var response = await client.SendAsync(new HttpRequestMessage(HttpMethod.Post, "/v1/messages/count_tokens")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var expected = TokenEstimator.Estimate(System.Text.Json.Nodes.JsonNode.Parse(body)!.AsObject());
+        Assert.Equal($$"""{"input_tokens":{{expected}}}""", await response.Content.ReadAsStringAsync());
+        Assert.Empty(host.Upstream.Requests);
+    }
+
+    [Fact]
     public async Task Concurrent_requests_with_an_expired_token_share_one_refresh()
     {
         await using var host = await RouterHost.StartAsync();

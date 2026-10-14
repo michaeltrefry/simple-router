@@ -21,6 +21,9 @@ public sealed class CatalogModel
 
     public bool SupportsTools { get; set; } = true;
     public bool SupportsVision { get; set; }
+
+    /// <summary>Supported reasoning-effort levels and how they are sent; null means the provider's defaults.</summary>
+    public EffortMapping? Effort { get; set; }
 }
 
 /// <summary>Membership of a model in a tier; a model may belong to several tiers.</summary>

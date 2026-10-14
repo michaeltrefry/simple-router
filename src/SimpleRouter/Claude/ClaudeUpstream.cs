@@ -14,7 +14,7 @@ namespace SimpleRouter.Claude;
 /// <summary>
 /// Forwards a Messages API body to Claude with the subscription token and streams the response back unchanged. A limit,
 /// plan or account rejection, overload or connection failure on a message is returned unwritten so the router can fail
-/// over; token counting is always passed through.
+/// over; token counting is passed through, or answered with the local estimate when the token cannot be refreshed.
 /// </summary>
 public sealed class ClaudeUpstream(
     IHttpClientFactory httpClientFactory,
@@ -43,7 +43,7 @@ public sealed class ClaudeUpstream(
         call.Request["model"] = call.Model.UpstreamModelId;
         DropForeignThinking(call.Request);
         var path = call.CountTokens ? "/v1/messages/count_tokens" : "/v1/messages";
-        return ForwardAsync(call.Context, path, JsonSerializer.SerializeToUtf8Bytes(call.Request, WireJson.Relaxed), message: !call.CountTokens);
+        return ForwardAsync(call, path, JsonSerializer.SerializeToUtf8Bytes(call.Request, WireJson.Relaxed));
     }
 
     /// <summary>
@@ -81,8 +81,9 @@ public sealed class ClaudeUpstream(
 
     private static string? Str(JsonNode? node) => ChatRequestTranslator.Str(node);
 
-    private async Task<UpstreamResult> ForwardAsync(HttpContext context, string path, byte[] body, bool message)
+    private async Task<UpstreamResult> ForwardAsync(UpstreamCall call, string path, byte[] body)
     {
+        var (context, message) = (call.Context, !call.CountTokens);
         var ct = context.RequestAborted;
         string accessToken;
         try
@@ -101,7 +102,8 @@ public sealed class ClaudeUpstream(
             {
                 return UpstreamResult.NotServed(ModelFault.RefreshFailed(e.Status));
             }
-            await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", e.Message);
+            // A token count is advisory, so the local estimate stands in rather than failing the client.
+            await context.Response.WriteAsJsonAsync(new { input_tokens = call.EstimatedInputTokens }, ct);
             return UpstreamResult.Served;
         }
 

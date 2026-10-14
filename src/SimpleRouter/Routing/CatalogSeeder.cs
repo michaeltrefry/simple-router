@@ -28,7 +28,8 @@ public sealed class CatalogSeeder(
         string? ApiKey = null,
         int? ContextWindow = null,
         bool SupportsTools = true,
-        bool SupportsVision = false);
+        bool SupportsVision = false,
+        EffortMapping? Effort = null);
 
     private sealed record SeedAlias(string Pattern, string Tier);
 
@@ -46,7 +47,8 @@ public sealed class CatalogSeeder(
         string? ApiKey,
         int? ContextWindow,
         bool? SupportsTools,
-        bool? SupportsVision);
+        bool? SupportsVision,
+        EffortMapping? Effort);
 
     private sealed record Overrides(ModelOverride[]? Models);
 
@@ -91,6 +93,7 @@ public sealed class CatalogSeeder(
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         if (await db.Models.AnyAsync(ct))
         {
+            await BackfillEffortAsync(db, ct);
             return;
         }
 
@@ -106,6 +109,7 @@ public sealed class CatalogSeeder(
             ContextWindow = m.ContextWindow,
             SupportsTools = m.SupportsTools,
             SupportsVision = m.SupportsVision,
+            Effort = m.Effort,
         }));
         foreach (var (tier, modelIds) in seed.Tiers)
         {
@@ -115,6 +119,21 @@ public sealed class CatalogSeeder(
         if (await db.Settings.FindAsync([DefaultTierSetting], ct) is null)
         {
             db.Settings.Add(new Setting { Key = DefaultTierSetting, Value = ModelTiers.Parse(seed.DefaultTier).Name() });
+        }
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>A catalog seeded before effort mappings existed takes them from the seed, without touching mappings already set.</summary>
+    private async Task BackfillEffortAsync(RouterDbContext db, CancellationToken ct)
+    {
+        if (!File.Exists(options.Value.SeedFile))
+        {
+            return;
+        }
+        var seeded = (await ReadSeedAsync(ct)).Models.Where(m => m.Effort is not null).ToDictionary(m => m.Id, m => m.Effort);
+        foreach (var model in await db.Models.ToListAsync(ct))
+        {
+            model.Effort ??= seeded.GetValueOrDefault(model.Id);
         }
         await db.SaveChangesAsync(ct);
     }
@@ -150,6 +169,7 @@ public sealed class CatalogSeeder(
             model.ContextWindow = o.ContextWindow ?? model.ContextWindow;
             model.SupportsTools = o.SupportsTools ?? model.SupportsTools;
             model.SupportsVision = o.SupportsVision ?? model.SupportsVision;
+            model.Effort = o.Effort ?? model.Effort;
         }
         await db.SaveChangesAsync(ct);
     }

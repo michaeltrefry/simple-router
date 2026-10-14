@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using SimpleRouter.Api;
 using SimpleRouter.Data;
 using SimpleRouter.Local;
+using SimpleRouter.Routing;
 
 namespace SimpleRouter.Codex;
 
@@ -20,7 +21,7 @@ public static class ResponsesRequestTranslator
             ["model"] = model.UpstreamModelId,
             ["stream"] = true,
             ["store"] = false,
-            ["reasoning"] = new JsonObject { ["summary"] = "auto" },
+            ["reasoning"] = Reasoning(request, model),
             ["include"] = new JsonArray("reasoning.encrypted_content"),
             // The backend rejects a request without instructions.
             ["instructions"] = SystemText(request["system"]) ?? "",
@@ -41,6 +42,18 @@ public static class ResponsesRequestTranslator
         AddTools(responses, request);
         responses["prompt_cache_key"] = promptCacheKey;
         return responses;
+    }
+
+    /// <summary>The client's effort goes as the nearest level the model accepts; without one, Codex keeps its default.</summary>
+    private static JsonObject Reasoning(JsonObject request, CatalogModel model)
+    {
+        var reasoning = new JsonObject { ["summary"] = "auto" };
+        var supported = model.Effort?.Levels is { Length: > 0 } levels ? levels : Effort.CodexDefaultLevels;
+        if (Effort.Read(request) is { } requested && Effort.Nearest(requested, supported) is { } level)
+        {
+            reasoning["effort"] = Effort.Name(level);
+        }
+        return reasoning;
     }
 
     private static void AddAssistant(JsonArray input, JsonNode? content)
