@@ -13,7 +13,7 @@ dotnet run --project src/SimpleRouter                   # serve on http://127.0.
 
 Clients authenticate with the gateway key via `X-Weave-Router-Key`, `x-api-key` or `Authorization: Bearer`.
 
-Endpoints: `POST /v1/messages` (streaming and non-streaming), `POST /v1/messages/count_tokens`, `GET /v1/models`.
+Endpoints: `POST /v1/messages` (streaming and non-streaming), `POST /v1/messages/count_tokens`, `GET /v1/models`, `GET /v1/subscriptions/usage`, `GET /v1/sessions/{client_session_id}/cost` (see [Usage and cost](#usage-and-cost)).
 
 Data (SQLite database and encryption key ring) lives in `~/.simple-router` by default (`--SimpleRouter:DataDirectory=...`).
 
@@ -69,3 +69,14 @@ The seeded local models are disabled and point at placeholder `localhost` URLs w
   ]
 }
 ```
+
+## Usage and cost
+
+Every served `/v1/messages` request (not `count_tokens`) is stored in the `RequestUsages` table with its client session ID, model, provider, tier, HTTP status, input/output/cache-read/cache-write tokens, cost, latency and requested `output_config.effort`. Tokens are read from the Anthropic-shaped response as it passes through, without buffering a stream: `message_start` and `message_delta` usage for streams (passthrough Claude and the translated Codex and local streams alike), the top-level `usage` of a JSON body otherwise.
+
+Cost is priced from the `ModelPrices` table (USD per million input, output, cache-read and cache-write tokens, with one-hour cache writes at their own `CacheWrite1hPerMTok` rate), seeded once from `prices` in `seed.json`. **The seeded prices are estimates** of public list prices (Codex prices are guesses; local models are $0), used only to report spend; edit the table to change them. A model without a price row costs $0.
+
+- `GET /v1/sessions/{client_session_id}/cost` → `{"session_id", "request_count", "actual_cost_usd_micros"}` for the ID sent as `X-Claude-Code-Session-Id` (percent-escaped in the path; an escaped `/` is part of the ID) (or found in `metadata.user_id`); `404` when no request is recorded for it.
+- `GET /v1/subscriptions/usage` → `{"as_of", "all_exhausted", "resumes_at", "known_credentials", "credentials": [{"provider": "claude"|"codex", "source": "managed", "enabled", "routable", "state": "ok"|"cooling"|"auth_rejected"|"unknown"}]}`. `known_credentials` counts stored subscription logins. `all_exhausted` is true when every enabled subscription model in a tier (of a logged-in subscription) is cooling or auth-rejected; local models never count. `resumes_at` is then the earliest of their cooldown ends, else null. `routable` is false only for an `auth_rejected` login (log in again); a `cooling` login stays routable (it is spent until its reset, and the orchestrator pauses on `all_exhausted`), as does an `unknown` one (no enabled, tiered model of that subscription).
+
+Both sit behind the gateway key like the rest of `/v1`.

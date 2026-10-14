@@ -8,6 +8,7 @@ using SimpleRouter.Data;
 using SimpleRouter.Gateway;
 using SimpleRouter.Local;
 using SimpleRouter.Routing;
+using SimpleRouter.Usage;
 
 namespace SimpleRouter;
 
@@ -76,6 +77,8 @@ public static class RouterApp
         builder.Services.AddSingleton<ModelCooldowns>();
         builder.Services.AddSingleton<ModelSelector>();
         builder.Services.AddSingleton<MessageRouter>();
+        builder.Services.AddSingleton<UsageRecorder>();
+        builder.Services.AddSingleton<SubscriptionUsage>();
         builder.Services.AddHttpClient(ClaudeOAuthClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30));
         // Streams can run for many minutes; cancellation follows the inbound request instead.
         builder.Services.AddHttpClient(ClaudeUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
@@ -90,6 +93,7 @@ public static class RouterApp
         app.UseMiddleware<GatewayAuthMiddleware>();
         app.MapModelsEndpoints();
         app.MapMessagesEndpoints();
+        app.MapDarkFactoryEndpoints();
         return app;
     }
 
