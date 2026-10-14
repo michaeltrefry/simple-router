@@ -43,27 +43,24 @@ public sealed class ModelDiscovery(
                 error = e.Message;
             }
 
-            await using var db = await dbFactory.CreateDbContextAsync(ct);
-            var row = await db.ProviderModelLists.FindAsync([provider], ct);
-            if (row is null)
+            ProviderModelList row;
+            try
             {
-                row = new ProviderModelList { Provider = provider };
-                db.ProviderModelLists.Add(row);
+                row = await SaveAsync(provider, ids, error, ct);
             }
-            var now = time.GetUtcNow();
-            row.CheckedAt = now;
-            row.LastError = error;
+            catch (DbUpdateException)
+            {
+                // Another process (a CLI login beside the running server) may have inserted the first row meanwhile.
+                row = await SaveAsync(provider, ids, error, ct);
+            }
             if (error is null)
             {
-                row.ModelIds = ids!.Distinct().Order(StringComparer.Ordinal).ToList();
-                row.FetchedAt = now;
-                logger.LogInformation("Fetched the {provider} model list: {count} models", provider, row.ModelIds.Count);
+                logger.LogInformation("Fetched the {provider} model list: {count} models", provider, row.ModelIds!.Count);
             }
             else
             {
                 logger.LogWarning("Could not fetch the {provider} model list; keeping the last good list: {error}", provider, error);
             }
-            await db.SaveChangesAsync(ct);
             return row;
         }
         finally
@@ -72,16 +69,45 @@ public sealed class ModelDiscovery(
         }
     }
 
-    /// <summary>Fetches right after a login and tells the user the outcome; a failed fetch does not fail the login.</summary>
+    private async Task<ProviderModelList> SaveAsync(ProviderKind provider, IReadOnlyList<string>? ids, string? error, CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var row = await db.ProviderModelLists.FindAsync([provider], ct);
+        if (row is null)
+        {
+            row = new ProviderModelList { Provider = provider };
+            db.ProviderModelLists.Add(row);
+        }
+        var now = time.GetUtcNow();
+        row.CheckedAt = now;
+        row.LastError = error;
+        if (error is null)
+        {
+            row.ModelIds = ids!.Distinct().Order(StringComparer.Ordinal).ToList();
+            row.FetchedAt = now;
+        }
+        await db.SaveChangesAsync(ct);
+        return row;
+    }
+
+    /// <summary>Fetches right after a login and tells the user the outcome; a failed fetch or save does not fail the login.</summary>
     public async Task ReportRefreshAsync(ProviderKind provider, TextWriter output, CancellationToken ct)
     {
-        var list = await RefreshAsync(provider, ct);
+        ProviderModelList list;
+        try
+        {
+            list = await RefreshAsync(provider, ct);
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested)
+        {
+            list = new ProviderModelList { Provider = provider, LastError = e.Message };
+        }
         await output.WriteLineAsync(list.LastError is null
             ? $"Found {list.ModelIds!.Count} {provider} models."
             : $"Could not fetch the {provider} model list ({list.LastError}); the running router retries it.");
     }
 
-    /// <summary>Refreshes every logged-in subscription, skipping those checked within <paramref name="olderThan"/>.</summary>
+    /// <summary>Refreshes every logged-in subscription, skipping those fetched successfully within <paramref name="olderThan"/>.</summary>
     public async Task RefreshAllAsync(CancellationToken ct = default, TimeSpan? olderThan = null)
     {
         List<ProviderModelList> stored;
@@ -95,7 +121,7 @@ public sealed class ModelDiscovery(
         foreach (var provider in sources.Select(s => s.Provider).Where(loggedIn))
         {
             var row = stored.FirstOrDefault(l => l.Provider == provider);
-            if (olderThan is null || row is null || now - row.CheckedAt >= olderThan)
+            if (olderThan is null || row?.FetchedAt is null || now - row.FetchedAt >= olderThan)
             {
                 await RefreshAsync(provider, ct);
             }
@@ -110,16 +136,23 @@ public sealed class ModelDiscovery(
     }
 
     /// <summary>
-    /// Whether <paramref name="list"/> serves <paramref name="upstreamModelId"/>: listed as-is, or as a dated snapshot
-    /// (<c>claude-sonnet-4-5</c> is served as <c>claude-sonnet-4-5-20250929</c>).
+    /// Whether <paramref name="list"/> serves <paramref name="upstreamModelId"/>, ignoring case: listed as-is, or with only a
+    /// snapshot date between them in either direction (<c>claude-sonnet-4-5</c> and <c>claude-sonnet-4-5-20250929</c>).
     /// </summary>
     public static bool Lists(IReadOnlyCollection<string> list, string upstreamModelId) =>
-        list.Contains(upstreamModelId) || list.Any(id => id.Length == upstreamModelId.Length + 9
-            && id.StartsWith(upstreamModelId + "-", StringComparison.Ordinal)
-            && id[(upstreamModelId.Length + 1)..].All(char.IsAsciiDigit));
+        list.Contains(upstreamModelId, StringComparer.OrdinalIgnoreCase)
+        || list.Any(id => IsSnapshotOf(id, upstreamModelId) || IsSnapshotOf(upstreamModelId, id));
+
+    private static bool IsSnapshotOf(string dated, string alias) =>
+        dated.Length == alias.Length + 9
+        && dated.StartsWith(alias + "-", StringComparison.OrdinalIgnoreCase)
+        && dated[(alias.Length + 1)..].All(char.IsAsciiDigit);
 }
 
-/// <summary>Refreshes subscription model lists at startup when due, then every <see cref="RouterOptions.ModelListRefreshInterval"/>.</summary>
+/// <summary>
+/// Refreshes subscription model lists not fetched within <see cref="RouterOptions.ModelListRefreshInterval"/> at startup,
+/// then when the earliest skipped one comes due and every interval after that.
+/// </summary>
 public sealed class ModelDiscoveryMonitor(ModelDiscovery discovery, IOptions<RouterOptions> options, TimeProvider time, ILogger<ModelDiscoveryMonitor> logger)
     : BackgroundService
 {
@@ -130,11 +163,36 @@ public sealed class ModelDiscoveryMonitor(ModelDiscovery discovery, IOptions<Rou
         {
             return;
         }
+        // Created before the startup fetch so the schedule never depends on how long that fetch takes.
+        using var timer = new PeriodicTimer(await FirstDelayAsync(interval, stoppingToken), time);
         await RefreshAsync(interval, stoppingToken);
-        using var timer = new PeriodicTimer(interval, time);
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
+            if (timer.Period != interval)
+            {
+                timer.Period = interval;
+            }
             await RefreshAsync(null, stoppingToken);
+        }
+    }
+
+    /// <summary>Time until the earliest list skipped at startup turns <paramref name="interval"/> old.</summary>
+    private async Task<TimeSpan> FirstDelayAsync(TimeSpan interval, CancellationToken ct)
+    {
+        try
+        {
+            var now = time.GetUtcNow();
+            return (await discovery.GetAsync(ct))
+                .Where(l => l.FetchedAt is not null)
+                .Select(l => interval - (now - l.FetchedAt!.Value))
+                .Where(d => d > TimeSpan.Zero && d < interval)
+                .DefaultIfEmpty(interval)
+                .Min();
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested)
+        {
+            logger.LogWarning("Could not read the stored model lists: {error}", e.Message);
+            return interval;
         }
     }
 

@@ -18,7 +18,7 @@ public sealed class ClaudeModelList(IHttpClientFactory httpClientFactory, Claude
         var client = ModelListHttp.Client(httpClientFactory, ClaudeUpstream.HttpClientName);
         var ids = new List<string>();
         string? afterId = null;
-        for (var page = 0; page < MaxPages; page++)
+        for (var page = 1; ; page++)
         {
             var url = options.Value.Claude.ApiBaseUrl.TrimEnd('/') + "/v1/models?limit=1000" + (afterId is null ? "" : "&after_id=" + Uri.EscapeDataString(afterId));
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -32,13 +32,17 @@ public sealed class ClaudeModelList(IHttpClientFactory httpClientFactory, Claude
                 throw new ModelListException("Claude sent a malformed model list.");
             }
             ids.AddRange(data.Select(m => m?["id"]?.GetValue<string>()).OfType<string>());
-            var lastId = body["last_id"]?.GetValue<string>();
-            if (body["has_more"]?.GetValue<bool>() != true || string.IsNullOrEmpty(lastId) || lastId == afterId)
+            if (body["has_more"]?.GetValue<bool>() != true)
             {
-                break;
+                return ids;
+            }
+            var lastId = body["last_id"]?.GetValue<string>();
+            if (string.IsNullOrEmpty(lastId) || lastId == afterId || page == MaxPages)
+            {
+                // A partial list would mark the missing models unknown, so it is a failed fetch instead.
+                throw new ModelListException("Claude reported more models but its model list could not be paged to the end.");
             }
             afterId = lastId;
         }
-        return ids;
     }
 }

@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -244,6 +246,164 @@ public class ModelDiscoveryTests
         }
     }
 
+    /// <summary>A monitor and discovery on <paramref name="time"/> over <paramref name="host"/>'s sources and database.</summary>
+    private static (ModelDiscovery Discovery, ModelDiscoveryMonitor Monitor) OnClock(RouterHost host, FakeTimeProvider time, TimeSpan interval)
+    {
+        var discovery = new ModelDiscovery(host.Services.GetServices<IModelListSource>(), host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>(),
+            time, NullLogger<ModelDiscovery>.Instance);
+        var monitor = new ModelDiscoveryMonitor(discovery, Options.Create(new RouterOptions { ModelListRefreshInterval = interval }), time,
+            NullLogger<ModelDiscoveryMonitor>.Instance);
+        return (discovery, monitor);
+    }
+
+    [Fact]
+    public async Task At_start_a_recently_fetched_list_is_skipped_until_it_turns_one_interval_old()
+    {
+        await using var host = await StartAsync();
+        await host.LoginCodexAsync();
+        host.Codex.Respond = _ => Json(CodexList("gpt-a"));
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var (discovery, monitor) = OnClock(host, time, TimeSpan.FromHours(6));
+        await discovery.RefreshAsync(ProviderKind.Claude);
+        time.Advance(TimeSpan.FromHours(5));
+        int ListCalls() => host.Upstream.Requests.Count(r => r.Uri.AbsolutePath == "/v1/models");
+
+        await monitor.StartAsync(CancellationToken.None);
+        try
+        {
+            await EventuallyAsync(async () => (await StoredAsync(discovery, ProviderKind.Codex))?.ModelIds?.Count == 1);
+            Assert.Equal(1, ListCalls());
+            time.Advance(TimeSpan.FromMinutes(59));
+            await Task.Delay(100);
+            Assert.Equal(1, ListCalls());
+
+            time.Advance(TimeSpan.FromMinutes(1));
+
+            await EventuallyAsync(() => Task.FromResult(ListCalls() == 2));
+        }
+        finally
+        {
+            await monitor.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task At_start_a_list_older_than_the_interval_is_fetched()
+    {
+        await using var host = await StartAsync();
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var (discovery, monitor) = OnClock(host, time, TimeSpan.FromHours(6));
+        await discovery.RefreshAsync(ProviderKind.Claude);
+        time.Advance(TimeSpan.FromHours(7));
+
+        await monitor.StartAsync(CancellationToken.None);
+        try
+        {
+            await EventuallyAsync(() => Task.FromResult(host.Upstream.Requests.Count(r => r.Uri.AbsolutePath == "/v1/models") == 2));
+        }
+        finally
+        {
+            await monitor.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task At_start_a_recent_failed_attempt_does_not_block_a_retry()
+    {
+        await using var host = await StartAsync();
+        host.Upstream.Respond = Claude(() => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var (discovery, monitor) = OnClock(host, time, TimeSpan.FromHours(6));
+        await discovery.RefreshAsync(ProviderKind.Claude);
+        time.Advance(TimeSpan.FromHours(1));
+        host.Upstream.Respond = Claude(() => Json(ClaudeList("upstream-a", "upstream-b")));
+
+        await monitor.StartAsync(CancellationToken.None);
+        try
+        {
+            await EventuallyAsync(async () => (await StoredAsync(discovery, ProviderKind.Claude))?.ModelIds?.Count == 2);
+        }
+        finally
+        {
+            await monitor.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>A factory whose contexts run <paramref name="saving"/> before each save.</summary>
+    private sealed class InterceptedFactory(IDbContextFactory<RouterDbContext> inner, Action saving) : SaveChangesInterceptor, IDbContextFactory<RouterDbContext>
+    {
+        public RouterDbContext CreateDbContext()
+        {
+            using var db = inner.CreateDbContext();
+            return new RouterDbContext(new DbContextOptionsBuilder<RouterDbContext>().UseSqlite(db.Database.GetConnectionString()).AddInterceptors(this).Options);
+        }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData, InterceptionResult<int> result, CancellationToken ct = default)
+        {
+            saving();
+            return base.SavingChangesAsync(eventData, result, ct);
+        }
+    }
+
+    private static ModelDiscovery WithSaving(RouterHost host, Action saving) =>
+        new(host.Services.GetServices<IModelListSource>(), new InterceptedFactory(host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>(), saving),
+            TimeProvider.System, NullLogger<ModelDiscovery>.Instance);
+
+    [Fact]
+    public async Task A_first_row_inserted_concurrently_by_another_process_is_updated_instead()
+    {
+        await using var host = await StartAsync();
+        var saves = 0;
+        var discovery = WithSaving(host, () =>
+        {
+            if (saves++ == 0)
+            {
+                using var other = host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContext();
+                other.ProviderModelLists.Add(new ProviderModelList { Provider = ProviderKind.Claude, ModelIds = ["from-the-cli"], CheckedAt = DateTimeOffset.UtcNow });
+                other.SaveChanges();
+            }
+        });
+
+        var stored = await discovery.RefreshAsync(ProviderKind.Claude);
+
+        Assert.Null(stored.LastError);
+        Assert.Equal(["upstream-a", "upstream-b"], (await StoredAsync(host, ProviderKind.Claude))!.ModelIds);
+    }
+
+    [Fact]
+    public async Task A_failed_save_after_login_is_reported_without_failing()
+    {
+        await using var host = await StartAsync();
+        var discovery = WithSaving(host, () => throw new DbUpdateException("database is locked"));
+        var output = new StringWriter();
+
+        await discovery.ReportRefreshAsync(ProviderKind.Claude, output, CancellationToken.None);
+
+        Assert.Contains("Could not fetch the Claude model list (database is locked)", output.ToString());
+    }
+
+    [Theory]
+    [InlineData("no-last-id")]
+    [InlineData("repeated-last-id")]
+    [InlineData("endless")]
+    public async Task A_claude_list_that_cannot_be_paged_to_its_end_is_a_failed_fetch(string paging)
+    {
+        await using var host = await StartAsync();
+        await Discovery(host).RefreshAsync(ProviderKind.Claude);
+        var page = 0;
+        host.Upstream.Respond = _ => Json(new JsonObject
+        {
+            ["data"] = new JsonArray(new JsonObject { ["type"] = "model", ["id"] = "upstream-a" }),
+            ["has_more"] = true,
+            ["last_id"] = paging switch { "no-last-id" => null, "repeated-last-id" => "same", _ => $"page-{page++}" },
+        }.ToJsonString());
+
+        var after = await Discovery(host).RefreshAsync(ProviderKind.Claude);
+
+        Assert.Equal(["upstream-a", "upstream-b"], after.ModelIds);
+        Assert.NotNull(after.LastError);
+    }
+
     [Fact]
     public async Task The_timer_skips_providers_that_are_not_logged_in()
     {
@@ -333,10 +493,13 @@ public class ModelDiscoveryTests
     [Theory]
     [InlineData("claude-sonnet-4-5", true)]
     [InlineData("claude-sonnet-4-5-20250929", true)]
+    [InlineData("claude-haiku-4-5-20251001", true)]
+    [InlineData("Claude-Sonnet-4-5", true)]
+    [InlineData("CLAUDE-HAIKU-4-5", true)]
     [InlineData("claude-sonnet-4", false)]
     [InlineData("claude-opus-4-5", false)]
     public void A_listed_dated_snapshot_serves_its_undated_alias(string configured, bool listed) =>
-        Assert.Equal(listed, ModelDiscovery.Lists(["claude-sonnet-4-5-20250929", "claude-sonnet-4-5-beta"], configured));
+        Assert.Equal(listed, ModelDiscovery.Lists(["claude-sonnet-4-5-20250929", "claude-sonnet-4-5-beta", "claude-haiku-4-5"], configured));
 
     private static Task<ProviderModelList?> StoredAsync(RouterHost host, ProviderKind provider) =>
         StoredAsync(Discovery(host), provider);

@@ -179,7 +179,7 @@ public sealed class ModelSelector(
         // A provider without a successfully fetched list allows every model, so routing never goes dark before the first fetch.
         var lists = (await db.ProviderModelLists.AsNoTracking().ToListAsync(ct))
             .Where(l => l.ModelIds is not null)
-            .ToDictionary(l => l.Provider, l => (IReadOnlyCollection<string>)l.ModelIds!.ToHashSet(StringComparer.Ordinal));
+            .ToDictionary(l => l.Provider, l => (IReadOnlyCollection<string>)l.ModelIds!.ToHashSet(StringComparer.OrdinalIgnoreCase));
         return m =>
         {
             if (!m.Enabled)
