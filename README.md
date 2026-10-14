@@ -45,8 +45,8 @@ A model that cannot serve a request before anything has been sent to the client 
 | --- | --- |
 | HTTP 429, Codex `usage_limit_reached` | until the reported reset (exhausted limit header window, Codex `resets_at`/`resets_in_seconds`, else `Retry-After`), else 60 s (`--SimpleRouter:Limits:LimitCooldown`) |
 | Plan rejection: Codex `usage_not_included` or a model the plan lacks, Claude 404 `not_found_error` or 403 `permission_error` whose message names the model, plan or access | 6 h (`--SimpleRouter:Limits:PlanRejectionCooldown`) |
-| Account rejection: Claude 401 or any other 403, Codex 401/403 still rejected after the forced refresh | 5 min for every model of that subscription (`--SimpleRouter:Limits:AuthRejectionCooldown`); status reads `login needed (auth rejected)` |
-| 5xx, 529 overloaded (Codex `server_is_overloaded` before anything is written included), subscription unreachable, local 503 | `Retry-After`, else 30 s (`--SimpleRouter:Limits:OverloadedCooldown`) |
+| Account rejection: Claude 401 or any other 403, Codex 401/403 still rejected after the forced refresh, a token refresh the token endpoint rejects (4xx or malformed) | 5 min for every model of that subscription (`--SimpleRouter:Limits:AuthRejectionCooldown`); status reads `login needed (auth rejected)` |
+| 5xx, 529 overloaded (Codex `server_is_overloaded` before anything is written included), subscription or its token endpoint unreachable or failing (5xx), local 503 | `Retry-After`, else 30 s (`--SimpleRouter:Limits:OverloadedCooldown`) |
 | Local connection refused | none; marked unhealthy until its next good health check |
 | Local context-length rejection (context length/window/size, context overflow, prompt too long, ...), or a request estimated too large for the model | none; skipped for that request |
 

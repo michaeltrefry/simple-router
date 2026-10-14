@@ -97,6 +97,10 @@ public sealed class ClaudeUpstream(
         catch (ClaudeOAuthException e)
         {
             logger.LogWarning("Claude access token refresh failed with status {status}", e.Status);
+            if (message)
+            {
+                return UpstreamResult.NotServed(ModelFault.RefreshFailed(e.Status));
+            }
             await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", e.Message);
             return UpstreamResult.Served;
         }

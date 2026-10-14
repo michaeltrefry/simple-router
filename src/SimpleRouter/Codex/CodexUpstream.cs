@@ -61,6 +61,11 @@ public sealed class CodexUpstream(
             logger.LogWarning("Codex upstream request failed: {error}", e.Message);
             return UpstreamResult.NotServed(new ModelFault(FaultKind.Unreachable));
         }
+        catch (CodexOAuthException e)
+        {
+            logger.LogWarning("Codex access token refresh failed with status {status}", e.Status);
+            return UpstreamResult.NotServed(ModelFault.RefreshFailed(e.Status));
+        }
         if (response is null)
         {
             return UpstreamResult.Served;
@@ -94,7 +99,10 @@ public sealed class CodexUpstream(
         }
     }
 
-    /// <summary>Sends the translated request with the access token used; a null response means an error was already written.</summary>
+    /// <summary>
+    /// Sends the translated request with the access token used; a null response means an error was already written. A
+    /// failed token refresh throws <see cref="CodexOAuthException"/>.
+    /// </summary>
     private async Task<(HttpResponseMessage? Response, string? AccessToken)> SendOnceAsync(HttpContext context, byte[] body, string cacheKey, string? rejected)
     {
         var ct = context.RequestAborted;
@@ -106,12 +114,6 @@ public sealed class CodexUpstream(
         catch (CodexNotLoggedInException e)
         {
             await AnthropicError.WriteAsync(context, StatusCodes.Status503ServiceUnavailable, "api_error", e.Message);
-            return (null, null);
-        }
-        catch (CodexOAuthException e)
-        {
-            logger.LogWarning("Codex access token refresh failed with status {status}", e.Status);
-            await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", e.Message);
             return (null, null);
         }
 

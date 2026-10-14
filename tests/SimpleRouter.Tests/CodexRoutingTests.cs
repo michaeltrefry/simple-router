@@ -405,21 +405,42 @@ public class CodexRoutingTests
     }
 
     [Fact]
-    public async Task A_rejected_refresh_is_an_anthropic_502_and_keeps_the_stored_refresh_token()
+    public async Task A_rejected_refresh_moves_the_session_benches_codex_and_keeps_the_stored_refresh_token()
     {
         await using var host = await StartAsync();
         await host.LoginCodexAsync(accessToken: "codex-access-old", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1), refreshToken: "codex-refresh-old");
         host.CodexAuth.Respond = _ => new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent("""{"error":"invalid_grant","secret":"leak-me"}""") };
         await PinNextSessionToCodexAsync(host, "high");
 
+        var before = DateTimeOffset.UtcNow;
         using var response = await host.Client.SendAsync(Message("codex-session"));
 
-        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        var body = await response.Content.ReadAsStringAsync();
-        Assert.DoesNotContain("leak-me", body);
-        Assert.Contains("Codex subscription credentials expired or were revoked; run 'simple-router login codex'.", body);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.DoesNotContain("leak-me", await response.Content.ReadAsStringAsync());
+        Assert.Equal("claude-opus-5-5", await PinnedModelAsync(host, "codex-session"));
         Assert.Empty(host.Codex.Requests);
+        await AssertCodexAuthRejectedAsync(host, before);
         Assert.Equal("codex-refresh-old", (await host.Services.GetRequiredService<CodexCredentialStore>().GetAsync())!.RefreshToken);
+    }
+
+    [Fact]
+    public async Task A_failing_token_endpoint_moves_the_session_and_cools_only_that_codex_model_briefly()
+    {
+        await using var host = await StartAsync();
+        await host.LoginCodexAsync(accessToken: "codex-access-old", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1), refreshToken: "codex-refresh-old");
+        host.CodexAuth.Respond = _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("down") };
+        await PinNextSessionToCodexAsync(host, "high");
+
+        var before = DateTimeOffset.UtcNow;
+        using var response = await host.Client.SendAsync(Message("codex-session"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("claude-opus-5-5", await PinnedModelAsync(host, "codex-session"));
+        var codex = (await host.Services.GetRequiredService<ModelSelector>().StatusesAsync(CancellationToken.None))
+            .Where(m => m.Provider == ProviderKind.Codex).ToDictionary(m => m.ModelId);
+        Assert.Equal(ModelStatus.Cooling, codex["gpt-6.1-sol"].Status);
+        Assert.InRange(codex["gpt-6.1-sol"].CoolingUntil!.Value, before.AddSeconds(25), before.AddSeconds(35));
+        Assert.Equal(ModelStatus.Eligible, codex["gpt-6-luna"].Status);
     }
 
     private static HttpResponseMessage Refreshed() => new(HttpStatusCode.OK)

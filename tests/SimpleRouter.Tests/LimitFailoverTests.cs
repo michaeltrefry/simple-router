@@ -594,4 +594,21 @@ public class LimitFailoverTests
 
         AssertNear(before.AddDays(8), await CoolingUntilAsync(host, "claude-a"));
     }
+
+    [Fact]
+    public async Task A_tier_whose_only_member_fails_its_token_refresh_answers_the_exhaustion_429_with_the_login_hint()
+    {
+        var (host, _) = await StartAsync();
+        await using var _host = host;
+        await host.LoginAsync(accessToken: "access-old", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1), refreshToken: "refresh-old");
+        host.OAuth.Respond = _ => new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("""{"error":"invalid_grant"}""") };
+
+        using var response = await host.Client.SendAsync(Message("s1", "max"));
+
+        var message = await ExhaustionMessageAsync(response);
+        Assert.EndsWith("Run 'simple-router login claude'.", message);
+        Assert.InRange(int.Parse(response.Headers.GetValues("Retry-After").Single()), 295, 300);
+        Assert.Empty(host.Upstream.Requests);
+        Assert.Equal(ModelStatus.AuthRejected, (await StatusAsync(host, "claude-x")).Status);
+    }
 }

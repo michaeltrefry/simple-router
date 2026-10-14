@@ -29,7 +29,12 @@ public enum FaultKind
 }
 
 /// <summary>A <see cref="FaultKind"/> with the reset the provider reported, if any.</summary>
-public sealed record ModelFault(FaultKind Kind, DateTimeOffset? ResetAt = null);
+public sealed record ModelFault(FaultKind Kind, DateTimeOffset? ResetAt = null)
+{
+    /// <summary>A failed token refresh: an unreachable or failing token endpoint (status 0 or 5xx), else a rejected account.</summary>
+    public static ModelFault RefreshFailed(int status) =>
+        new(status is 0 or >= 500 ? FaultKind.Unreachable : FaultKind.AuthRejected);
+}
 
 /// <summary>
 /// The outcome of one upstream attempt. When <see cref="Written"/> is false nothing reached the client and
