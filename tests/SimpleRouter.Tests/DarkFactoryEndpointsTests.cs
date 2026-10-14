@@ -228,6 +228,40 @@ public class DarkFactoryEndpointsTests
     }
 
     [Fact]
+    public async Task A_stream_the_client_abandons_midway_is_still_recorded_with_the_usage_it_reported()
+    {
+        await using var host = await StartAsync();
+        await host.LoginAsync();
+        var upstream = new System.IO.Pipelines.Pipe();
+        await upstream.Writer.WriteAsync(Encoding.UTF8.GetBytes(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1000,\"output_tokens\":1}}}\n\n"));
+        host.Upstream.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(upstream.Reader.AsStream()) { Headers = { { "Content-Type", "text/event-stream" } } },
+        };
+
+        using (var response = await host.Client.SendAsync(Message("df-cut", "high", stream: true), HttpCompletionOption.ResponseHeadersRead))
+        {
+            var reader = new StreamReader(await response.Content.ReadAsStreamAsync());
+            Assert.StartsWith("event: message_start", await reader.ReadLineAsync());
+        }
+
+        SessionCost? cost = null;
+        await WaitUntilAsync(async () => (cost = await CostAsync(host, "df-cut")) is not null);
+        Assert.Equal(new SessionCost("df-cut", 1, 1000 * 3 + 1 * 15), cost);
+    }
+
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!await condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "condition not met in time");
+            await Task.Delay(50);
+        }
+    }
+
+    [Fact]
     public async Task Session_cost_is_404_for_a_session_with_no_recorded_request()
     {
         await using var host = await StartAsync();

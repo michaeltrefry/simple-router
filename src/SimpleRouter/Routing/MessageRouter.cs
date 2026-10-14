@@ -61,21 +61,24 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         }
 
         var started = time.GetTimestamp();
+        Task RecordServedAsync(Data.CatalogModel model, TokenUsage? tokens) =>
+            usage.RecordAsync(new ServedRequest(session.ClientSessionId, model, tier, context.Response.StatusCode,
+                tokens ?? TokenUsage.None, time.GetElapsedTime(started), Effort(request)));
+
         var tried = new HashSet<string>();
         while (await selector.SelectAsync(tier, session, needs, ct, tried) is { } chosen)
         {
             tried.Add(chosen.Id);
             // Upstreams rewrite the body for their provider; a failover must start from the client's request.
             var call = new UpstreamCall(context, (JsonObject)request.DeepClone(), session, chosen, false, needs.EstimatedTokens);
-            var (result, tokens) = await SendTappedAsync(chosen, call);
+            var (result, tokens) = await SendTappedAsync(chosen, call, partial => RecordServedAsync(chosen, partial));
             if (result.Fault is { } fault)
             {
                 await cooldowns.RecordAsync(chosen, fault);
             }
             if (result.Written)
             {
-                await usage.RecordAsync(new ServedRequest(session.ClientSessionId, chosen, tier, context.Response.StatusCode,
-                    tokens ?? TokenUsage.None, time.GetElapsedTime(started), Effort(request)));
+                await RecordServedAsync(chosen, tokens);
                 return;
             }
             logger.LogWarning("Model {model} could not serve the request ({reason}); trying the next model in tier {tier}",
@@ -86,8 +89,12 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
 
     private IModelUpstream UpstreamFor(Data.CatalogModel model) => upstreams.First(u => u.Provider == model.Provider);
 
-    /// <summary>Sends <paramref name="call"/> with the response body tapped for the token usage it reports.</summary>
-    private async Task<(UpstreamResult Result, TokenUsage? Usage)> SendTappedAsync(Data.CatalogModel model, UpstreamCall call)
+    /// <summary>
+    /// Sends <paramref name="call"/> with the response body tapped for the token usage it reports. A response cut off
+    /// after it started (the client went away mid-stream) still spent tokens, so it is passed to <paramref name="recordCutOff"/>.
+    /// </summary>
+    private async Task<(UpstreamResult Result, TokenUsage? Usage)> SendTappedAsync(Data.CatalogModel model, UpstreamCall call,
+        Func<TokenUsage?, Task> recordCutOff)
     {
         var response = call.Context.Response;
         var body = response.Body;
@@ -102,6 +109,11 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
                 await response.BodyWriter.FlushAsync(CancellationToken.None);
             }
             return (result, tap.Usage());
+        }
+        catch (Exception) when (response.HasStarted)
+        {
+            await recordCutOff(tap.Usage());
+            throw;
         }
         finally
         {
