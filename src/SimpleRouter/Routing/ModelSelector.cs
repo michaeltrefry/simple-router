@@ -11,7 +11,7 @@ public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, 
 {
     private static readonly HashSet<ProviderKind> WiredProviders = [ProviderKind.Claude];
 
-    // Serializes the read-then-assign so concurrent first requests of one session share a pin and a cursor step.
+    // Serializes assignment so concurrent first requests of one session share a pin and a cursor step; pinned reads skip it.
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public async Task<TierRules> GetTierRulesAsync(CancellationToken ct)
@@ -26,6 +26,19 @@ public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, 
     /// <summary>Returns the session's model in <paramref name="tier"/>, assigning and persisting a pin if it has none; null when the tier has no eligible model.</summary>
     public async Task<CatalogModel?> SelectAsync(ModelTier tier, SessionIdentity session, CancellationToken ct)
     {
+        await using (var reader = await dbFactory.CreateDbContextAsync(ct))
+        {
+            var eligible = await EligibleAsync(reader, tier, ct);
+            if (eligible.Count == 0)
+            {
+                return null;
+            }
+            if (await PinnedAsync(reader, tier, session, eligible, ct) is { } pinned)
+            {
+                return pinned;
+            }
+        }
+
         await _gate.WaitAsync(ct);
         try
         {
@@ -78,13 +91,27 @@ public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, 
         }
     }
 
-    /// <summary>The session's pinned model if still eligible, else the tier's first eligible model; never assigns.</summary>
+    /// <summary>The session's pinned model if still eligible, else the model its next round-robin turn would get; never assigns.</summary>
     public async Task<CatalogModel?> PeekAsync(ModelTier tier, SessionIdentity session, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var eligible = await EligibleAsync(db, tier, ct);
+        if (eligible.Count == 0)
+        {
+            return null;
+        }
+        if (await PinnedAsync(db, tier, session, eligible, ct) is { } pinned)
+        {
+            return pinned;
+        }
+        var cursor = await db.TierCursors.AsNoTracking().FirstOrDefaultAsync(c => c.Tier == tier, ct);
+        return eligible[(int)((cursor?.Next ?? 0) % eligible.Count)];
+    }
+
+    private static async Task<CatalogModel?> PinnedAsync(RouterDbContext db, ModelTier tier, SessionIdentity session, List<CatalogModel> eligible, CancellationToken ct)
+    {
         var pin = await db.SessionPins.AsNoTracking().FirstOrDefaultAsync(p => p.SessionKey == session.Key && p.Tier == tier, ct);
-        return eligible.FirstOrDefault(m => m.Id == pin?.ModelId) ?? eligible.FirstOrDefault();
+        return eligible.FirstOrDefault(m => m.Id == pin?.ModelId);
     }
 
     private static async Task<List<CatalogModel>> EligibleAsync(RouterDbContext db, ModelTier tier, CancellationToken ct)

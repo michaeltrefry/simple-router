@@ -20,6 +20,9 @@ public static partial class SessionKey
     [GeneratedRegex("session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", RegexOptions.IgnoreCase)]
     private static partial Regex BundledSessionId();
 
+    // Duplicate keys fail the parse instead of throwing on first access; lone surrogates throw InvalidOperationException on read.
+    private static readonly JsonDocumentOptions Strict = new() { AllowDuplicateProperties = false };
+
     public static SessionIdentity Derive(string? headerSessionId, JsonObject request)
     {
         var clientSessionId = Normalize(headerSessionId) ?? MetadataSessionId(request);
@@ -41,11 +44,11 @@ public static partial class SessionKey
         {
             try
             {
-                return JsonNode.Parse(userId)?["session_id"] is JsonValue id && id.TryGetValue<string>(out var sessionId)
+                return JsonNode.Parse(userId, documentOptions: Strict)?["session_id"] is JsonValue id && id.TryGetValue<string>(out var sessionId)
                     ? Normalize(sessionId)
                     : null;
             }
-            catch (JsonException)
+            catch (Exception e) when (e is JsonException or InvalidOperationException)
             {
                 return null;
             }

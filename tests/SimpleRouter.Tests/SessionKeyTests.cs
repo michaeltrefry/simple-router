@@ -51,6 +51,17 @@ public class SessionKeyTests
         Assert.Equal(SessionKey.Derive("json-session", Request()).Key, identity.Key);
     }
 
+    [Theory]
+    [InlineData("""{"session_id":"a","session_id":"b"}""")]
+    [InlineData("""{"session_id":"\udc00"}""")]
+    public void Unreadable_json_metadata_user_id_has_no_client_session_id(string userId)
+    {
+        var identity = SessionKey.Derive(null, Request(userId: userId));
+
+        Assert.Null(identity.ClientSessionId);
+        Assert.Equal(SessionKey.Derive(null, Request()).Key, identity.Key);
+    }
+
     [Fact]
     public void Without_a_client_session_id_the_system_prompt_identifies_the_session()
     {
