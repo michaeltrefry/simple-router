@@ -16,6 +16,8 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
     public DbSet<SessionPin> SessionPins => Set<SessionPin>();
     public DbSet<ProviderModelList> ProviderModelLists => Set<ProviderModelList>();
     public DbSet<ModelCooldown> ModelCooldowns => Set<ModelCooldown>();
+    public DbSet<ModelPrice> ModelPrices => Set<ModelPrice>();
+    public DbSet<RequestUsage> RequestUsages => Set<RequestUsage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -39,6 +41,10 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
         modelBuilder.Entity<ProviderModelList>().Property(l => l.Provider).HasConversion(p => p.ToString().ToLowerInvariant(), p => Enum.Parse<ProviderKind>(p, true));
         modelBuilder.Entity<ModelCooldown>().HasKey(c => c.ModelId);
         modelBuilder.Entity<ModelCooldown>().Property(c => c.Reason).HasConversion<string>();
+        modelBuilder.Entity<ModelPrice>().HasKey(p => p.ModelId);
+        modelBuilder.Entity<RequestUsage>().Property(u => u.Provider).HasConversion(p => p.ToString().ToLowerInvariant(), p => Enum.Parse<ProviderKind>(p, true));
+        modelBuilder.Entity<RequestUsage>().Property(u => u.Tier).HasConversion(TierConverter);
+        modelBuilder.Entity<RequestUsage>().HasIndex(u => u.ClientSessionId);
     }
 
     private static readonly ValueConverter<ModelTier, string> TierConverter =

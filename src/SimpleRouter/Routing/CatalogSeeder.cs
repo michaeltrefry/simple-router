@@ -32,7 +32,10 @@ public sealed class CatalogSeeder(
 
     private sealed record SeedAlias(string Pattern, string Tier);
 
-    private sealed record Seed(string DefaultTier, SeedModel[] Models, Dictionary<string, string[]> Tiers, SeedAlias[] Aliases);
+    private sealed record SeedPrice(decimal Input, decimal Output, decimal CacheRead, decimal CacheWrite);
+
+    private sealed record Seed(string DefaultTier, SeedModel[] Models, Dictionary<string, string[]> Tiers, SeedAlias[] Aliases,
+        Dictionary<string, SeedPrice>? Prices = null);
 
     private sealed record ModelOverride(
         string Id,
@@ -49,7 +52,35 @@ public sealed class CatalogSeeder(
     public async Task SeedAsync(CancellationToken ct = default)
     {
         await SeedEmptyAsync(ct);
+        await SeedPricesAsync(ct);
         await ApplyOverridesAsync(ct);
+    }
+
+    /// <summary>Seeds the price table once, separately from the catalog, so a database created before prices existed gets them.</summary>
+    private async Task SeedPricesAsync(CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        if (await db.ModelPrices.AnyAsync(ct))
+        {
+            return;
+        }
+        var seed = await ReadSeedAsync(ct);
+        db.ModelPrices.AddRange((seed.Prices ?? []).Select(p => new ModelPrice
+        {
+            ModelId = p.Key,
+            InputPerMTok = p.Value.Input,
+            OutputPerMTok = p.Value.Output,
+            CacheReadPerMTok = p.Value.CacheRead,
+            CacheWritePerMTok = p.Value.CacheWrite,
+        }));
+        await db.SaveChangesAsync(ct);
+    }
+
+    private async Task<Seed> ReadSeedAsync(CancellationToken ct)
+    {
+        await using var file = File.OpenRead(options.Value.SeedFile);
+        return await JsonSerializer.DeserializeAsync<Seed>(file, Json, ct)
+            ?? throw new InvalidDataException($"Seed file '{options.Value.SeedFile}' is empty.");
     }
 
     /// <summary>Seeds once; later edits to the tables are kept across restarts.</summary>
@@ -61,10 +92,7 @@ public sealed class CatalogSeeder(
             return;
         }
 
-        await using var file = File.OpenRead(options.Value.SeedFile);
-        var seed = await JsonSerializer.DeserializeAsync<Seed>(file, Json, ct)
-            ?? throw new InvalidDataException($"Seed file '{options.Value.SeedFile}' is empty.");
-
+        var seed = await ReadSeedAsync(ct);
         db.Models.AddRange(seed.Models.Select(m => new CatalogModel
         {
             Id = m.Id,

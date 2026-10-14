@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SimpleRouter.Api;
+using SimpleRouter.Usage;
 
 namespace SimpleRouter.Routing;
 
@@ -10,8 +11,8 @@ namespace SimpleRouter.Routing;
 /// the same tier, re-pinning the session; each model is tried at most once. A tier left with no model, for any reason,
 /// is the exhaustion 429 (<see cref="Unavailable"/>), never another tier.
 /// </summary>
-public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpstream> upstreams, ModelCooldowns cooldowns, TimeProvider time,
-    Microsoft.Extensions.Options.IOptions<RouterOptions> options, ILogger<MessageRouter> logger)
+public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpstream> upstreams, ModelCooldowns cooldowns, UsageRecorder usage,
+    TimeProvider time, Microsoft.Extensions.Options.IOptions<RouterOptions> options, ILogger<MessageRouter> logger)
 {
     public const string ModelClassHeader = "X-Weave-Model-Class";
 
@@ -59,19 +60,22 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
             return;
         }
 
+        var started = time.GetTimestamp();
         var tried = new HashSet<string>();
         while (await selector.SelectAsync(tier, session, needs, ct, tried) is { } chosen)
         {
             tried.Add(chosen.Id);
             // Upstreams rewrite the body for their provider; a failover must start from the client's request.
             var call = new UpstreamCall(context, (JsonObject)request.DeepClone(), session, chosen, false, needs.EstimatedTokens);
-            var result = await UpstreamFor(chosen).SendAsync(call);
+            var (result, tokens) = await SendTappedAsync(chosen, call);
             if (result.Fault is { } fault)
             {
                 await cooldowns.RecordAsync(chosen, fault);
             }
             if (result.Written)
             {
+                await usage.RecordAsync(new ServedRequest(session.ClientSessionId, chosen, tier, context.Response.StatusCode,
+                    tokens ?? TokenUsage.None, time.GetElapsedTime(started), Effort(request)));
                 return;
             }
             logger.LogWarning("Model {model} could not serve the request ({reason}); trying the next model in tier {tier}",
@@ -81,6 +85,32 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
     }
 
     private IModelUpstream UpstreamFor(Data.CatalogModel model) => upstreams.First(u => u.Provider == model.Provider);
+
+    /// <summary>Sends <paramref name="call"/> with the response body tapped for the token usage it reports.</summary>
+    private async Task<(UpstreamResult Result, TokenUsage? Usage)> SendTappedAsync(Data.CatalogModel model, UpstreamCall call)
+    {
+        var response = call.Context.Response;
+        var body = response.Body;
+        var tap = new UsageTap(body, response);
+        response.Body = tap;
+        try
+        {
+            var result = await UpstreamFor(model).SendAsync(call);
+            if (result.Written)
+            {
+                // Bytes still buffered in the response writer have not reached the tap yet; a gone client must not lose the record.
+                await response.BodyWriter.FlushAsync(CancellationToken.None);
+            }
+            return (result, tap.Usage());
+        }
+        finally
+        {
+            response.Body = body;
+        }
+    }
+
+    private static string? Effort(JsonObject request) =>
+        request["output_config"]?["effort"] is JsonValue v && v.TryGetValue<string>(out var effort) ? effort : null;
 
     /// <summary>
     /// Clients pause on a 429 <c>rate_limit_error</c> and retry after <c>Retry-After</c>, so every empty tier answers so:
