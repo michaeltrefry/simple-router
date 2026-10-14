@@ -309,4 +309,26 @@ public class DashboardTests
         Assert.Single(host.Upstream.Requests);
         Assert.Equal(HttpStatusCode.OK, localhostResponse.StatusCode);
     }
+
+    [Fact]
+    public async Task The_dashboard_rejects_a_request_from_another_sites_origin_so_its_settings_circuit_cannot_be_driven_cross_site()
+    {
+        await using var host = await StartAsync();
+        var port = host.Client.BaseAddress!.Port;
+
+        using var foreign = new HttpRequestMessage(HttpMethod.Post, "/_blazor/negotiate?negotiateVersion=1");
+        foreign.Headers.Add("Origin", "http://evil.example");
+        using var foreignPage = new HttpRequestMessage(HttpMethod.Get, "/ui/settings");
+        foreignPage.Headers.Add("Origin", "https://evil.example");
+        using var local = new HttpRequestMessage(HttpMethod.Get, "/ui/settings");
+        local.Headers.Add("Origin", $"http://localhost:{port}");
+
+        using var foreignResponse = await host.Client.SendAsync(foreign);
+        using var foreignPageResponse = await host.Client.SendAsync(foreignPage);
+        using var localResponse = await host.Client.SendAsync(local);
+
+        Assert.Equal(HttpStatusCode.BadRequest, foreignResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, foreignPageResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, localResponse.StatusCode);
+    }
 }

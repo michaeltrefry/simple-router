@@ -1,0 +1,36 @@
+@page "/ui/settings"
+@inject CatalogSettings Catalog
+
+<PageTitle>Settings · Simple Router</PageTitle>
+
+<header class="page-header">
+    <h1>Settings</h1>
+    <p class="muted">Changes apply to the next new session without a restart. Keys and tokens are never shown.</p>
+</header>
+
+<div class="grid">
+    <ClaudeConnect OnChanged="ReloadAsync" />
+    <CodexConnect OnChanged="ReloadAsync" />
+</div>
+@if (_snapshot is null)
+{
+    <p class="muted">Loading…</p>
+}
+else
+{
+    <ModelSettings Snapshot="_snapshot" OnChanged="ReloadAsync" />
+    <TierSettings Snapshot="_snapshot" OnChanged="ReloadAsync" />
+    <div class="grid">
+        <AliasSettings Snapshot="_snapshot" OnChanged="ReloadAsync" />
+        <GatewayKeySettings />
+    </div>
+    <PriceSettings Snapshot="_snapshot" OnChanged="ReloadAsync" />
+}
+
+@code {
+    private SettingsSnapshot? _snapshot;
+
+    protected override Task OnInitializedAsync() => ReloadAsync();
+
+    private async Task ReloadAsync() => _snapshot = await Catalog.GetAsync();
+}

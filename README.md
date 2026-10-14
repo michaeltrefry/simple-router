@@ -27,7 +27,7 @@ Each request is served in a tier (`max`, `high`, `mid`, `low`), chosen by:
 
 Responses carry `X-Weave-Model-Class: <tier>`. A new session gets the next enabled model in its tier (round-robin, cursor persisted), and keeps it for the life of the session, across restarts. The session key combines the client session ID (`X-Claude-Code-Session-Id`, else the session in `metadata.user_id`, else a hash of the system prompt) with the first user message, so sub-agents get their own pins.
 
-The model catalog, tier membership, aliases and default tier are loaded from `seed.json` into the database on first run (`--SimpleRouter:SeedFile=...`); edit the `Models`, `TierMembers`, `TierAliases` tables and the `default_tier` setting to change them.
+The model catalog, tier membership, aliases and default tier are loaded from `seed.json` into the database on first run (`--SimpleRouter:SeedFile=...`); after that, change them on the [settings page](#dashboard).
 
 ### Codex subscription
 
@@ -60,7 +60,7 @@ Mid and Low give new sessions to a healthy local OpenAI-compatible model first (
 
 Requests are translated to Chat Completions (`{baseUrl}/chat/completions`) and responses, streamed or not, back to Anthropic messages. Upstream reasoning (`reasoning_content`, `reasoning`, a leading `<think>` block) is omitted, and thinking blocks from earlier turns are dropped. Images are sent as data URLs only to models with `supportsVision`; otherwise they are replaced by a short note. `count_tokens` for a local model returns the estimate without calling it.
 
-The seeded local models are disabled and point at placeholder `localhost` URLs with a placeholder 128k context window. To point them at real endpoints, create `~/.simple-router/seed.local.json` (`--SimpleRouter:SeedOverrideFile=...`); it is applied on every start and only changes the fields it sets. API keys are stored encrypted in the database and never logged.
+The seeded local models are disabled and point at placeholder `localhost` URLs with a placeholder 128k context window. To point them at real endpoints, create `~/.simple-router/seed.local.json` (`--SimpleRouter:SeedOverrideFile=...`); it only changes the fields it sets, and it is applied at startup only when its content differs from the content last applied (its SHA-256 is kept in the `seed_override_hash` setting). Edits made on the settings page therefore survive restarts; editing the file applies it again over them on the next start. API keys are stored encrypted in the database and never logged or shown.
 
 ```json
 {
@@ -81,11 +81,24 @@ The client's effort is `output_config.effort` (`none`, `minimal`, `low`, `medium
 
 A database seeded before effort mappings existed takes them from `seed.json` once, on the next start; a mapping cleared after that stays cleared. A stored mapping that cannot be read is ignored (with a startup warning naming the model).
 
+## Dashboard
+
+`http://127.0.0.1:8790/ui` shows live monitoring (subscription accounts, model status, session pins, recent requests). `/ui/settings` edits the router without a restart; each change applies to the next new session:
+
+- Connect Claude (open the sign-in link, paste the `code#state` it shows) and Connect Codex (enter the shown code at the link; the page polls until it is approved). Both fetch the subscription's model list afterwards, as the CLI logins do.
+- Enable or disable models. A session pinned to a model that is disabled (or removed from its tier) moves to another model of the same tier on its next request.
+- Tier membership: add a catalog model, or a subscription model picked from its provider's discovered list (any ID can be typed before a list has been fetched).
+- The alias table (in priority order) and the default tier.
+- Add, edit and remove local models, with Test connection (`GET {baseUrl}/models`). Saving probes the endpoint at once, so a healthy new local model is eligible straight away. A stored API key shows only as set or not set; type a new one to replace it.
+- The price table, and regenerating the gateway key (the old key is rejected immediately; copy the new one from the page or run `key show`).
+
+The dashboard needs no key: it is served only on the loopback interface to a loopback `Host`, so treat access to this machine as access to the router.
+
 ## Usage and cost
 
 Every served `/v1/messages` request (not `count_tokens`) is stored in the `RequestUsages` table with its client session ID, model, provider, tier, HTTP status, input/output/cache-read/cache-write tokens, cost, latency and the request's normalized effort level (see [Reasoning effort](#reasoning-effort); null when it has none). Tokens are read from the Anthropic-shaped response as it passes through, without buffering a stream: `message_start` and `message_delta` usage for streams (passthrough Claude and the translated Codex and local streams alike), the top-level `usage` of a JSON body otherwise.
 
-Cost is priced from the `ModelPrices` table (USD per million input, output, cache-read and cache-write tokens, with one-hour cache writes at their own `CacheWrite1hPerMTok` rate), seeded once from `prices` in `seed.json`. **The seeded prices are estimates** of public list prices (Codex prices are guesses; local models are $0), used only to report spend; edit the table to change them. A model without a price row costs $0.
+Cost is priced from the `ModelPrices` table (USD per million input, output, cache-read and cache-write tokens, with one-hour cache writes at their own `CacheWrite1hPerMTok` rate), seeded once from `prices` in `seed.json`. **The seeded prices are estimates** of public list prices (Codex prices are guesses; local models are $0), used only to report spend; change them on the [settings page](#dashboard). A model without a price row costs $0.
 
 - `GET /v1/sessions/{client_session_id}/cost` → `{"session_id", "request_count", "actual_cost_usd_micros"}` for the ID sent as `X-Claude-Code-Session-Id` (percent-escaped in the path; an escaped `/` is part of the ID) (or found in `metadata.user_id`); `404` when no request is recorded for it.
 - `GET /v1/subscriptions/usage` → `{"as_of", "all_exhausted", "resumes_at", "known_credentials", "credentials": [{"provider": "claude"|"codex", "source": "managed", "enabled", "routable", "state": "ok"|"cooling"|"auth_rejected"|"unknown"}]}`. `known_credentials` counts stored subscription logins. `all_exhausted` is true when every enabled subscription model in a tier (of a logged-in subscription) is cooling or auth-rejected; local models never count. `resumes_at` is then the earliest of their cooldown ends, else null. `routable` is false only for an `auth_rejected` login (log in again); a `cooling` login stays routable (it is spent until its reset, and the orchestrator pauses on `all_exhausted`), as does an `unknown` one (no enabled, tiered model of that subscription).

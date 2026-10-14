@@ -87,6 +87,7 @@ public static class RouterApp
         builder.Services.AddSingleton<SubscriptionUsage>();
         builder.Services.AddSingleton<DashboardEvents>();
         builder.Services.AddSingleton<DashboardData>();
+        builder.Services.AddSingleton<CatalogSettings>();
         builder.Services.AddRazorComponents().AddInteractiveServerComponents();
         builder.Services.AddHttpClient(ClaudeOAuthClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30));
         // Streams can run for many minutes; cancellation follows the inbound request instead.

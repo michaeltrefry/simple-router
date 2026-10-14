@@ -1,0 +1,66 @@
+@using SimpleRouter.Claude
+@inject ClaudeOAuthClient OAuth
+@inject ClaudeLoginCommand Login
+@inject ModelDiscovery Discovery
+@inject DashboardEvents Events
+
+<section class="card" id="claude-connect">
+    <h2>Claude subscription</h2>
+    @if (_login is null)
+    {
+        <button class="connect primary" @onclick="Start">Connect Claude</button>
+    }
+    else
+    {
+        <ol class="steps">
+            <li>Open <a class="authorize" href="@_login.AuthorizeUrl" target="_blank" rel="noopener noreferrer">the Claude sign-in page</a> and sign in.</li>
+            <li>
+                Paste the code it shows (<span class="mono">code#state</span>):
+                <div class="inline">
+                    <input class="code mono" type="password" autocomplete="off" @bind="_pasted" aria-label="Claude authorization code" />
+                    <button class="submit primary" disabled="@_busy" @onclick="SubmitAsync">Submit</button>
+                    <button class="cancel" disabled="@_busy" @onclick="() => _login = null">Cancel</button>
+                </div>
+            </li>
+        </ol>
+    }
+    <FormStatus Error="@_error" Notice="@_notice" />
+</section>
+
+@code {
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private PkceLogin? _login;
+    private string _pasted = "";
+    private bool _busy;
+    private string? _error, _notice;
+
+    private void Start()
+    {
+        (_login, _pasted, _error, _notice) = (OAuth.StartLogin(), "", null, null);
+    }
+
+    private async Task SubmitAsync()
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            await Login.CompleteAsync(_login!, _pasted);
+            _login = null;
+            var report = new StringWriter();
+            await Discovery.ReportRefreshAsync(ProviderKind.Claude, report, CancellationToken.None);
+            _notice = "Claude subscription connected. " + report.ToString().Trim();
+            Events.Publish();
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception e) when (e is ArgumentException or ClaudeOAuthException)
+        {
+            _error = $"Claude login failed: {e.Message}";
+        }
+        finally
+        {
+            (_busy, _pasted) = (false, "");
+        }
+    }
+}

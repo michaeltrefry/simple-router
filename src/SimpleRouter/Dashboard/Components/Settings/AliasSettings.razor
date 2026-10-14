@@ -1,0 +1,90 @@
+@inherits SettingsSection
+
+<section class="card" id="alias-settings">
+    <h2>Aliases and default tier</h2>
+    <label class="inline">
+        Default tier
+        <select class="default-tier" value="@Snapshot.DefaultTier.Name()" disabled="@Busy"
+                @onchange="e => SetDefaultAsync(e.Value as string)">
+            @foreach (var tier in Enum.GetValues<ModelTier>())
+            {
+                <option value="@tier.Name()">@tier.Name()</option>
+            }
+        </select>
+    </label>
+    <p class="muted">A request's <span class="mono">model</span> is matched against these patterns (<span class="mono">*</span>, <span class="mono">?</span>) in order; the first match picks the tier.</p>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Pattern</th><th>Tier</th><th></th></tr></thead>
+            <tbody>
+                @for (var i = 0; i < _rows.Count; i++)
+                {
+                    var index = i;
+                    var row = _rows[index];
+                    <tr class="alias-row">
+                        <td><input class="pattern mono" @bind="row.Pattern" @bind:after="Dirty" aria-label="Alias pattern" /></td>
+                        <td>
+                            <select class="alias-tier" @bind="row.Tier" @bind:after="Dirty" aria-label="Alias tier">
+                                @foreach (var tier in Enum.GetValues<ModelTier>())
+                                {
+                                    <option value="@tier">@tier.Name()</option>
+                                }
+                            </select>
+                        </td>
+                        <td class="actions">
+                            <button class="up link" disabled="@(index == 0)" @onclick="() => Move(index, -1)" aria-label="Move up">↑</button>
+                            <button class="down link" disabled="@(index == _rows.Count - 1)" @onclick="() => Move(index, 1)" aria-label="Move down">↓</button>
+                            <button class="remove link" @onclick="() => { _rows.RemoveAt(index); Dirty(); }">Remove</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <div class="buttons">
+        <button class="add-alias" @onclick="() => { _rows.Add(new Row { Tier = ModelTier.High }); Dirty(); }">Add alias</button>
+        <button class="save-aliases primary" disabled="@Busy" @onclick="SaveAsync">Save aliases</button>
+    </div>
+    <FormStatus Error="@Error" Notice="@Notice" />
+</section>
+
+@code {
+    private sealed class Row
+    {
+        public string Pattern { get; set; } = "";
+        public ModelTier Tier { get; set; }
+    }
+
+    private List<Row> _rows = [];
+    private bool _dirty;
+
+    protected override void OnParametersSet()
+    {
+        if (!_dirty)
+        {
+            _rows = Snapshot.Aliases.Select(a => new Row { Pattern = a.Pattern, Tier = a.Tier }).ToList();
+        }
+    }
+
+    private void Dirty() => _dirty = true;
+
+    private void Move(int index, int delta)
+    {
+        (_rows[index], _rows[index + delta]) = (_rows[index + delta], _rows[index]);
+        Dirty();
+    }
+
+    private async Task SaveAsync()
+    {
+        var rows = _rows.Select(r => new AliasRow(r.Pattern, r.Tier)).ToList();
+        _dirty = false;
+        if (!await RunAsync(() => Catalog.SaveAliasesAsync(rows), "Aliases saved."))
+        {
+            _dirty = true;
+        }
+    }
+
+    private Task SetDefaultAsync(string? value) => ModelTiers.TryParse(value, out var tier)
+        ? RunAsync(() => Catalog.SetDefaultTierAsync(tier), $"Default tier set to {tier.Name()}.")
+        : Task.CompletedTask;
+}

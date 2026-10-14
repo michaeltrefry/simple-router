@@ -1,0 +1,97 @@
+@inherits SettingsSection
+
+<section class="card" id="tier-settings">
+    <h2>Tiers</h2>
+    <p class="muted">New sessions get the next eligible member of their tier, in this order (local models first in mid and low).</p>
+    @foreach (var provider in Subscriptions)
+    {
+        <datalist id="discovered-@Name(provider)">
+            @foreach (var id in Snapshot.Discovered.GetValueOrDefault(provider) ?? [])
+            {
+                <option value="@id"></option>
+            }
+        </datalist>
+    }
+    <div class="tier-grid">
+        @foreach (var tier in Enum.GetValues<ModelTier>())
+        {
+            var members = Snapshot.Tiers[tier];
+            var others = Snapshot.Models.Where(m => !members.Contains(m.Id)).ToList();
+            <div class="tier" data-tier="@tier.Name()">
+                <h3>@tier.Name()</h3>
+                @if (members.Count == 0)
+                {
+                    <p class="muted empty">No models.</p>
+                }
+                <ul>
+                    @foreach (var id in members)
+                    {
+                        <li data-model="@id">
+                            <span class="mono">@id</span>
+                            <button class="remove link" disabled="@Busy" @onclick="() => RemoveAsync(tier, id)">Remove</button>
+                        </li>
+                    }
+                </ul>
+                <div class="inline">
+                    <select class="add-existing" aria-label="Catalog model to add to @tier.Name()" @bind="_existing[tier]">
+                        <option value="">Catalog model…</option>
+                        @foreach (var m in others)
+                        {
+                            <option value="@m.Id">@m.Id</option>
+                        }
+                    </select>
+                    <button class="add-existing-button" disabled="@(Busy || string.IsNullOrEmpty(_existing[tier]))"
+                            @onclick="() => AddExistingAsync(tier)">Add</button>
+                </div>
+                <div class="inline">
+                    <select class="subscription-provider" aria-label="Subscription for @tier.Name()" @bind="_provider[tier]">
+                        @foreach (var provider in Subscriptions)
+                        {
+                            <option value="@provider">@Name(provider)</option>
+                        }
+                    </select>
+                    <input class="subscription-model" list="discovered-@Name(_provider[tier])" @bind="_upstream[tier]"
+                           placeholder="@Placeholder(_provider[tier])" aria-label="Subscription model ID for @tier.Name()" />
+                    <button class="add-subscription-button" disabled="@(Busy || string.IsNullOrWhiteSpace(_upstream[tier]))"
+                            @onclick="() => AddSubscriptionAsync(tier)">Add</button>
+                </div>
+            </div>
+        }
+    </div>
+    <FormStatus Error="@Error" Notice="@Notice" />
+</section>
+
+@code {
+    private static readonly ProviderKind[] Subscriptions = [ProviderKind.Claude, ProviderKind.Codex];
+
+    private readonly Dictionary<ModelTier, string> _existing = Enum.GetValues<ModelTier>().ToDictionary(t => t, _ => "");
+    private readonly Dictionary<ModelTier, ProviderKind> _provider = Enum.GetValues<ModelTier>().ToDictionary(t => t, _ => ProviderKind.Claude);
+    private readonly Dictionary<ModelTier, string> _upstream = Enum.GetValues<ModelTier>().ToDictionary(t => t, _ => "");
+
+    private static string Name(ProviderKind provider) => provider.ToString().ToLowerInvariant();
+
+    private string Placeholder(ProviderKind provider) => Snapshot.Discovered.ContainsKey(provider)
+        ? $"pick a {Name(provider)} model"
+        : $"type a {Name(provider)} model ID (no list fetched yet)";
+
+    private Task RemoveAsync(ModelTier tier, string id) =>
+        RunAsync(() => Catalog.RemoveFromTierAsync(tier, id), $"{id} removed from {tier.Name()}.");
+
+    private async Task AddExistingAsync(ModelTier tier)
+    {
+        var id = _existing[tier];
+        if (await RunAsync(() => Catalog.AddToTierAsync(tier, id), $"{id} added to {tier.Name()}."))
+        {
+            _existing[tier] = "";
+        }
+    }
+
+    private async Task AddSubscriptionAsync(ModelTier tier)
+    {
+        var id = _upstream[tier].Trim();
+        if (await RunAsync(() => Catalog.AddSubscriptionModelToTierAsync(tier, _provider[tier], id), $"{id} added to {tier.Name()}."))
+        {
+            _upstream[tier] = "";
+        }
+    }
+}

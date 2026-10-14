@@ -292,7 +292,8 @@ public class DarkFactoryEndpointsTests
         Assert.StartsWith("event: message_start", await reader.ReadLineAsync());
 
         // Another writer holds the database for longer than the client waits; the end of the stream must not wait on it.
-        await using (var blocker = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(host.DataDirectory, "simple-router.db")}"))
+        // Unpooled and explicitly ended: a pooled connection keeps a raw BEGIN's lock after disposal, holding up the record.
+        await using (var blocker = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(host.DataDirectory, "simple-router.db")};Pooling=False"))
         {
             await blocker.OpenAsync();
             await using var exclusive = blocker.CreateCommand();
@@ -303,6 +304,9 @@ public class DarkFactoryEndpointsTests
             await upstream.Writer.CompleteAsync();
             var rest = await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Contains("message_stop", rest);
+
+            exclusive.CommandText = "ROLLBACK";
+            await exclusive.ExecuteNonQueryAsync();
         }
 
         SessionCost? cost = null;

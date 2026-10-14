@@ -15,13 +15,11 @@ public sealed class CodexLoginCommand(CodexOAuthClient oauth, CodexCredentialSto
             await output.WriteLineAsync(device.UserCode);
             await output.FlushAsync(ct);
 
-            var authorization = await WaitForApprovalAsync(device, ct);
-            if (authorization is null)
+            if (!await CompleteAsync(device, ct))
             {
-                await output.WriteLineAsync("Codex login failed: the device code was not entered in time.");
+                await output.WriteLineAsync($"Codex login failed: {NotEnteredInTime}");
                 return 1;
             }
-            await store.SaveAsync(await oauth.ExchangeAsync(authorization, ct), ct);
         }
         catch (CodexOAuthException e)
         {
@@ -31,6 +29,19 @@ public sealed class CodexLoginCommand(CodexOAuthClient oauth, CodexCredentialSto
         await output.WriteLineAsync("Codex subscription saved.");
         await discovery.ReportRefreshAsync(ProviderKind.Codex, output, ct);
         return 0;
+    }
+
+    public const string NotEnteredInTime = "the device code was not entered in time.";
+
+    /// <summary>Polls until <paramref name="device"/> is approved, then stores the tokens; false when it was not entered in time.</summary>
+    public async Task<bool> CompleteAsync(DeviceCode device, CancellationToken ct = default)
+    {
+        if (await WaitForApprovalAsync(device, ct) is not { } authorization)
+        {
+            return false;
+        }
+        await store.SaveAsync(await oauth.ExchangeAsync(authorization, ct), ct);
+        return true;
     }
 
     private async Task<DeviceAuthorization?> WaitForApprovalAsync(DeviceCode device, CancellationToken ct)

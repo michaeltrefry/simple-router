@@ -1,0 +1,65 @@
+@implements IDisposable
+@inject SimpleRouter.Gateway.GatewayKeyStore Keys
+@inject IJSRuntime JS
+@inject DashboardEvents Events
+
+<section class="card" id="gateway-key-settings">
+    <h2>Gateway key</h2>
+    <p class="muted">Clients send this key to use <span class="mono">/v1</span>. It is never shown here; copy it after regenerating, or run <span class="mono">simple-router key show</span>.</p>
+    <div class="buttons">
+        @if (_confirm)
+        {
+            <button class="confirm-regenerate danger" disabled="@_busy" @onclick="RegenerateAsync">Regenerate: the current key stops working</button>
+            <button class="cancel" @onclick="() => _confirm = false">Cancel</button>
+        }
+        else
+        {
+            <button class="regenerate" @onclick="() => { _confirm = true; _notice = null; }">Regenerate gateway key</button>
+        }
+        @if (_newKey is not null)
+        {
+            <button class="copy-key" @onclick="CopyAsync">Copy new key</button>
+        }
+    </div>
+    <FormStatus Error="@_error" Notice="@_notice" />
+</section>
+
+@code {
+    private bool _confirm, _busy;
+    private string? _newKey, _notice, _error;
+
+    private async Task RegenerateAsync()
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            _newKey = await Keys.RegenerateAsync();
+            _notice = "Gateway key regenerated; the old key no longer works. Update your clients.";
+            Events.Publish();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _error = "The key could not be regenerated; see the server log.";
+        }
+        finally
+        {
+            (_busy, _confirm) = (false, false);
+        }
+    }
+
+    private async Task CopyAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _newKey);
+            _notice = "New key copied to the clipboard.";
+        }
+        catch (JSException)
+        {
+            _error = "The browser refused clipboard access; run 'simple-router key show' instead.";
+        }
+    }
+
+    public void Dispose() => _newKey = null;
+}

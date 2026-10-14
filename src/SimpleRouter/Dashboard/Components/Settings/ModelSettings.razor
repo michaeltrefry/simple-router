@@ -1,0 +1,82 @@
+@inherits SettingsSection
+
+<section class="card" id="model-settings">
+    <h2>Models</h2>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th>Enabled</th><th>Model</th><th>Provider</th><th>Upstream ID</th><th>Tiers</th><th></th></tr>
+            </thead>
+            <tbody>
+                @foreach (var m in Snapshot.Models)
+                {
+                    <tr data-model="@m.Id">
+                        <td>
+                            <input type="checkbox" class="enabled" checked="@m.Enabled" disabled="@Busy" aria-label="Enable @m.Id"
+                                   @onchange="e => SetEnabledAsync(m.Id, e.Value is true)" />
+                        </td>
+                        <td class="mono">@m.Id</td>
+                        <td>@m.Provider.ToString().ToLowerInvariant()</td>
+                        <td class="mono">@m.UpstreamModelId</td>
+                        <td>@(m.Tiers.Count == 0 ? "—" : string.Join(", ", m.Tiers.Select(t => t.Name())))</td>
+                        <td class="actions">
+                            @if (m.Provider == ProviderKind.Local)
+                            {
+                                <button class="edit" disabled="@Busy" @onclick="() => Open(m)">Edit</button>
+                                @if (_confirmRemove == m.Id)
+                                {
+                                    <button class="confirm-remove danger" disabled="@Busy" @onclick="() => RemoveAsync(m.Id)">Confirm remove</button>
+                                }
+                                else
+                                {
+                                    <button class="remove" disabled="@Busy" @onclick="() => _confirmRemove = m.Id">Remove</button>
+                                }
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <FormStatus Error="@Error" Notice="@Notice" />
+    @if (_form)
+    {
+        <LocalModelForm @key="_editing?.Id" Existing="_editing" OnSaved="SavedAsync" OnCancel="Close" />
+    }
+    else
+    {
+        <button id="add-local-model" @onclick="() => Open(null)">Add local model</button>
+    }
+</section>
+
+@code {
+    private bool _form;
+    private ModelRow? _editing;
+    private string? _confirmRemove;
+
+    private void Open(ModelRow? model)
+    {
+        (_form, _editing, Error, Notice) = (true, model, null, null);
+    }
+
+    private void Close() => (_form, _editing) = (false, null);
+
+    private async Task SavedAsync(string message)
+    {
+        Close();
+        Notice = message;
+        await OnChanged.InvokeAsync();
+    }
+
+    private Task SetEnabledAsync(string id, bool enabled) =>
+        RunAsync(() => Catalog.SetEnabledAsync(id, enabled), $"{id} {(enabled ? "enabled" : "disabled")}.");
+
+    private async Task RemoveAsync(string id)
+    {
+        _confirmRemove = null;
+        if (await RunAsync(() => Catalog.RemoveLocalModelAsync(id), id + " removed.") && _editing?.Id == id)
+        {
+            Close();
+        }
+    }
+}

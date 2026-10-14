@@ -20,11 +20,42 @@ public sealed class LocalHealth(
 
     private readonly ConcurrentDictionary<string, bool> _healthy = new();
 
+    // A check that read the catalog before a settings edit must not finish after the edit's own check and undo it.
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
     public bool IsHealthy(string modelId) => _healthy.TryGetValue(modelId, out var healthy) && healthy;
 
     public void MarkUnhealthy(string modelId) => Set(modelId, false);
 
     public async Task CheckAsync(CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            await CheckAllAsync(ct);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Probes an endpoint that may not be in the catalog yet; returns why it failed, or null when it answered.</summary>
+    public async Task<string?> TestAsync(string baseUrl, string? apiKey, CancellationToken ct)
+    {
+        var url = baseUrl.TrimEnd('/') + "/models";
+        try
+        {
+            using var response = await SendProbeAsync(url, apiKey, ct);
+            return response.IsSuccessStatusCode ? null : $"GET {url} answered HTTP {(int)response.StatusCode}.";
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            return $"GET {url} failed: the endpoint is unreachable or timed out.";
+        }
+    }
+
+    private async Task CheckAllAsync(CancellationToken ct)
     {
         List<CatalogModel> models;
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
@@ -47,20 +78,26 @@ public sealed class LocalHealth(
 
     private async Task<bool> ProbeAsync(CatalogModel model, CancellationToken ct)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, LocalUpstream.Endpoint(model, "models"));
-        if (model.ProtectedApiKey is { } key)
-        {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secrets.Unprotect(key));
-        }
+        var key = model.ProtectedApiKey is { } protectedKey ? secrets.Unprotect(protectedKey) : null;
         try
         {
-            using var response = await httpClientFactory.CreateClient(HttpClientName).SendAsync(request, ct);
+            using var response = await SendProbeAsync(LocalUpstream.Endpoint(model, "models"), key, ct);
             return response.IsSuccessStatusCode;
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
         {
             return false;
         }
+    }
+
+    private async Task<HttpResponseMessage> SendProbeAsync(string url, string? apiKey, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (!string.IsNullOrEmpty(apiKey))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        }
+        return await httpClientFactory.CreateClient(HttpClientName).SendAsync(request, ct);
     }
 
     private void Set(string modelId, bool healthy)
