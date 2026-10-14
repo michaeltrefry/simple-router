@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SimpleRouter/SimpleRouter.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SimpleRouter.AcceptanceTests/SimpleRouter.AcceptanceTests.csproj" />
+    <Project Path="tests/SimpleRouter.Tests/SimpleRouter.Tests.csproj" />
+  </Folder>
+</Solution>
