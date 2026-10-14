@@ -1,15 +1,23 @@
 using Microsoft.EntityFrameworkCore;
 using SimpleRouter.Data;
+using SimpleRouter.Local;
 
 namespace SimpleRouter.Routing;
 
 /// <summary>
-/// Picks the model for a (session, tier): its existing pin, else the next eligible tier member in round-robin order.
+/// Picks the model for a (session, tier): its existing pin if still eligible, else the next eligible tier member in
+/// round-robin order. Eligible means enabled, served by a registered upstream, healthy (locals) and able to serve the
+/// request (<see cref="RequestNeeds"/>). Mid and Low give new sessions to eligible local models first and use subscriptions only when none is.
 /// Both the pin and the per-tier round-robin cursor are persisted, so assignments survive restarts.
 /// </summary>
-public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, TimeProvider time, ILogger<ModelSelector> logger)
+public sealed class ModelSelector(
+    IDbContextFactory<RouterDbContext> dbFactory,
+    IEnumerable<IModelUpstream> upstreams,
+    LocalHealth health,
+    TimeProvider time,
+    ILogger<ModelSelector> logger)
 {
-    private static readonly HashSet<ProviderKind> WiredProviders = [ProviderKind.Claude];
+    private readonly HashSet<ProviderKind> _wired = upstreams.Select(u => u.Provider).ToHashSet();
 
     // Serializes assignment so concurrent first requests of one session share a pin and a cursor step; pinned reads skip it.
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -24,11 +32,11 @@ public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, 
     }
 
     /// <summary>Returns the session's model in <paramref name="tier"/>, assigning and persisting a pin if it has none; null when the tier has no eligible model.</summary>
-    public async Task<CatalogModel?> SelectAsync(ModelTier tier, SessionIdentity session, CancellationToken ct)
+    public async Task<CatalogModel?> SelectAsync(ModelTier tier, SessionIdentity session, RequestNeeds needs, CancellationToken ct)
     {
         await using (var reader = await dbFactory.CreateDbContextAsync(ct))
         {
-            var eligible = await EligibleAsync(reader, tier, ct);
+            var eligible = await EligibleAsync(reader, tier, needs, ct);
             if (eligible.Count == 0)
             {
                 return null;
@@ -43,7 +51,7 @@ public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, 
         try
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct);
-            var eligible = await EligibleAsync(db, tier, ct);
+            var eligible = await EligibleAsync(db, tier, needs, ct);
             if (eligible.Count == 0)
             {
                 return null;
@@ -62,7 +70,8 @@ public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, 
                 cursor = new TierCursor { Tier = tier };
                 db.TierCursors.Add(cursor);
             }
-            var model = eligible[(int)(cursor.Next % eligible.Count)];
+            var pool = NewSessionPool(tier, eligible);
+            var model = pool[(int)(cursor.Next % pool.Count)];
             cursor.Next++;
 
             if (pin is null)
@@ -78,7 +87,7 @@ public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, 
             }
             else
             {
-                // The pinned model was disabled or removed from the tier.
+                // The pinned model was disabled, removed from the tier, went unhealthy or cannot serve this request.
                 pin.ModelId = model.Id;
             }
             await db.SaveChangesAsync(ct);
@@ -92,10 +101,10 @@ public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, 
     }
 
     /// <summary>The session's pinned model if still eligible, else the model its next round-robin turn would get; never assigns.</summary>
-    public async Task<CatalogModel?> PeekAsync(ModelTier tier, SessionIdentity session, CancellationToken ct)
+    public async Task<CatalogModel?> PeekAsync(ModelTier tier, SessionIdentity session, RequestNeeds needs, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var eligible = await EligibleAsync(db, tier, ct);
+        var eligible = await EligibleAsync(db, tier, needs, ct);
         if (eligible.Count == 0)
         {
             return null;
@@ -105,7 +114,21 @@ public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, 
             return pinned;
         }
         var cursor = await db.TierCursors.AsNoTracking().FirstOrDefaultAsync(c => c.Tier == tier, ct);
-        return eligible[(int)((cursor?.Next ?? 0) % eligible.Count)];
+        var pool = NewSessionPool(tier, eligible);
+        return pool[(int)((cursor?.Next ?? 0) % pool.Count)];
+    }
+
+    private static List<CatalogModel> NewSessionPool(ModelTier tier, List<CatalogModel> eligible)
+    {
+        if (tier is ModelTier.Mid or ModelTier.Low)
+        {
+            var locals = eligible.Where(m => m.Provider == ProviderKind.Local).ToList();
+            if (locals.Count > 0)
+            {
+                return locals;
+            }
+        }
+        return eligible;
     }
 
     private static async Task<CatalogModel?> PinnedAsync(RouterDbContext db, ModelTier tier, SessionIdentity session, List<CatalogModel> eligible, CancellationToken ct)
@@ -114,7 +137,7 @@ public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, 
         return eligible.FirstOrDefault(m => m.Id == pin?.ModelId);
     }
 
-    private static async Task<List<CatalogModel>> EligibleAsync(RouterDbContext db, ModelTier tier, CancellationToken ct)
+    private async Task<List<CatalogModel>> EligibleAsync(RouterDbContext db, ModelTier tier, RequestNeeds needs, CancellationToken ct)
     {
         var members = await db.TierMembers
             .Where(t => t.Tier == tier)
@@ -124,6 +147,9 @@ public sealed class ModelSelector(IDbContextFactory<RouterDbContext> dbFactory, 
             .Select(x => x.Model)
             .AsNoTracking()
             .ToListAsync(ct);
-        return members.Where(m => WiredProviders.Contains(m.Provider)).ToList();
+        return members.Where(m => _wired.Contains(m.Provider)
+                && needs.CanUse(m)
+                && (m.Provider != ProviderKind.Local || health.IsHealthy(m.Id)))
+            .ToList();
     }
 }

@@ -9,6 +9,18 @@ public sealed class CatalogModel
     public ProviderKind Provider { get; set; }
     public required string UpstreamModelId { get; set; }
     public bool Enabled { get; set; }
+
+    /// <summary>OpenAI-compatible base URL including its version segment (e.g. <c>http://localhost:8000/v1</c>); local models only.</summary>
+    public string? BaseUrl { get; set; }
+
+    /// <summary>Optional bearer key for <see cref="BaseUrl"/>, protected with <see cref="SecretProtector"/>.</summary>
+    public string? ProtectedApiKey { get; set; }
+
+    /// <summary>Total tokens (prompt plus output) the model accepts; null means unlimited.</summary>
+    public int? ContextWindow { get; set; }
+
+    public bool SupportsTools { get; set; } = true;
+    public bool SupportsVision { get; set; }
 }
 
 /// <summary>Membership of a model in a tier; a model may belong to several tiers.</summary>

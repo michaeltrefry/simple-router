@@ -9,9 +9,9 @@
     { "id": "gpt-6.1-sol", "provider": "codex", "upstreamModelId": "gpt-6.1-sol", "enabled": false },
     { "id": "gpt-5.6-terra", "provider": "codex", "upstreamModelId": "gpt-5.6-terra", "enabled": false },
     { "id": "gpt-6-luna", "provider": "codex", "upstreamModelId": "gpt-6-luna", "enabled": false },
-    { "id": "mimo-2.6", "provider": "local", "upstreamModelId": "mimo-2.6", "enabled": false },
-    { "id": "qwen-3.8-flash-next", "provider": "local", "upstreamModelId": "qwen-3.8-flash-next", "enabled": false },
-    { "id": "qwen-3.8-37b", "provider": "local", "upstreamModelId": "qwen-3.8-37b", "enabled": false }
+    { "id": "mimo-2.6", "provider": "local", "upstreamModelId": "mimo-2.6", "enabled": false, "baseUrl": "http://localhost:8001/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false },
+    { "id": "qwen-3.8-flash-next", "provider": "local", "upstreamModelId": "qwen-3.8-flash-next", "enabled": false, "baseUrl": "http://localhost:8002/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false },
+    { "id": "qwen-3.8-37b", "provider": "local", "upstreamModelId": "qwen-3.8-37b", "enabled": false, "baseUrl": "http://localhost:8003/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false }
   ],
   "tiers": {
     "max": [ "claude-fable-5-1", "gpt-6-astra" ],

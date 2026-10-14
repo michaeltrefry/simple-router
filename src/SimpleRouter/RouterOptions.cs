@@ -20,7 +20,17 @@ public sealed class RouterOptions
     /// <summary>Catalog, tier membership, aliases and default tier loaded into an empty database on first run.</summary>
     public string SeedFile { get; set; } = Path.Combine(AppContext.BaseDirectory, "seed.json");
 
+    /// <summary>
+    /// Optional per-machine model overrides (endpoints, keys, enablement) applied on every start; defaults to
+    /// <c>seed.local.json</c> in <see cref="DataDirectory"/>.
+    /// </summary>
+    public string? SeedOverrideFile { get; set; }
+
     public ClaudeOptions Claude { get; set; } = new();
+
+    public LocalOptions Local { get; set; } = new();
+
+    public string SeedOverridePath => string.IsNullOrWhiteSpace(SeedOverrideFile) ? Path.Combine(DataDirectory, "seed.local.json") : SeedOverrideFile;
 
     public IReadOnlyList<string> ModelIds => Models.Length > 0 ? Models : DefaultModels;
 }
@@ -34,4 +44,14 @@ public sealed class ClaudeOptions
     public string ClientId { get; set; } = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
     public string RedirectUri { get; set; } = "https://console.anthropic.com/oauth/code/callback";
     public string Scope { get; set; } = "org:create_api_key user:profile user:inference";
+}
+
+/// <summary>Local OpenAI-compatible endpoint settings.</summary>
+public sealed class LocalOptions
+{
+    /// <summary>Seconds between endpoint health checks after the one at startup; 0 disables the periodic check.</summary>
+    public int HealthCheckIntervalSeconds { get; set; } = 30;
+
+    /// <summary>A streaming response that sends nothing for this long is ended with an error event.</summary>
+    public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromSeconds(120);
 }

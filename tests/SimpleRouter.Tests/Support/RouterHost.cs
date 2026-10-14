@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using SimpleRouter.Claude;
 using SimpleRouter.Gateway;
+using SimpleRouter.Local;
 
 namespace SimpleRouter.Tests.Support;
 
@@ -14,18 +15,21 @@ public sealed class RouterHost : IAsyncDisposable
 
     private readonly WebApplication _app;
 
-    private RouterHost(WebApplication app, string dataDirectory, FakeHandler upstream, FakeHandler oauth)
+    private RouterHost(WebApplication app, string dataDirectory, FakeHandler upstream, FakeHandler oauth, FakeHandler local)
     {
         _app = app;
         DataDirectory = dataDirectory;
         Upstream = upstream;
         OAuth = oauth;
+        Local = local;
         Client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
     }
 
     public string DataDirectory { get; }
     public FakeHandler Upstream { get; }
     public FakeHandler OAuth { get; }
+    /// <summary>Every local OpenAI-compatible endpoint (chat and health checks); route on the request URI.</summary>
+    public FakeHandler Local { get; }
     public HttpClient Client { get; }
     public IServiceProvider Services => _app.Services;
 
@@ -38,15 +42,22 @@ public sealed class RouterHost : IAsyncDisposable
             $"--SimpleRouter:Claude:ApiBaseUrl={UpstreamBase}",
             $"--SimpleRouter:Claude:TokenUrl={TokenUrl}",
             $"--SimpleRouter:Claude:AuthorizeUrl={AuthorizeUrl}",
+            // Only the startup probe runs; tests re-check explicitly so results never race the assertions.
+            "--SimpleRouter:Local:HealthCheckIntervalSeconds=0",
         };
         args.AddRange(models.Select((m, i) => $"--SimpleRouter:Models:{i}={m}"));
         return args.ToArray();
     }
 
-    public static Action<IServiceCollection> FakeHttp(FakeHandler upstream, FakeHandler oauth) => services =>
+    public static Action<IServiceCollection> FakeHttp(FakeHandler upstream, FakeHandler oauth, FakeHandler? local = null) => services =>
     {
         services.AddHttpClient(ClaudeUpstream.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => upstream);
         services.AddHttpClient(ClaudeOAuthClient.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => oauth);
+        if (local is not null)
+        {
+            services.AddHttpClient(LocalUpstream.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => local);
+            services.AddHttpClient(LocalHealth.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => local);
+        }
     };
 
     public static string NewDataDirectory() =>
@@ -62,20 +73,25 @@ public sealed class RouterHost : IAsyncDisposable
 
     /// <summary>Starts on <paramref name="dataDirectory"/> (which may hold a previous host's state) with extra config args.</summary>
     public static Task<RouterHost> StartInAsync(string dataDirectory, params string[] extraArgs) =>
-        StartInAsync(dataDirectory, _ => { }, [.. Args(dataDirectory), .. extraArgs]);
+        StartInAsync(dataDirectory, new FakeHandler(), extraArgs);
 
-    private static async Task<RouterHost> StartInAsync(string dataDirectory, Action<IServiceCollection> configureServices, string[] args)
+    /// <summary>As above, with <paramref name="local"/> already answering the health probe the router runs before serving.</summary>
+    public static Task<RouterHost> StartInAsync(string dataDirectory, FakeHandler local, params string[] extraArgs) =>
+        StartInAsync(dataDirectory, _ => { }, [.. Args(dataDirectory), .. extraArgs], local);
+
+    private static async Task<RouterHost> StartInAsync(string dataDirectory, Action<IServiceCollection> configureServices, string[] args, FakeHandler? local = null)
     {
         var upstream = new FakeHandler();
         var oauth = new FakeHandler();
+        local ??= new FakeHandler();
         var app = RouterApp.Build(args, services =>
         {
-            FakeHttp(upstream, oauth)(services);
+            FakeHttp(upstream, oauth, local)(services);
             configureServices(services);
         });
         await RouterApp.InitializeAsync(app);
         await app.StartAsync();
-        return new RouterHost(app, dataDirectory, upstream, oauth);
+        return new RouterHost(app, dataDirectory, upstream, oauth, local);
     }
 
     /// <summary>When set, disposal stops the host but leaves the data directory for a restarted host.</summary>

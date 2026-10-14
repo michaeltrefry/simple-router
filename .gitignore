@@ -485,3 +485,6 @@ $RECYCLE.BIN/
 *.db
 *.db-shm
 *.db-wal
+
+# per-machine model endpoint overrides (may hold real hosts and keys)
+seed.local.json

@@ -22,12 +22,27 @@ namespace SimpleRouter.Data.Migrations
                     b.Property<string>("Id")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("BaseUrl")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ContextWindow")
+                        .HasColumnType("INTEGER");
+
                     b.Property<bool>("Enabled")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("ProtectedApiKey")
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("Provider")
                         .IsRequired()
                         .HasColumnType("TEXT");
+
+                    b.Property<bool>("SupportsTools")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("SupportsVision")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("UpstreamModelId")
                         .IsRequired()
