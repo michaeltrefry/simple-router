@@ -111,8 +111,18 @@ public sealed class RouterHost : IAsyncDisposable
             FakeHttp(upstream, oauth, local, codex, codexAuth)(services);
             configureServices(services);
         });
-        await RouterApp.InitializeAsync(app);
-        await app.StartAsync();
+        try
+        {
+            await RouterApp.InitializeAsync(app);
+            await app.StartAsync();
+        }
+        catch
+        {
+            await app.DisposeAsync();
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            TryDelete(dataDirectory);
+            throw;
+        }
         return new RouterHost(app, dataDirectory, upstream, oauth, local, codex, codexAuth);
     }
 
@@ -146,6 +156,11 @@ public sealed class RouterHost : IAsyncDisposable
         {
             return;
         }
-        try { Directory.Delete(DataDirectory, recursive: true); } catch (IOException) { }
+        TryDelete(DataDirectory);
+    }
+
+    private static void TryDelete(string directory)
+    {
+        try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
     }
 }

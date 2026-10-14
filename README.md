@@ -83,7 +83,7 @@ A database seeded before effort mappings existed takes them from `seed.json` onc
 
 ## Usage and cost
 
-Every served `/v1/messages` request (not `count_tokens`) is stored in the `RequestUsages` table with its client session ID, model, provider, tier, HTTP status, input/output/cache-read/cache-write tokens, cost, latency and requested `output_config.effort`. Tokens are read from the Anthropic-shaped response as it passes through, without buffering a stream: `message_start` and `message_delta` usage for streams (passthrough Claude and the translated Codex and local streams alike), the top-level `usage` of a JSON body otherwise.
+Every served `/v1/messages` request (not `count_tokens`) is stored in the `RequestUsages` table with its client session ID, model, provider, tier, HTTP status, input/output/cache-read/cache-write tokens, cost, latency and the request's normalized effort level (see [Reasoning effort](#reasoning-effort); null when it has none). Tokens are read from the Anthropic-shaped response as it passes through, without buffering a stream: `message_start` and `message_delta` usage for streams (passthrough Claude and the translated Codex and local streams alike), the top-level `usage` of a JSON body otherwise.
 
 Cost is priced from the `ModelPrices` table (USD per million input, output, cache-read and cache-write tokens, with one-hour cache writes at their own `CacheWrite1hPerMTok` rate), seeded once from `prices` in `seed.json`. **The seeded prices are estimates** of public list prices (Codex prices are guesses; local models are $0), used only to report spend; edit the table to change them. A model without a price row costs $0.
 

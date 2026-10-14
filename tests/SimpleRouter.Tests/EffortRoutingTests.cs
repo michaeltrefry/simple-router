@@ -17,16 +17,22 @@ public class EffortRoutingTests
 {
     private const string Thinking = """{"type":"enabled","budget_tokens":2048}""";
 
-    private static HttpRequestMessage Message(string sessionId, string modelClass, string effort = "high")
+    private static HttpRequestMessage Message(string sessionId, string modelClass, string? effort = "high", string? thinking = Thinking)
     {
         var body = new JsonObject
         {
             ["model"] = "claude-opus-5-5",
             ["max_tokens"] = 4096,
             ["messages"] = new JsonArray { new JsonObject { ["role"] = "user", ["content"] = "Think hard." } },
-            ["thinking"] = JsonNode.Parse(Thinking),
-            ["output_config"] = new JsonObject { ["effort"] = effort },
         };
+        if (thinking is not null)
+        {
+            body["thinking"] = JsonNode.Parse(thinking);
+        }
+        if (effort is not null)
+        {
+            body["output_config"] = new JsonObject { ["effort"] = effort };
+        }
         var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages") { Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json") };
         request.Headers.Add(SessionKey.HeaderName, sessionId);
         request.Headers.Add(TierResolver.HeaderName, modelClass);
@@ -42,8 +48,10 @@ public class EffortRoutingTests
     /// <summary>The seeded catalog with qwen-3.8-37b enabled by the local override file and given a kwargs mapping.</summary>
     private static async Task<RouterHost> StartAsync(string? dataDirectory = null, string overrides = QwenOverride, ILoggerProvider? logs = null)
     {
-        var overridePath = Path.Combine(Path.GetTempPath(), "simple-router-tests", $"override-{Guid.NewGuid():N}.json");
-        Directory.CreateDirectory(Path.GetDirectoryName(overridePath)!);
+        dataDirectory ??= RouterHost.NewDataDirectory();
+        // Inside the data directory, so the host's disposal removes it too.
+        var overridePath = Path.Combine(dataDirectory, $"override-{Guid.NewGuid():N}.json");
+        Directory.CreateDirectory(dataDirectory);
         await File.WriteAllTextAsync(overridePath, overrides);
         var local = new FakeHandler
         {
@@ -54,7 +62,7 @@ public class EffortRoutingTests
                     Content = new StringContent("""{"id":"c","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}]}""", Encoding.UTF8, "application/json"),
                 },
         };
-        var host = await RouterHost.StartInAsync(dataDirectory ?? RouterHost.NewDataDirectory(), local,
+        var host = await RouterHost.StartInAsync(dataDirectory, local,
             services => { if (logs is not null) { services.AddLogging(b => b.AddProvider(logs)); } },
             $"--SimpleRouter:SeedOverrideFile={overridePath}");
         await host.LoginAsync();
@@ -113,6 +121,30 @@ public class EffortRoutingTests
             host.Codex.Requests.Select(r => JsonNode.Parse(r.Body)!).Select(b => (b["model"]!.GetValue<string>(), b["reasoning"]!["effort"]!.GetValue<string>())));
     }
 
+    [Fact]
+    public async Task The_recorded_effort_is_the_normalized_level_or_null_without_one()
+    {
+        await using var host = await StartAsync();
+
+        // The tier's second new session goes to Codex; it says high only through its thinking budget.
+        await SendAsync(host, Message("claude-explicit", "high", " HIGH "));
+        await SendAsync(host, Message("codex-budget", "high", effort: null, thinking: """{"type":"enabled","budget_tokens":20000}"""));
+        await SendAsync(host, Message("claude-none", "high", effort: null, thinking: null));
+
+        Assert.Equal("high", JsonNode.Parse(Assert.Single(host.Codex.Requests).Body)!["reasoning"]!["effort"]!.GetValue<string>());
+        await using var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
+        List<RequestUsage> rows = [];
+        // Recorded once each response completes, so the last one may still be writing.
+        for (var i = 0; i < 100 && (rows = await db.RequestUsages.AsNoTracking().ToListAsync()).Count < 3; i++)
+        {
+            await Task.Delay(20);
+        }
+        Assert.Equal(
+            new Dictionary<string, string?> { ["claude-explicit"] = "high", ["codex-budget"] = "high", ["claude-none"] = null },
+            rows.ToDictionary(r => r.ClientSessionId!, r => r.Effort));
+        Assert.StartsWith("gpt-", rows.Single(r => r.ClientSessionId == "codex-budget").ModelId);
+    }
+
     private static async Task EditAsync(RouterHost host, Func<RouterDbContext, Task> edit)
     {
         await using var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
@@ -157,7 +189,7 @@ public class EffortRoutingTests
     [Fact]
     public async Task An_override_with_a_kwargs_level_missing_fails_startup()
     {
-        var e = await Assert.ThrowsAsync<InvalidDataException>(() => StartAsync(overrides: """
+        var e = await FailsStartupAsync(dataDirectory => StartAsync(dataDirectory, overrides: """
             { "models": [ { "id": "qwen-3.8-37b", "effort": { "mode": "chat_template_kwargs", "levels": [ "none", "high" ],
                 "kwargs": { "none": { "enable_thinking": false } } } } ] }
             """));
@@ -178,14 +210,26 @@ public class EffortRoutingTests
     [Fact]
     public async Task A_seed_with_a_kwargs_level_missing_fails_startup()
     {
-        var seedPath = Path.Combine(Path.GetTempPath(), "simple-router-tests", $"seed-{Guid.NewGuid():N}.json");
-        Directory.CreateDirectory(Path.GetDirectoryName(seedPath)!);
         var seed = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "seed.json"));
         const string complete = """ "kwargs": { "none": { "enable_thinking": false }, "high": { "enable_thinking": true } }""";
         Assert.Contains(complete, seed);
-        await File.WriteAllTextAsync(seedPath, seed.Replace(complete, """ "kwargs": { "none": { "enable_thinking": false } }"""));
 
-        await Assert.ThrowsAsync<InvalidDataException>(() => RouterHost.StartInAsync(RouterHost.NewDataDirectory(), $"--SimpleRouter:SeedFile={seedPath}"));
+        await FailsStartupAsync(async dataDirectory =>
+        {
+            var seedPath = Path.Combine(dataDirectory, "seed.json");
+            Directory.CreateDirectory(dataDirectory);
+            await File.WriteAllTextAsync(seedPath, seed.Replace(complete, """ "kwargs": { "none": { "enable_thinking": false } }"""));
+            return await RouterHost.StartInAsync(dataDirectory, $"--SimpleRouter:SeedFile={seedPath}");
+        });
+    }
+
+    /// <summary>Asserts startup fails, and that the failed host leaves no temp data directory behind.</summary>
+    private static async Task<InvalidDataException> FailsStartupAsync(Func<string, Task<RouterHost>> start)
+    {
+        var dataDirectory = RouterHost.NewDataDirectory();
+        var e = await Assert.ThrowsAsync<InvalidDataException>(() => start(dataDirectory));
+        Assert.False(Directory.Exists(dataDirectory));
+        return e;
     }
 
     [Fact]

@@ -11,7 +11,7 @@ using SimpleRouter.Data;
 namespace SimpleRouter.Data.Migrations
 {
     [DbContext(typeof(RouterDbContext))]
-    [Migration("20261014180714_ModelEffort")]
+    [Migration("20261014183256_ModelEffort")]
     partial class ModelEffort
     {
         /// <inheritdoc />
@@ -120,6 +120,31 @@ namespace SimpleRouter.Data.Migrations
                     b.ToTable("ModelCooldowns");
                 });
 
+            modelBuilder.Entity("SimpleRouter.Data.ModelPrice", b =>
+                {
+                    b.Property<string>("ModelId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("CacheReadPerMTok")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("CacheWrite1hPerMTok")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("CacheWritePerMTok")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("InputPerMTok")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("OutputPerMTok")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("ModelId");
+
+                    b.ToTable("ModelPrices");
+                });
+
             modelBuilder.Entity("SimpleRouter.Data.ProviderModelList", b =>
                 {
                     b.Property<string>("Provider")
@@ -140,6 +165,64 @@ namespace SimpleRouter.Data.Migrations
                     b.HasKey("Provider");
 
                     b.ToTable("ProviderModelLists");
+                });
+
+            modelBuilder.Entity("SimpleRouter.Data.RequestUsage", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTimeOffset>("At")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("CacheReadTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CacheWrite1hTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CacheWriteTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ClientSessionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("CostUsdMicros")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Effort")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("InputTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("LatencyMs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ModelId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("OutputTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Tier")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClientSessionId");
+
+                    b.ToTable("RequestUsages");
                 });
 
             modelBuilder.Entity("SimpleRouter.Data.SessionPin", b =>
