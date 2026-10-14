@@ -1,0 +1,38 @@
+@inherits LivePanel<List<ModelStatusEntry>>
+@inject DashboardData Dashboard
+
+<section class="card">
+    <h2>Models</h2>
+    @if (Data is null)
+    {
+        <p class="muted">Loading…</p>
+    }
+    else if (Data.Count == 0)
+    {
+        <p class="muted empty">The catalog is empty.</p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table id="model-statuses">
+                <thead>
+                    <tr><th>Model</th><th>Provider</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var m in Data)
+                    {
+                        <tr>
+                            <td class="mono">@m.ModelId</td>
+                            <td>@m.Provider.ToString().ToLowerInvariant()</td>
+                            <td><span class="@Pill(m.Status)">@m.Label</span></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    protected override Task<List<ModelStatusEntry>> QueryAsync(CancellationToken ct) => Dashboard.ModelStatusesAsync(ct);
+}

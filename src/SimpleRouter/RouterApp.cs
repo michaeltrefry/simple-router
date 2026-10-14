@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using SimpleRouter.Api;
 using SimpleRouter.Claude;
 using SimpleRouter.Codex;
+using SimpleRouter.Dashboard;
+using SimpleRouter.Dashboard.Components;
 using SimpleRouter.Data;
 using SimpleRouter.Gateway;
 using SimpleRouter.Local;
@@ -23,7 +25,11 @@ public static class RouterApp
         {
             Args = args,
             ContentRootPath = AppContext.BaseDirectory,
+            // Names the static web asset manifests; under a test host the entry assembly is not this one.
+            ApplicationName = typeof(RouterApp).Assembly.GetName().Name,
         });
+        // Serves the dashboard's assets from the build output in every environment, not only Development.
+        builder.WebHost.UseStaticWebAssets();
 
         var section = builder.Configuration.GetSection(RouterOptions.Section);
         var options = section.Get<RouterOptions>() ?? new RouterOptions();
@@ -79,6 +85,9 @@ public static class RouterApp
         builder.Services.AddSingleton<MessageRouter>();
         builder.Services.AddSingleton<UsageRecorder>();
         builder.Services.AddSingleton<SubscriptionUsage>();
+        builder.Services.AddSingleton<DashboardEvents>();
+        builder.Services.AddSingleton<DashboardData>();
+        builder.Services.AddRazorComponents().AddInteractiveServerComponents();
         builder.Services.AddHttpClient(ClaudeOAuthClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30));
         // Streams can run for many minutes; cancellation follows the inbound request instead.
         builder.Services.AddHttpClient(ClaudeUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
@@ -94,6 +103,9 @@ public static class RouterApp
         app.MapModelsEndpoints();
         app.MapMessagesEndpoints();
         app.MapDarkFactoryEndpoints();
+        app.UseAntiforgery();
+        app.MapStaticAssets();
+        app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
         return app;
     }
 

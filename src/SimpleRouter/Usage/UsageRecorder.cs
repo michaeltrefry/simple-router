@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using SimpleRouter.Dashboard;
 using SimpleRouter.Data;
 using SimpleRouter.Routing;
 
@@ -9,7 +10,8 @@ public sealed record ServedRequest(
     string? ClientSessionId, CatalogModel Model, ModelTier Tier, int Status, TokenUsage Usage, TimeSpan Latency, string? Effort);
 
 /// <summary>Prices a served request from <see cref="RouterDbContext.ModelPrices"/> and stores it as a <see cref="RequestUsage"/> row.</summary>
-public sealed class UsageRecorder(IDbContextFactory<RouterDbContext> dbFactory, TimeProvider time, ILogger<UsageRecorder> logger)
+public sealed class UsageRecorder(
+    IDbContextFactory<RouterDbContext> dbFactory, DashboardEvents events, TimeProvider time, ILogger<UsageRecorder> logger)
 {
     public async Task RecordAsync(ServedRequest served)
     {
@@ -36,6 +38,7 @@ public sealed class UsageRecorder(IDbContextFactory<RouterDbContext> dbFactory, 
                 Effort = served.Effort,
             });
             await db.SaveChangesAsync();
+            events.Publish();
         }
         catch (Exception e)
         {

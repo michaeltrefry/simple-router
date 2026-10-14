@@ -1,0 +1,14 @@
+@inherits LayoutComponentBase
+
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark"></span>Simple Router</div>
+        <nav>
+            <NavLink class="nav-item" href="ui" Match="NavLinkMatch.All">Monitoring</NavLink>
+            <span class="nav-item disabled" title="Coming soon">Settings</span>
+        </nav>
+    </aside>
+    <main class="content">
+        @Body
+    </main>
+</div>

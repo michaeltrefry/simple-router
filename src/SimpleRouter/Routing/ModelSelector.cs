@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using SimpleRouter.Dashboard;
 using SimpleRouter.Data;
 using SimpleRouter.Local;
 
@@ -15,6 +16,7 @@ public sealed class ModelSelector(
     IDbContextFactory<RouterDbContext> dbFactory,
     IEnumerable<IModelUpstream> upstreams,
     LocalHealth health,
+    DashboardEvents events,
     TimeProvider time,
     ILogger<ModelSelector> logger)
 {
@@ -98,6 +100,7 @@ public sealed class ModelSelector(
             }
             await db.SaveChangesAsync(ct);
             logger.LogInformation("Pinned a session to {model} in tier {tier}", model.Id, tier.Name());
+            events.Publish();
             return model;
         }
         finally
