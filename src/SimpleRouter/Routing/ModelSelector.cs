@@ -55,6 +55,7 @@ public sealed class ModelSelector(
             }
         }
 
+        CatalogModel model;
         await _gate.WaitAsync(ct);
         try
         {
@@ -79,7 +80,7 @@ public sealed class ModelSelector(
                 db.TierCursors.Add(cursor);
             }
             var pool = NewSessionPool(tier, eligible);
-            var model = pool[(int)(cursor.Next % pool.Count)];
+            model = pool[(int)(cursor.Next % pool.Count)];
             cursor.Next++;
 
             if (pin is null)
@@ -100,13 +101,13 @@ public sealed class ModelSelector(
             }
             await db.SaveChangesAsync(ct);
             logger.LogInformation("Pinned a session to {model} in tier {tier}", model.Id, tier.Name());
-            events.Publish();
-            return model;
         }
         finally
         {
             _gate.Release();
         }
+        events.Publish();
+        return model;
     }
 
     /// <summary>The session's pinned model if still eligible, else the model its next round-robin turn would get; never assigns.</summary>

@@ -5,19 +5,29 @@ public sealed class DashboardEvents
 {
     public event Action? Changed;
 
-    /// <summary>Called on the request path, so a failing subscriber is skipped rather than failing the request.</summary>
+    /// <summary>
+    /// Called on the request path, so subscribers run on the thread pool: a dashboard circuit would otherwise run its
+    /// reload inline on the caller's thread. A failing subscriber is skipped.
+    /// </summary>
     public void Publish()
     {
-        foreach (var handler in Changed?.GetInvocationList() ?? [])
+        if (Changed is not { } changed)
         {
-            try
-            {
-                ((Action)handler)();
-            }
-            catch (Exception)
-            {
-                // A dashboard circuit torn down mid-publish; it no longer needs the update.
-            }
+            return;
         }
+        ThreadPool.UnsafeQueueUserWorkItem(static handlers =>
+        {
+            foreach (var handler in handlers.GetInvocationList())
+            {
+                try
+                {
+                    ((Action)handler)();
+                }
+                catch (Exception)
+                {
+                    // A dashboard circuit torn down mid-publish; it no longer needs the update.
+                }
+            }
+        }, changed, preferLocal: false);
     }
 }

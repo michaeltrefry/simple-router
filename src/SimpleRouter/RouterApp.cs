@@ -99,6 +99,7 @@ public static class RouterApp
         configureServices?.Invoke(builder.Services);
 
         var app = builder.Build();
+        app.UseMiddleware<DashboardHostFilter>();
         app.UseMiddleware<GatewayAuthMiddleware>();
         app.MapModelsEndpoints();
         app.MapMessagesEndpoints();

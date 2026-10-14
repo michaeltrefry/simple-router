@@ -38,12 +38,14 @@ public sealed class DashboardData(IDbContextFactory<RouterDbContext> dbFactory, 
         List<SessionPin> pins;
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
-            // SQLite cannot order by a DateTimeOffset column; a single user holds few pins.
-            pins = await db.SessionPins.AsNoTracking().ToListAsync(ct);
+            // SQLite cannot order by a DateTimeOffset column; a pin's rowid follows its creation, which never changes.
+            pins = await db.SessionPins
+                .FromSql($"SELECT * FROM \"SessionPins\" ORDER BY rowid DESC LIMIT {RecentLimit}")
+                .AsNoTracking()
+                .ToListAsync(ct);
         }
         var statuses = (await selector.StatusesAsync(ct)).ToDictionary(s => s.ModelId);
         return pins.OrderByDescending(p => p.CreatedAt)
-            .Take(RecentLimit)
             .Select(p => new PinRow(p.SessionKey, p.ClientSessionId, p.Tier, p.ModelId, p.CreatedAt, statuses.GetValueOrDefault(p.ModelId)))
             .ToList();
     }

@@ -220,4 +220,93 @@ public class DashboardTests
         Assert.Equal(HttpStatusCode.Unauthorized, messages.StatusCode);
         Assert.Empty(host.Upstream.Requests);
     }
+
+    [Fact]
+    public async Task A_blocked_dashboard_subscriber_does_not_hold_up_the_request_that_published()
+    {
+        await using var host = await StartAsync();
+        var events = host.Services.GetRequiredService<DashboardEvents>();
+        using var blocker = new ManualResetEventSlim();
+        Action blocked = () => blocker.Wait();
+        events.Changed += blocked;
+        try
+        {
+            using var response = await host.Client.SendAsync(Message("blocked-subscriber", "high")).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+        finally
+        {
+            events.Changed -= blocked;
+            blocker.Set();
+        }
+    }
+
+    [Fact]
+    public async Task A_burst_of_signals_reloads_a_panel_at_most_twice_more()
+    {
+        var events = new DashboardEvents();
+        using var context = new BunitContext();
+        context.Services.AddLogging();
+        context.Services.AddSingleton(TimeProvider.System);
+        context.Services.AddSingleton(events);
+        var cut = context.Render<CountingPanel>();
+        cut.WaitForAssertion(() => Assert.Equal(1, cut.Instance.Queries), Wait);
+
+        for (var i = 0; i < 100; i++)
+        {
+            events.Publish();
+        }
+
+        cut.WaitForAssertion(() => Assert.True(cut.Instance.Queries >= 2), Wait);
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        Assert.InRange(cut.Instance.Queries, 2, 3);
+    }
+
+    [Fact]
+    public async Task The_pins_view_reads_only_the_newest_pins_from_the_database()
+    {
+        await using var host = await StartAsync();
+        await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        {
+            // An unreadable row older than the newest RecentLimit pins: reading it would fail the whole query.
+            await db.Database.ExecuteSqlRawAsync(
+                "INSERT INTO \"SessionPins\" (\"SessionKey\", \"Tier\", \"ModelId\", \"CreatedAt\") VALUES ('oldest', 'not-a-tier', 'claude-a', '2026-01-01 00:00:00+00:00')");
+        }
+        var start = new DateTimeOffset(2026, 10, 14, 12, 0, 0, TimeSpan.Zero);
+        await SeedAsync(host, db => db.SessionPins.AddRange(Enumerable.Range(0, DashboardData.RecentLimit).Select(i =>
+            new SessionPin { SessionKey = $"session-{i:D2}", Tier = ModelTier.High, ModelId = "claude-a", CreatedAt = start.AddMinutes(i) })));
+
+        var pins = await host.Services.GetRequiredService<DashboardData>().PinsAsync(CancellationToken.None);
+
+        Assert.Equal(DashboardData.RecentLimit, pins.Count);
+        Assert.Equal($"session-{DashboardData.RecentLimit - 1:D2}", pins[0].SessionKey);
+        Assert.Equal("session-00", pins[^1].SessionKey);
+    }
+
+    [Fact]
+    public async Task The_dashboard_rejects_a_non_loopback_host_while_v1_serves_any_host_with_the_key()
+    {
+        await using var host = await StartAsync();
+
+        using var page = new HttpRequestMessage(HttpMethod.Get, "/ui");
+        page.Headers.Host = "evil.example";
+        using var script = new HttpRequestMessage(HttpMethod.Get, "/_framework/blazor.web.js");
+        script.Headers.Host = "evil.example:8790";
+        using var message = Message("container-session", "high");
+        message.Headers.Host = "host.docker.internal:8790";
+        using var localhost = new HttpRequestMessage(HttpMethod.Get, "/ui");
+        localhost.Headers.Host = $"localhost:{host.Client.BaseAddress!.Port}";
+
+        using var pageResponse = await host.Client.SendAsync(page);
+        using var scriptResponse = await host.Client.SendAsync(script);
+        using var messageResponse = await host.Client.SendAsync(message);
+        using var localhostResponse = await host.Client.SendAsync(localhost);
+
+        Assert.Equal(HttpStatusCode.BadRequest, pageResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, scriptResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, messageResponse.StatusCode);
+        Assert.Single(host.Upstream.Requests);
+        Assert.Equal(HttpStatusCode.OK, localhostResponse.StatusCode);
+    }
 }

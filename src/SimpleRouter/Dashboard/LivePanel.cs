@@ -13,6 +13,8 @@ public abstract class LivePanel<T> : ComponentBase, IDisposable where T : class
     private readonly CancellationTokenSource _disposed = new();
     private ITimer? _timer;
     private long _version;
+    private int _reloadRequested;
+    private int _reloading;
 
     [Inject] private DashboardEvents Events { get; set; } = default!;
     [Inject] private TimeProvider Time { get; set; } = default!;
@@ -29,11 +31,43 @@ public abstract class LivePanel<T> : ComponentBase, IDisposable where T : class
         await LoadAsync();
     }
 
-    private void OnChanged() => _ = InvokeAsync(async () =>
+    // Coalesces signals: at most one reload runs, and any signals arriving meanwhile cause one more.
+    private void OnChanged()
     {
-        await LoadAsync();
-        StateHasChanged();
-    });
+        Interlocked.Exchange(ref _reloadRequested, 1);
+        if (Interlocked.CompareExchange(ref _reloading, 1, 0) == 0)
+        {
+            _ = ReloadAsync();
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        do
+        {
+            try
+            {
+                while (Interlocked.Exchange(ref _reloadRequested, 0) == 1 && !_disposed.IsCancellationRequested)
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        await LoadAsync();
+                        StateHasChanged();
+                    });
+                }
+            }
+            catch (Exception)
+            {
+                // The circuit went away mid-reload; there is nothing left to render into.
+            }
+            finally
+            {
+                Volatile.Write(ref _reloading, 0);
+            }
+        }
+        while (Volatile.Read(ref _reloadRequested) == 1 && !_disposed.IsCancellationRequested
+            && Interlocked.CompareExchange(ref _reloading, 1, 0) == 0);
+    }
 
     private async Task LoadAsync()
     {
