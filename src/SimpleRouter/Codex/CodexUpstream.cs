@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -38,47 +39,17 @@ public sealed class CodexUpstream(
             return;
         }
 
-        CodexAccess access;
-        try
-        {
-            access = await tokens.GetAccessAsync(ct);
-        }
-        catch (CodexNotLoggedInException e)
-        {
-            await AnthropicError.WriteAsync(context, StatusCodes.Status503ServiceUnavailable, "api_error", e.Message);
-            return;
-        }
-        catch (CodexOAuthException e)
-        {
-            logger.LogWarning("Codex access token refresh failed with status {status}", e.Status);
-            await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", e.Message);
-            return;
-        }
-
         var cacheKey = new Guid(Convert.FromHexString(call.Session.Key[..32])).ToString();
-        var body = ResponsesRequestTranslator.Translate(call.Request, call.Model, cacheKey);
-        using var request = new HttpRequestMessage(HttpMethod.Post, options.Value.Codex.ApiBaseUrl.TrimEnd('/') + "/responses")
+        var body = JsonSerializer.SerializeToUtf8Bytes(ResponsesRequestTranslator.Translate(call.Request, call.Model, cacheKey), WireJson.Relaxed);
+        var (response, accessToken) = await SendOnceAsync(context, body, cacheKey, rejected: null);
+        if (response?.StatusCode == HttpStatusCode.Unauthorized)
         {
-            Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(body, WireJson.Relaxed)),
-        };
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", access.AccessToken);
-        request.Headers.TryAddWithoutValidation("ChatGPT-Account-ID", access.AccountId);
-        request.Headers.TryAddWithoutValidation("OpenAI-Beta", "responses=experimental");
-        request.Headers.TryAddWithoutValidation("originator", Originator);
-        request.Headers.TryAddWithoutValidation("User-Agent", Originator);
-        request.Headers.TryAddWithoutValidation("session_id", cacheKey);
-        request.Headers.Accept.ParseAdd("text/event-stream");
-
-        HttpResponseMessage response;
-        try
-        {
-            response = await httpClientFactory.CreateClient(HttpClientName).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            // The access token may have been revoked before its expiry; one forced refresh decides.
+            response.Dispose();
+            (response, _) = await SendOnceAsync(context, body, cacheKey, rejected: accessToken);
         }
-        catch (HttpRequestException e)
+        if (response is null)
         {
-            logger.LogWarning("Codex upstream request failed: {error}", e.Message);
-            await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", "Codex upstream is unreachable.");
             return;
         }
 
@@ -97,6 +68,52 @@ public sealed class CodexUpstream(
             {
                 await AggregateAsync(context, translator, response, ct);
             }
+        }
+    }
+
+    /// <summary>Sends the translated request with the access token used; a null response means an error was already written.</summary>
+    private async Task<(HttpResponseMessage? Response, string? AccessToken)> SendOnceAsync(HttpContext context, byte[] body, string cacheKey, string? rejected)
+    {
+        var ct = context.RequestAborted;
+        CodexAccess access;
+        try
+        {
+            access = await tokens.GetAccessAsync(ct, rejected);
+        }
+        catch (CodexNotLoggedInException e)
+        {
+            await AnthropicError.WriteAsync(context, StatusCodes.Status503ServiceUnavailable, "api_error", e.Message);
+            return (null, null);
+        }
+        catch (CodexOAuthException e)
+        {
+            logger.LogWarning("Codex access token refresh failed with status {status}", e.Status);
+            await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", e.Message);
+            return (null, null);
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, options.Value.Codex.ApiBaseUrl.TrimEnd('/') + "/responses")
+        {
+            Content = new ByteArrayContent(body),
+        };
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", access.AccessToken);
+        request.Headers.TryAddWithoutValidation("ChatGPT-Account-ID", access.AccountId);
+        request.Headers.TryAddWithoutValidation("OpenAI-Beta", "responses=experimental");
+        request.Headers.TryAddWithoutValidation("originator", Originator);
+        request.Headers.TryAddWithoutValidation("User-Agent", Originator);
+        request.Headers.TryAddWithoutValidation("session_id", cacheKey);
+        request.Headers.Accept.ParseAdd("text/event-stream");
+
+        try
+        {
+            return (await httpClientFactory.CreateClient(HttpClientName).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct), access.AccessToken);
+        }
+        catch (HttpRequestException e)
+        {
+            logger.LogWarning("Codex upstream request failed: {error}", e.Message);
+            await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", "Codex upstream is unreachable.");
+            return (null, null);
         }
     }
 
@@ -185,6 +202,10 @@ public sealed class CodexUpstream(
         }
     }
 
+    private static string? Str(JsonNode? node) => ChatRequestTranslator.Str(node);
+
+    private static JsonNode? Field(JsonNode? node, string name) => node is JsonObject o ? o[name] : null;
+
     private static JsonObject? Parse(string payload)
     {
         try
@@ -211,8 +232,6 @@ public sealed class CodexUpstream(
     private static async Task WriteUpstreamErrorAsync(HttpContext context, HttpResponseMessage response, CancellationToken ct)
     {
         var status = (int)response.StatusCode;
-        // A rejected subscription credential is the router's to fix; passed through, the client would ask for its own login.
-        var clientStatus = status is 401 or 403 ? StatusCodes.Status502BadGateway : status;
         if (response.Headers.RetryAfter is { } retryAfter)
         {
             context.Response.Headers.RetryAfter = retryAfter.ToString();
@@ -222,18 +241,29 @@ public sealed class CodexUpstream(
         var buffer = new char[MaxErrorBodyChars + 1];
         var length = await reader.ReadBlockAsync(buffer, ct);
         string? message = null;
+        string? code = null;
         try
         {
             var error = JsonNode.Parse(length > MaxErrorBodyChars ? "" : new string(buffer, 0, length));
-            message = ChatRequestTranslator.Str(error?["error"]?["message"]) ?? ChatRequestTranslator.Str(error?["detail"]);
+            var nested = Field(error, "error") ?? Field(error, "detail");
+            message = Str(Field(nested, "message")) ?? Str(Field(error, "detail"));
+            code = Str(Field(nested, "code")) ?? Str(Field(nested, "type"));
         }
         catch (JsonException)
         {
         }
-        if (clientStatus != status)
+        var type = CodexErrors.TypeForStatus(status);
+        if (status is 401 or 403)
         {
-            message = $"Codex rejected the subscription credentials (HTTP {status}); run 'simple-router login codex'.";
+            // A plan or usage refusal is the user's to know about; a rejected credential is the router's to fix, and
+            // passed through it would make the client ask for its own login.
+            type = CodexErrors.Type(code);
+            status = CodexErrors.Status(type);
+            if (type == "api_error")
+            {
+                message = $"Codex rejected the subscription credentials (HTTP {(int)response.StatusCode}); run 'simple-router login codex'.";
+            }
         }
-        await AnthropicError.WriteAsync(context, clientStatus, CodexErrors.TypeForStatus(clientStatus), message ?? $"Codex returned HTTP {status}.");
+        await AnthropicError.WriteAsync(context, status, type, message ?? $"Codex returned HTTP {(int)response.StatusCode}.");
     }
 }

@@ -165,15 +165,66 @@ public class CodexRoutingTests
     }
 
     [Fact]
-    public async Task A_rejected_codex_credential_is_a_router_side_502_not_a_client_401()
+    public async Task A_credential_rejected_even_after_a_forced_refresh_is_a_router_side_502_not_a_client_401()
     {
         await using var host = await StartAsync(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("{}") });
+        host.CodexAuth.Respond = _ => Refreshed();
         await PinNextSessionToCodexAsync(host, "high");
 
         using var response = await host.Client.SendAsync(Message("codex-session"));
 
         Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
         Assert.Contains("login codex", await response.Content.ReadAsStringAsync());
+        Assert.Equal(["Bearer codex-access-current", "Bearer codex-access-new"], host.Codex.Requests.Select(r => r.Headers["authorization"]));
+        Assert.Single(host.CodexAuth.Requests);
+    }
+
+    [Fact]
+    public async Task A_401_on_an_unexpired_token_is_retried_once_after_a_forced_refresh()
+    {
+        await using var host = await StartAsync(request => request.Headers.Authorization!.Parameter == "codex-access-new"
+            ? Stream(ReasoningTextAndToolCall)
+            : new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("{}") });
+        host.CodexAuth.Respond = _ => Refreshed();
+        await PinNextSessionToCodexAsync(host, "high");
+
+        using var response = await host.Client.SendAsync(Message("codex-session"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("tool_use", AnthropicSse.Parse(await response.Content.ReadAsStringAsync()).StopReason);
+        Assert.Equal(2, host.Codex.Requests.Count);
+        Assert.Equal("codex-access-new", (await host.Services.GetRequiredService<CodexCredentialStore>().GetAsync())!.AccessToken);
+    }
+
+    [Fact]
+    public async Task A_403_for_a_plan_without_codex_reports_the_plan_error_not_a_login_problem()
+    {
+        await using var host = await StartAsync(_ => new HttpResponseMessage(HttpStatusCode.Forbidden)
+        {
+            Content = new StringContent("""{"error":{"code":"usage_not_included","message":"Your plan does not include Codex."}}""", Encoding.UTF8, "application/json"),
+        });
+        await PinNextSessionToCodexAsync(host, "high");
+
+        using var response = await host.Client.SendAsync(Message("codex-session"));
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        var error = JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!;
+        Assert.Equal("rate_limit_error", error["type"]!.GetValue<string>());
+        Assert.Equal("Your plan does not include Codex.", error["message"]!.GetValue<string>());
+        Assert.Empty(host.CodexAuth.Requests);
+    }
+
+    [Fact]
+    public async Task A_403_without_a_known_code_asks_for_a_codex_login()
+    {
+        await using var host = await StartAsync(_ => new HttpResponseMessage(HttpStatusCode.Forbidden) { Content = new StringContent("""{"detail":"Forbidden"}""") });
+        await PinNextSessionToCodexAsync(host, "high");
+
+        using var response = await host.Client.SendAsync(Message("codex-session"));
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Contains("run 'simple-router login codex'", await response.Content.ReadAsStringAsync());
+        Assert.Single(host.Codex.Requests);
     }
 
     [Fact]
@@ -204,19 +255,61 @@ public class CodexRoutingTests
     }
 
     [Fact]
-    public async Task Without_a_codex_login_a_codex_pinned_session_gets_a_503_naming_the_command()
+    public async Task Without_a_codex_login_new_sessions_all_go_to_claude()
     {
         await using var host = await RouterHost.StartAsync();
         await host.LoginAsync();
         host.Upstream.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
+        host.Codex.Respond = _ => Stream(ReasoningTextAndToolCall);
         await host.AuthorizedClientAsync();
-        await PinNextSessionToCodexAsync(host, "high");
 
-        using var response = await host.Client.SendAsync(Message("codex-session"));
+        foreach (var session in new[] { "s1", "s2", "s3" })
+        {
+            using var response = await host.Client.SendAsync(Message(session, stream: false));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        Assert.Contains("simple-router login codex", await response.Content.ReadAsStringAsync());
+        Assert.Equal(3, host.Upstream.Requests.Count);
         Assert.Empty(host.Codex.Requests);
+    }
+
+    [Fact]
+    public async Task Without_a_claude_login_new_sessions_all_go_to_codex()
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginCodexAsync();
+        host.Codex.Respond = _ => Stream(ReasoningTextAndToolCall);
+        await host.AuthorizedClientAsync();
+
+        foreach (var session in new[] { "s1", "s2", "s3" })
+        {
+            using var response = await host.Client.SendAsync(Message(session, stream: false));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+
+        Assert.Equal(3, host.Codex.Requests.Count);
+        Assert.Empty(host.Upstream.Requests);
+    }
+
+    [Fact]
+    public async Task A_codex_pinned_session_moves_to_claude_after_the_codex_login_is_removed()
+    {
+        await using var host = await StartAsync();
+        await PinNextSessionToCodexAsync(host, "high");
+        (await host.Client.SendAsync(Message("codex-session"))).Dispose();
+        Assert.Single(host.Codex.Requests);
+
+        await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        {
+            db.CodexCredentials.RemoveRange(db.CodexCredentials);
+            await db.SaveChangesAsync();
+        }
+        using var response = await host.Client.SendAsync(Message("codex-session", stream: false));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Single(host.Codex.Requests);
+        Assert.Equal(2, host.Upstream.Requests.Count);
+        Assert.Equal("claude-opus-5-5", JsonNode.Parse(host.Upstream.Requests[^1].Body)!["model"]!.GetValue<string>());
     }
 
     [Fact]
@@ -285,7 +378,9 @@ public class CodexRoutingTests
         using var response = await host.Client.SendAsync(Message("codex-session"));
 
         Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        Assert.DoesNotContain("leak-me", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("leak-me", body);
+        Assert.Contains("Codex subscription credentials expired or were revoked; run 'simple-router login codex'.", body);
         Assert.Empty(host.Codex.Requests);
         Assert.Equal("codex-refresh-old", (await host.Services.GetRequiredService<CodexCredentialStore>().GetAsync())!.RefreshToken);
     }

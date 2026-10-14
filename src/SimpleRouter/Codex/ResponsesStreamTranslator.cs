@@ -6,13 +6,17 @@ using SimpleRouter.Local;
 namespace SimpleRouter.Codex;
 
 /// <summary>
-/// Turns Responses stream events into Anthropic Messages stream events. Output text and reasoning summaries stream
-/// live as text and thinking blocks (thinking carries an empty signature: only Anthropic can mint one). Function calls
+/// Turns Responses stream events into Anthropic Messages stream events. Output text (and refusals) and reasoning
+/// summaries stream live as text and thinking blocks; a thinking block's signature is the reasoning item's encrypted
+/// content behind <see cref="SignaturePrefix"/>, so the next request can hand it back to Codex. Function calls
 /// are buffered per output item, since their arguments arrive in fragments, and emitted whole as a <c>tool_use</c> block
 /// (id = <c>call_id</c>) when the item is done. Blocks never interleave, so indexes stay sequential.
 /// </summary>
 public sealed class ResponsesStreamTranslator(string model, int estimatedInputTokens)
 {
+    /// <summary>Marks a thinking signature as Codex encrypted reasoning rather than an Anthropic signature.</summary>
+    public const string SignaturePrefix = "codex:";
+
     private sealed class FunctionCall
     {
         public string? CallId;
@@ -28,6 +32,7 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
     private string? _openKind;
     private int? _openSummaryIndex;
     private int _toolUses;
+    private bool _refused;
 
     /// <summary>True once a terminal event (completion, failure or error) has been translated.</summary>
     public bool Ended { get; private set; }
@@ -57,6 +62,10 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
             case "response.output_text.delta":
                 Live(events, outputIndex, "text", Str(evt["delta"]));
                 break;
+            case "response.refusal.delta":
+                _refused = true;
+                Live(events, outputIndex, "text", Str(evt["delta"]));
+                break;
             case "response.reasoning_summary_text.delta":
                 var summaryIndex = Int(evt["summary_index"]) ?? 0;
                 var separator = _openItem == outputIndex && _openKind == "thinking" && _openSummaryIndex != summaryIndex ? "\n\n" : "";
@@ -82,6 +91,7 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
                 Completed(events, evt["response"]);
                 break;
             case "response.incomplete":
+                FoldUnseen(events, evt["response"], calls: false);
                 Close(events);
                 var reason = Str(evt["response"]?["incomplete_details"]?["reason"]);
                 Finish(events, _toolUses > 0 ? "tool_use" : reason == "content_filter" ? "refusal" : "max_tokens", evt["response"]?["usage"]);
@@ -114,18 +124,25 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
 
     private void Completed(List<JsonObject> events, JsonNode? response)
     {
-        // Covers items whose events were lost: the terminal response carries every output item.
+        FoldUnseen(events, response, calls: true);
+        Close(events);
+        Finish(events, _toolUses > 0 ? "tool_use" : _refused ? "refusal" : "end_turn", response?["usage"]);
+    }
+
+    /// <summary>Covers items whose events were lost: the terminal response carries every output item.</summary>
+    /// <param name="calls">False when the response was cut off, so a function call's arguments may be truncated.</param>
+    private void FoldUnseen(List<JsonObject> events, JsonNode? response, bool calls)
+    {
         var index = 0;
         foreach (var item in response?["output"] as JsonArray ?? [])
         {
-            if (!_seenItems.Contains(index) || _calls.ContainsKey(index))
+            var isCall = Str(item?["type"]) == "function_call";
+            if (isCall ? calls && (!_seenItems.Contains(index) || _calls.ContainsKey(index)) : !_seenItems.Contains(index))
             {
                 ItemDone(events, index, item);
             }
             index++;
         }
-        Close(events);
-        Finish(events, _toolUses > 0 ? "tool_use" : "end_turn", response?["usage"]);
     }
 
     private void ItemDone(List<JsonObject> events, int outputIndex, JsonNode? item)
@@ -143,12 +160,27 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
                 EmitToolUse(events, call);
                 break;
             case "message" when !seen:
-                var text = string.Concat((item!["content"] as JsonArray ?? []).Where(p => Str(p?["type"]) == "output_text").Select(p => Str(p!["text"])));
+                var parts = item!["content"] as JsonArray ?? [];
+                _refused |= parts.Any(p => Str(p?["type"]) == "refusal");
+                var text = string.Concat(parts.Select(p => Str(p?["type"]) switch
+                {
+                    "output_text" => Str(p!["text"]),
+                    "refusal" => Str(p!["refusal"]),
+                    _ => null,
+                }));
                 Live(events, outputIndex, "text", text);
                 break;
-            case "reasoning" when !seen:
-                var summary = string.Join("\n\n", (item!["summary"] as JsonArray ?? []).Select(p => Str(p?["text"])).Where(s => !string.IsNullOrEmpty(s)));
-                Live(events, outputIndex, "thinking", summary);
+            case "reasoning":
+                if (!seen)
+                {
+                    var summary = string.Join("\n\n", (item!["summary"] as JsonArray ?? []).Select(p => Str(p?["text"])).Where(s => !string.IsNullOrEmpty(s)));
+                    Live(events, outputIndex, "thinking", summary);
+                }
+                if (Str(item?["encrypted_content"]) is { Length: > 0 } encrypted)
+                {
+                    Open(events, outputIndex, "thinking");
+                    events.Add(Delta(_openBlock!.Value, new JsonObject { ["type"] = "signature_delta", ["signature"] = SignaturePrefix + encrypted }));
+                }
                 break;
         }
         if (_openItem == outputIndex)
@@ -203,6 +235,15 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
         {
             return;
         }
+        Open(events, outputIndex, kind);
+        events.Add(Delta(_openBlock!.Value, kind == "text"
+            ? new JsonObject { ["type"] = "text_delta", ["text"] = text }
+            : new JsonObject { ["type"] = "thinking_delta", ["thinking"] = text }));
+    }
+
+    /// <summary>Makes the block for <paramref name="outputIndex"/> the open one, closing any other first.</summary>
+    private void Open(List<JsonObject> events, int outputIndex, string kind)
+    {
         if (_openItem != outputIndex || _openKind != kind)
         {
             CloseLive(events);
@@ -218,9 +259,6 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
                     : new JsonObject { ["type"] = "thinking", ["thinking"] = "", ["signature"] = "" },
             });
         }
-        events.Add(Delta(_openBlock!.Value, kind == "text"
-            ? new JsonObject { ["type"] = "text_delta", ["text"] = text }
-            : new JsonObject { ["type"] = "thinking_delta", ["thinking"] = text }));
     }
 
     private void CloseLive(List<JsonObject> events)

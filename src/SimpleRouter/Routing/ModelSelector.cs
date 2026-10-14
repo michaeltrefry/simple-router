@@ -6,7 +6,7 @@ namespace SimpleRouter.Routing;
 
 /// <summary>
 /// Picks the model for a (session, tier): its existing pin if still eligible, else the next eligible tier member in
-/// round-robin order. Eligible means enabled, served by a registered upstream, healthy (locals) and able to serve the
+/// round-robin order. Eligible means enabled, served by a registered upstream, logged in (subscriptions), healthy (locals) and able to serve the
 /// request (<see cref="RequestNeeds"/>). Mid and Low give new sessions to eligible local models first and use subscriptions only when none is.
 /// Both the pin and the per-tier round-robin cursor are persisted, so assignments survive restarts.
 /// </summary>
@@ -137,7 +137,16 @@ public sealed class ModelSelector(
         return eligible.FirstOrDefault(m => m.Id == pin?.ModelId);
     }
 
-    private async Task<List<CatalogModel>> EligibleAsync(RouterDbContext db, ModelTier tier, RequestNeeds needs, CancellationToken ct)
+    /// <summary>The subscriptions whose login would make a model in <paramref name="tier"/> eligible, for an empty tier's error.</summary>
+    public async Task<List<ProviderKind>> MissingLoginsAsync(ModelTier tier, RequestNeeds needs, CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var eligible = await EligibleAsync(db, tier, needs, ct, requireLogin: false);
+        var loggedIn = await LoggedInAsync(db, ct);
+        return eligible.Select(m => m.Provider).Where(p => !loggedIn(p)).Distinct().ToList();
+    }
+
+    private async Task<List<CatalogModel>> EligibleAsync(RouterDbContext db, ModelTier tier, RequestNeeds needs, CancellationToken ct, bool requireLogin = true)
     {
         var members = await db.TierMembers
             .Where(t => t.Tier == tier)
@@ -147,9 +156,19 @@ public sealed class ModelSelector(
             .Select(x => x.Model)
             .AsNoTracking()
             .ToListAsync(ct);
+        Func<ProviderKind, bool> loggedIn = requireLogin ? await LoggedInAsync(db, ct) : _ => true;
         return members.Where(m => _wired.Contains(m.Provider)
+                && loggedIn(m.Provider)
                 && needs.CanUse(m)
                 && (m.Provider != ProviderKind.Local || health.IsHealthy(m.Id)))
             .ToList();
+    }
+
+    /// <summary>Queried per selection, never cached: login runs as a separate CLI process.</summary>
+    private static async Task<Func<ProviderKind, bool>> LoggedInAsync(RouterDbContext db, CancellationToken ct)
+    {
+        var hasClaude = await db.ClaudeCredentials.AnyAsync(ct);
+        var hasCodex = await db.CodexCredentials.AnyAsync(ct);
+        return provider => provider switch { ProviderKind.Claude => hasClaude, ProviderKind.Codex => hasCodex, _ => true };
     }
 }

@@ -90,7 +90,10 @@ public sealed class CodexOAuthClient(IHttpClientFactory httpClientFactory, IOpti
         using var response = await SendAsync(Codex.TokenUrl, new FormUrlEncodedContent(form), ct);
         if (!response.IsSuccessStatusCode)
         {
-            throw new CodexOAuthException((int)response.StatusCode, $"Codex token request failed with status {(int)response.StatusCode}.");
+            var status = (int)response.StatusCode;
+            throw new CodexOAuthException(status, previous is not null && status is 400 or 401
+                ? "Codex subscription credentials expired or were revoked; run 'simple-router login codex'."
+                : $"Codex token request failed with status {status}.");
         }
         var body = await ReadObjectAsync(response, ct);
         var access = Str(body["access_token"]);

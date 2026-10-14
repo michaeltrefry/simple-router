@@ -6,13 +6,14 @@ public sealed class CodexTokenProvider(CodexCredentialStore store, CodexOAuthCli
     private static readonly TimeSpan RefreshSkew = TimeSpan.FromMinutes(5);
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
-    public async Task<CodexAccess> GetAccessAsync(CancellationToken ct = default)
+    /// <param name="rejected">An access token the backend refused; it is refreshed even if not yet expired.</param>
+    public async Task<CodexAccess> GetAccessAsync(CancellationToken ct = default, string? rejected = null)
     {
         await _refreshLock.WaitAsync(ct);
         try
         {
             var tokens = await store.GetAsync(ct) ?? throw new CodexNotLoggedInException();
-            if (tokens.AccessToken is not null && tokens.AccessTokenExpiresAt > time.GetUtcNow() + RefreshSkew)
+            if (tokens.AccessToken is not null && tokens.AccessToken != rejected && tokens.AccessTokenExpiresAt > time.GetUtcNow() + RefreshSkew)
             {
                 return new CodexAccess(tokens.AccessToken, tokens.AccountId);
             }

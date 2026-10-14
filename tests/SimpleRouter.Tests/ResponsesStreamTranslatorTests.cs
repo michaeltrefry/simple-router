@@ -204,9 +204,87 @@ public class ResponsesStreamTranslatorTests
         Assert.Equal("tool_use", message["stop_reason"]!.GetValue<string>());
         var content = message["content"]!.AsArray();
         Assert.Equal("Need the file list.\n\nThen read it.", content[0]!["thinking"]!.GetValue<string>());
+        Assert.Equal("", content[0]!["signature"]!.GetValue<string>());
         Assert.Equal("Let me look.", content[1]!["text"]!.GetValue<string>());
         Assert.Equal("call_abc123", content[2]!["id"]!.GetValue<string>());
         Assert.Equal(2, content[2]!["input"]!["depth"]!.GetValue<int>());
         Assert.Equal(45, message["usage"]!["output_tokens"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public void A_refusal_streams_as_text_and_stops_with_refusal()
+    {
+        var message = Translate(Sse(
+            Created,
+            """{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"I can't "}""",
+            """{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"help with that."}""",
+            ItemDone(0, "message"),
+            Completed()));
+
+        Assert.Equal("I can't help with that.", Assert.Single(message.Blocks).Text);
+        Assert.Equal("refusal", message.StopReason);
+    }
+
+    [Fact]
+    public void A_refusal_that_only_arrives_whole_is_folded_and_stops_with_refusal()
+    {
+        var message = Translate(Sse(
+            Created,
+            """{"type":"response.output_item.done","output_index":0,"item":{"type":"message","content":[{"type":"refusal","refusal":"No."}]}}""",
+            Completed()));
+
+        Assert.Equal("No.", Assert.Single(message.Blocks).Text);
+        Assert.Equal("refusal", message.StopReason);
+    }
+
+    [Fact]
+    public void An_incomplete_response_still_delivers_text_only_on_the_terminal_response_but_not_a_truncated_call()
+    {
+        var output = """[{"type":"message","content":[{"type":"output_text","text":"Late."}]},{"type":"function_call","call_id":"call_cut","name":"ls","arguments":"{\"pa"}]""";
+
+        var message = Translate(Sse(
+            Created,
+            $$$"""{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":{{{output}}}}}"""));
+
+        Assert.Equal("Late.", Assert.Single(message.Blocks).Text);
+        Assert.Equal("max_tokens", message.StopReason);
+    }
+
+    [Fact]
+    public void Encrypted_reasoning_becomes_the_thinking_signature_even_without_a_summary()
+    {
+        var message = Translate(Sse(
+            Created,
+            SummaryDelta(0, 0, "Thought."),
+            """{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","summary":[],"encrypted_content":"ENC-A"}}""",
+            """{"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","summary":[],"encrypted_content":"ENC-B"}}""",
+            TextDelta(2, "Done."),
+            ItemDone(2, "message"),
+            Completed()));
+
+        Assert.Equal(["thinking", "thinking", "text"], message.Blocks.Select(b => b.Type));
+        Assert.Equal(["Thought.", ""], message.Blocks.Take(2).Select(b => b.Text));
+        Assert.Equal(["codex:ENC-A", "codex:ENC-B"], message.Blocks.Take(2).Select(b => b.Signature));
+    }
+
+    [Fact]
+    public void Non_streaming_aggregation_keeps_the_encrypted_reasoning_signature()
+    {
+        var translator = new ResponsesStreamTranslator("gpt-6.1-sol", 3);
+        var builder = new AnthropicMessageBuilder();
+        builder.Apply(translator.Start());
+        foreach (var evt in new[]
+        {
+            SummaryDelta(0, 0, "Thought."),
+            """{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","summary":[],"encrypted_content":"ENC"}}""",
+            Completed(),
+        })
+        {
+            translator.Feed(JsonNode.Parse(evt)!.AsObject()).ForEach(builder.Apply);
+        }
+
+        var thinking = Assert.Single(builder.Message["content"]!.AsArray())!;
+        Assert.Equal("Thought.", thinking["thinking"]!.GetValue<string>());
+        Assert.Equal("codex:ENC", thinking["signature"]!.GetValue<string>());
     }
 }

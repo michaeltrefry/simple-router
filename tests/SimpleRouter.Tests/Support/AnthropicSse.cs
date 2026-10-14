@@ -10,7 +10,7 @@ namespace SimpleRouter.Tests.Support;
 /// </summary>
 public static class AnthropicSse
 {
-    public sealed record Block(string Type, string Text, string? Id, string? Name, JsonObject? Input);
+    public sealed record Block(string Type, string Text, string? Id, string? Name, JsonObject? Input, string Signature = "");
 
     public sealed record Message(string Model, List<Block> Blocks, string? StopReason, JsonObject? Usage, List<string> Events, string? Error);
 
@@ -21,6 +21,7 @@ public static class AnthropicSse
         var blocks = new List<Block>();
         var text = new System.Text.StringBuilder();
         var json = new System.Text.StringBuilder();
+        var signature = new System.Text.StringBuilder();
         int? open = null;
         string? model = null, stopReason = null, error = null;
         JsonObject? usage = null;
@@ -81,6 +82,7 @@ public static class AnthropicSse
                     open = index;
                     text.Clear();
                     json.Clear();
+                    signature.Clear();
                     break;
                 case "content_block_delta":
                     Check(open == data["index"]!.GetValue<int>(), "delta for a block that is not open");
@@ -95,6 +97,7 @@ public static class AnthropicSse
                     {
                         Check(deltaType is "thinking_delta" or "signature_delta", $"{deltaType} in thinking block");
                         text.Append(delta["thinking"]?.GetValue<string>());
+                        signature.Append(delta["signature"]?.GetValue<string>());
                     }
                     else
                     {
@@ -106,7 +109,7 @@ public static class AnthropicSse
                     Check(open == data["index"]!.GetValue<int>(), "stop for a block that is not open");
                     var last = blocks[^1];
                     blocks[^1] = last.Type is "text" or "thinking"
-                        ? last with { Text = text.ToString() }
+                        ? last with { Text = text.ToString(), Signature = signature.ToString() }
                         : last with { Input = JsonNode.Parse(json.Length == 0 ? "{}" : json.ToString()) as JsonObject ?? throw new FormatException("tool input is not an object") };
                     open = null;
                     break;

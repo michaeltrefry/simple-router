@@ -90,7 +90,9 @@ public class ClaudeTokenRefreshTests
         using var response = await client.SendAsync(MessagesRequest());
 
         Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        Assert.DoesNotContain("leak-me", await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("leak-me", body);
+        Assert.Contains("expired or were revoked; run 'simple-router login claude'.", body);
         Assert.Empty(host.Upstream.Requests);
         Assert.Equal("refresh-old", (await host.Services.GetRequiredService<ClaudeCredentialStore>().GetAsync())!.RefreshToken);
     }

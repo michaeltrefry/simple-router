@@ -36,9 +36,16 @@ public sealed class CodexLoginCommand(CodexOAuthClient oauth, CodexCredentialSto
         var deadline = time.GetUtcNow() + options.Value.Codex.DeviceCodeTimeout;
         while (time.GetUtcNow() < deadline)
         {
-            if (await oauth.PollDeviceAsync(device, ct) is { } authorization)
+            try
             {
-                return authorization;
+                if (await oauth.PollDeviceAsync(device, ct) is { } authorization)
+                {
+                    return authorization;
+                }
+            }
+            catch (CodexOAuthException e) when (e.Status == 0)
+            {
+                // A transient network failure; keep polling until the deadline.
             }
             await Task.Delay(device.Interval, time, ct);
         }

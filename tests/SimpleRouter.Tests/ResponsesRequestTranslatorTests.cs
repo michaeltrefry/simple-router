@@ -26,11 +26,47 @@ public class ResponsesRequestTranslatorTests
         Assert.False(responses["store"]!.GetValue<bool>());
         Assert.Equal("Rule one.\n\nRule two.", responses["instructions"]!.GetValue<string>());
         Assert.Equal("cache-key", responses["prompt_cache_key"]!.GetValue<string>());
+        Assert.Equal("""["reasoning.encrypted_content"]""", responses["include"]!.ToJsonString());
         foreach (var unsupported in new[] { "max_output_tokens", "max_tokens", "temperature", "top_p", "metadata", "stop", "stop_sequences", "tools" })
         {
             Assert.False(responses.ContainsKey(unsupported), unsupported);
         }
         Assert.Equal("""[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]""", responses["input"]!.ToJsonString());
+
+        var withoutSystem = Translate("""{"messages":[{"role":"user","content":"hi"}]}""");
+        Assert.Equal("", withoutSystem["instructions"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void Codex_thinking_goes_back_as_encrypted_reasoning_in_place_and_other_thinking_is_dropped()
+    {
+        var responses = Translate("""
+            {"messages":[
+              {"role":"user","content":"Go."},
+              {"role":"assistant","content":[
+                {"type":"thinking","thinking":"summary","signature":"codex:ENC-A"},
+                {"type":"thinking","thinking":"claude","signature":"anthropic-sig"},
+                {"type":"text","text":"Calling."},
+                {"type":"thinking","thinking":"","signature":"codex:ENC-B"},
+                {"type":"tool_use","id":"call_1","name":"ls","input":{}}]}]}
+            """);
+
+        var input = responses["input"]!.AsArray();
+        Assert.Equal(["message", "reasoning", "message", "reasoning", "function_call"], input.Select(i => i!["type"]!.GetValue<string>()));
+        Assert.Equal("""{"type":"reasoning","encrypted_content":"ENC-A","summary":[]}""", input[1]!.ToJsonString());
+        Assert.Equal("ENC-B", input[3]!["encrypted_content"]!.GetValue<string>());
+        Assert.DoesNotContain("anthropic-sig", responses.ToJsonString());
+    }
+
+    [Fact]
+    public void A_forced_tool_that_was_not_translated_falls_back_to_auto()
+    {
+        var responses = Translate("""
+            {"messages":[{"role":"user","content":"x"}],"tool_choice":{"type":"tool","name":"web_search"},
+             "tools":[{"name":"read_file","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"web_search"}]}
+            """);
+
+        Assert.Equal("auto", responses["tool_choice"]!.GetValue<string>());
     }
 
     [Fact]
@@ -75,19 +111,26 @@ public class ResponsesRequestTranslatorTests
                 {"type":"text","text":"What is this?"},
                 {"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}},
                 {"type":"image","source":{"type":"url","url":"https://example.test/cat.jpg"}}]},
-              {"role":"assistant","content":[{"type":"tool_use","id":"call_s","name":"screenshot","input":{}}]},
-              {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_s","content":[
-                {"type":"text","text":"captured"},
-                {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"BBBB"}}]}]}]}
+              {"role":"assistant","content":[
+                {"type":"tool_use","id":"call_s","name":"screenshot","input":{}},
+                {"type":"tool_use","id":"call_t","name":"screenshot","input":{}}]},
+              {"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"call_s","content":[
+                  {"type":"text","text":"captured"},
+                  {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"BBBB"}}]},
+                {"type":"tool_result","tool_use_id":"call_t","content":[
+                  {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"CCCC"}}]}]}]}
             """);
 
         var input = responses["input"]!.AsArray();
         var first = input[0]!["content"]!.AsArray();
         Assert.Equal("""{"type":"input_image","image_url":"data:image/png;base64,AAAA"}""", first[1]!.ToJsonString());
         Assert.Equal("""{"type":"input_image","image_url":"https://example.test/cat.jpg"}""", first[2]!.ToJsonString());
-        Assert.Equal("function_call_output", input[2]!["type"]!.GetValue<string>());
-        Assert.Equal("captured", input[2]!["output"]!.GetValue<string>());
-        Assert.Equal("""{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,BBBB"}]}""", input[3]!.ToJsonString());
+        Assert.Equal(["message", "function_call", "function_call", "function_call_output", "function_call_output", "message"],
+            input.Select(i => i!["type"]!.GetValue<string>()));
+        Assert.Equal("captured", input[3]!["output"]!.GetValue<string>());
+        Assert.Equal("call_t", input[4]!["call_id"]!.GetValue<string>());
+        Assert.Equal("""{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/jpeg;base64,BBBB"},{"type":"input_image","image_url":"data:image/jpeg;base64,CCCC"}]}""", input[5]!.ToJsonString());
     }
 
     [Fact]

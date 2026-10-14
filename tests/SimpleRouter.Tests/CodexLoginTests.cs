@@ -125,6 +125,25 @@ public class CodexLoginTests
     }
 
     [Fact]
+    public async Task A_transient_network_failure_while_polling_keeps_waiting_for_approval()
+    {
+        var dataDirectory = RouterHost.NewDataDirectory();
+        var output = new StringWriter();
+        var issuer = Issuer(pendingPolls: 0);
+        var approve = issuer.Respond;
+        var polls = 0;
+        issuer.Respond = request => request.RequestUri!.AbsolutePath == "/api/accounts/deviceauth/token" && polls++ == 0
+            ? throw new HttpRequestException("connection reset")
+            : approve(request);
+
+        var exit = await RunLoginAsync(dataDirectory, issuer, output);
+
+        Assert.Equal(0, exit);
+        Assert.Equal(2, polls);
+        Assert.Equal("codex-refresh-login", (await StoredAsync(dataDirectory))!.RefreshToken);
+    }
+
+    [Fact]
     public void Account_id_is_read_from_the_auth_claim_or_the_top_level_claim()
     {
         Assert.Equal("acct-nested", CodexOAuthClient.AccountId(IdToken("acct-nested")));

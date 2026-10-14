@@ -7,8 +7,9 @@ namespace SimpleRouter.Codex;
 
 /// <summary>
 /// Translates an Anthropic Messages request into a Codex Responses request. The Codex backend only streams and rejects
-/// <c>max_output_tokens</c>, sampling knobs and <c>metadata</c>, so those are not sent; earlier thinking blocks are
-/// dropped since only Anthropic can verify them.
+/// <c>max_output_tokens</c>, sampling knobs and <c>metadata</c>, so those are not sent. With <c>store:false</c> reasoning
+/// only persists across turns as encrypted content, so thinking blocks Codex produced go back as reasoning items; other
+/// thinking blocks are dropped since only Anthropic can verify them.
 /// </summary>
 public static class ResponsesRequestTranslator
 {
@@ -20,11 +21,10 @@ public static class ResponsesRequestTranslator
             ["stream"] = true,
             ["store"] = false,
             ["reasoning"] = new JsonObject { ["summary"] = "auto" },
+            ["include"] = new JsonArray("reasoning.encrypted_content"),
+            // The backend rejects a request without instructions.
+            ["instructions"] = SystemText(request["system"]) ?? "",
         };
-        if (SystemText(request["system"]) is { Length: > 0 } instructions)
-        {
-            responses["instructions"] = instructions;
-        }
         var input = new JsonArray();
         foreach (var message in request["messages"] as JsonArray ?? [])
         {
@@ -58,6 +58,17 @@ public static class ResponsesRequestTranslator
                 case "text":
                     parts.Add(OutputText(Str(block!["text"]) ?? ""));
                     break;
+                case "thinking" when Str(block!["signature"]) is { } signature
+                    && signature.StartsWith(ResponsesStreamTranslator.SignaturePrefix, StringComparison.Ordinal):
+                    AddMessage(input, "assistant", parts);
+                    parts = [];
+                    input.Add(new JsonObject
+                    {
+                        ["type"] = "reasoning",
+                        ["encrypted_content"] = signature[ResponsesStreamTranslator.SignaturePrefix.Length..],
+                        ["summary"] = new JsonArray(),
+                    });
+                    break;
                 case "tool_use":
                     // Text before a call is its own message, so the turn's order survives.
                     AddMessage(input, "assistant", parts);
@@ -75,7 +86,10 @@ public static class ResponsesRequestTranslator
         AddMessage(input, "assistant", parts);
     }
 
-    /// <summary>Tool results become <c>function_call_output</c> items in place; images inside them follow as a user message.</summary>
+    /// <summary>
+    /// Tool results become <c>function_call_output</c> items in place; images inside a run of them follow the run's
+    /// last output as one user message, so parallel calls' outputs stay together.
+    /// </summary>
     private static void AddUser(JsonArray input, JsonNode? content)
     {
         if (content is not JsonArray blocks)
@@ -84,9 +98,16 @@ public static class ResponsesRequestTranslator
             return;
         }
         var parts = new List<JsonNode>();
+        var toolImages = new List<JsonNode>();
         foreach (var block in blocks)
         {
-            switch (Str(block?["type"]))
+            var type = Str(block?["type"]);
+            if (type != "tool_result")
+            {
+                parts.AddRange(toolImages);
+                toolImages.Clear();
+            }
+            switch (type)
             {
                 case "text":
                     parts.Add(InputText(Str(block!["text"]) ?? ""));
@@ -101,11 +122,12 @@ public static class ResponsesRequestTranslator
                     {
                         ["type"] = "function_call_output",
                         ["call_id"] = Str(block!["tool_use_id"]),
-                        ["output"] = ToolOutput(block, parts),
+                        ["output"] = ToolOutput(block, toolImages),
                     });
                     break;
             }
         }
+        parts.AddRange(toolImages);
         AddMessage(input, "user", parts);
     }
 
@@ -159,6 +181,7 @@ public static class ResponsesRequestTranslator
     private static void AddTools(JsonObject responses, JsonObject request)
     {
         var tools = new JsonArray();
+        var names = new HashSet<string?>();
         // Server tools (web search and the like) have no input_schema and only Anthropic can run them.
         foreach (var tool in (request["tools"] as JsonArray ?? []).Where(t => t?["input_schema"] is JsonObject))
         {
@@ -170,6 +193,7 @@ public static class ResponsesRequestTranslator
             function["parameters"] = tool["input_schema"]!.DeepClone();
             function["strict"] = false;
             tools.Add(function);
+            names.Add(Str(tool["name"]));
         }
         if (tools.Count == 0)
         {
@@ -182,7 +206,8 @@ public static class ResponsesRequestTranslator
         {
             "any" => "required",
             "none" => "none",
-            "tool" => new JsonObject { ["type"] = "function", ["name"] = Str(choice!["name"]) },
+            // A forced tool that was not translated (a server tool) would be rejected; let the model choose instead.
+            "tool" when names.Contains(Str(choice!["name"])) => new JsonObject { ["type"] = "function", ["name"] = Str(choice["name"]) },
             _ => "auto",
         };
         responses["parallel_tool_calls"] = !(choice?["disable_parallel_tool_use"] is JsonValue d && d.TryGetValue<bool>(out var disabled) && disabled);

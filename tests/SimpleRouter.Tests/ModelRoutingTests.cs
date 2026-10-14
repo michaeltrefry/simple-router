@@ -114,6 +114,21 @@ public class ModelRoutingTests
     }
 
     [Fact]
+    public async Task A_disabled_tier_member_is_never_selected()
+    {
+        await using var host = await StartLoggedInAsync(RouterHost.NewDataDirectory(), TwoModelMidSeed);
+
+        var models = new List<string>();
+        for (var i = 0; i < 6; i++)
+        {
+            models.Add((await SendAsync(host, Message("claude-sonnet-5-5", sessionId: $"s{i}"))).Model);
+        }
+
+        Assert.DoesNotContain("upstream-off", models);
+        Assert.Equal(["upstream-a", "upstream-b"], models.Distinct().Order());
+    }
+
+    [Fact]
     public async Task New_sessions_round_robin_and_stay_pinned_across_a_restart()
     {
         var dataDirectory = RouterHost.NewDataDirectory();

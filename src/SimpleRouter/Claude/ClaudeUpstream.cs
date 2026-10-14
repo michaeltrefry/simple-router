@@ -4,6 +4,8 @@ using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
 using SimpleRouter.Api;
+using SimpleRouter.Codex;
+using SimpleRouter.Local;
 using SimpleRouter.Routing;
 
 namespace SimpleRouter.Claude;
@@ -30,33 +32,45 @@ public sealed class ClaudeUpstream(
     public Task SendAsync(UpstreamCall call)
     {
         call.Request["model"] = call.Model.UpstreamModelId;
-        DropUnsignedThinking(call.Request);
+        DropForeignThinking(call.Request);
         var path = call.CountTokens ? "/v1/messages/count_tokens" : "/v1/messages";
         return ForwardAsync(call.Context, path, JsonSerializer.SerializeToUtf8Bytes(call.Request, WireJson.Relaxed), injectIdentity: !call.CountTokens);
     }
 
     /// <summary>
-    /// Thinking blocks served by another provider carry no signature, and Anthropic rejects the whole request over one,
-    /// so a session that moves to Claude drops them from its history.
+    /// Thinking blocks served by another provider carry no Anthropic signature (none, or Codex's encrypted reasoning),
+    /// and Anthropic rejects the whole request over one, so a session that moves to Claude drops them from its history.
     /// </summary>
-    private static void DropUnsignedThinking(JsonObject request)
+    private static void DropForeignThinking(JsonObject request)
     {
-        foreach (var message in request["messages"] as JsonArray ?? [])
+        var messages = request["messages"] as JsonArray ?? [];
+        foreach (var blocks in messages.Select(m => m?["content"]).OfType<JsonArray>())
         {
-            if (message?["content"] is not JsonArray blocks)
-            {
-                continue;
-            }
-            foreach (var block in blocks.Where(IsUnsignedThinking).ToList())
+            var foreign = blocks.Where(IsForeignThinking).ToList();
+            foreach (var block in foreign)
             {
                 blocks.Remove(block);
             }
+            if (foreign.Count > 0 && blocks.Count == 0)
+            {
+                blocks.Add(new JsonObject { ["type"] = "text", ["text"] = "[reasoning omitted]" });
+            }
+        }
+
+        // With thinking on, Anthropic rejects a tool loop whose last assistant turn does not start with thinking.
+        if (messages.LastOrDefault(m => Str(m?["role"]) == "assistant")?["content"] is JsonArray last
+            && last.Any(b => Str(b?["type"]) == "tool_use")
+            && Str(last.FirstOrDefault()?["type"]) is not ("thinking" or "redacted_thinking"))
+        {
+            request.Remove("thinking");
         }
     }
 
-    private static bool IsUnsignedThinking(JsonNode? block) =>
-        block?["type"] is JsonValue t && t.TryGetValue<string>(out var type) && type == "thinking"
-        && !(block["signature"] is JsonValue s && s.TryGetValue<string>(out var signature) && signature.Length > 0);
+    private static bool IsForeignThinking(JsonNode? block) =>
+        Str(block?["type"]) == "thinking"
+        && (Str(block!["signature"]) is not { Length: > 0 } signature || signature.StartsWith(ResponsesStreamTranslator.SignaturePrefix, StringComparison.Ordinal));
+
+    private static string? Str(JsonNode? node) => ChatRequestTranslator.Str(node);
 
     private async Task ForwardAsync(HttpContext context, string path, byte[] body, bool injectIdentity)
     {

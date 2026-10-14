@@ -37,6 +37,9 @@ public sealed class AnthropicMessageBuilder
                     case "thinking_delta":
                         block["thinking"] = ChatRequestTranslator.Str(block["thinking"]) + ChatRequestTranslator.Str(delta["thinking"]);
                         break;
+                    case "signature_delta":
+                        block["signature"] = ChatRequestTranslator.Str(block["signature"]) + ChatRequestTranslator.Str(delta["signature"]);
+                        break;
                     case "input_json_delta":
                         _json.Append(ChatRequestTranslator.Str(delta["partial_json"]));
                         break;
