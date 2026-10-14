@@ -5,6 +5,7 @@ using SimpleRouter.Api;
 using SimpleRouter.Claude;
 using SimpleRouter.Data;
 using SimpleRouter.Gateway;
+using SimpleRouter.Routing;
 
 namespace SimpleRouter;
 
@@ -56,6 +57,9 @@ public static class RouterApp
         builder.Services.AddSingleton<ClaudeTokenProvider>();
         builder.Services.AddSingleton<ClaudeLoginCommand>();
         builder.Services.AddSingleton<ClaudeUpstream>();
+        builder.Services.AddSingleton<CatalogSeeder>();
+        builder.Services.AddSingleton<ModelSelector>();
+        builder.Services.AddSingleton<MessageRouter>();
         builder.Services.AddHttpClient(ClaudeOAuthClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30));
         // Streams can run for many minutes; cancellation follows the inbound request instead.
         builder.Services.AddHttpClient(ClaudeUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
@@ -69,7 +73,7 @@ public static class RouterApp
         return app;
     }
 
-    /// <summary>Applies migrations and generates the gateway key on first run.</summary>
+    /// <summary>Applies migrations, seeds the routing catalog and generates the gateway key on first run.</summary>
     public static async Task InitializeAsync(WebApplication app, CancellationToken ct = default)
     {
         var factory = app.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>();
@@ -77,6 +81,7 @@ public static class RouterApp
         {
             await db.Database.MigrateAsync(ct);
         }
+        await app.Services.GetRequiredService<CatalogSeeder>().SeedAsync(ct);
 
         var created = await app.Services.GetRequiredService<GatewayKeyStore>().EnsureAsync(ct);
         if (created)

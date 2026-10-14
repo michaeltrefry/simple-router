@@ -17,6 +17,9 @@ public sealed class RouterOptions
     /// <summary>Model IDs advertised by <c>GET /v1/models</c>.</summary>
     public string[] Models { get; set; } = [];
 
+    /// <summary>Catalog, tier membership, aliases and default tier loaded into an empty database on first run.</summary>
+    public string SeedFile { get; set; } = Path.Combine(AppContext.BaseDirectory, "seed.json");
+
     public ClaudeOptions Claude { get; set; } = new();
 
     public IReadOnlyList<string> ModelIds => Models.Length > 0 ? Models : DefaultModels;

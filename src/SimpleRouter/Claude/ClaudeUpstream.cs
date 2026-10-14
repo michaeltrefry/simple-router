@@ -5,7 +5,7 @@ using SimpleRouter.Api;
 
 namespace SimpleRouter.Claude;
 
-/// <summary>Forwards Messages API calls to Claude with the subscription token and streams the response back unchanged.</summary>
+/// <summary>Forwards a Messages API body to Claude with the subscription token and streams the response back unchanged.</summary>
 public sealed class ClaudeUpstream(
     IHttpClientFactory httpClientFactory,
     ClaudeTokenProvider tokens,
@@ -22,7 +22,7 @@ public sealed class ClaudeUpstream(
         "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer", "Transfer-Encoding", "Upgrade",
     };
 
-    public async Task ForwardAsync(HttpContext context, string path, bool injectIdentity)
+    public async Task ForwardAsync(HttpContext context, string path, byte[] body, bool injectIdentity)
     {
         var ct = context.RequestAborted;
         string accessToken;
@@ -42,7 +42,6 @@ public sealed class ClaudeUpstream(
             return;
         }
 
-        var body = await ReadBodyAsync(context.Request, ct);
         if (injectIdentity)
         {
             body = ClaudeIdentity.Ensure(body);
@@ -99,13 +98,6 @@ public sealed class ClaudeUpstream(
             flags.Add(OAuthBeta);
         }
         return string.Join(",", flags);
-    }
-
-    private static async Task<byte[]> ReadBodyAsync(HttpRequest request, CancellationToken ct)
-    {
-        using var buffer = new MemoryStream();
-        await request.Body.CopyToAsync(buffer, ct);
-        return buffer.ToArray();
     }
 
     private static async Task CopyResponseAsync(HttpResponseMessage upstream, HttpContext context, CancellationToken ct)

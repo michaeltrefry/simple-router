@@ -54,12 +54,21 @@ public sealed class RouterHost : IAsyncDisposable
 
     public static Task<RouterHost> StartAsync(params string[] models) => StartAsync(_ => { }, models);
 
-    public static async Task<RouterHost> StartAsync(Action<IServiceCollection> configureServices, params string[] models)
+    public static Task<RouterHost> StartAsync(Action<IServiceCollection> configureServices, params string[] models)
     {
         var dataDirectory = NewDataDirectory();
+        return StartInAsync(dataDirectory, configureServices, Args(dataDirectory, models));
+    }
+
+    /// <summary>Starts on <paramref name="dataDirectory"/> (which may hold a previous host's state) with extra config args.</summary>
+    public static Task<RouterHost> StartInAsync(string dataDirectory, params string[] extraArgs) =>
+        StartInAsync(dataDirectory, _ => { }, [.. Args(dataDirectory), .. extraArgs]);
+
+    private static async Task<RouterHost> StartInAsync(string dataDirectory, Action<IServiceCollection> configureServices, string[] args)
+    {
         var upstream = new FakeHandler();
         var oauth = new FakeHandler();
-        var app = RouterApp.Build(Args(dataDirectory, models), services =>
+        var app = RouterApp.Build(args, services =>
         {
             FakeHttp(upstream, oauth)(services);
             configureServices(services);
@@ -68,6 +77,9 @@ public sealed class RouterHost : IAsyncDisposable
         await app.StartAsync();
         return new RouterHost(app, dataDirectory, upstream, oauth);
     }
+
+    /// <summary>When set, disposal stops the host but leaves the data directory for a restarted host.</summary>
+    public bool KeepData { get; set; }
 
     public Task<string> GatewayKeyAsync() => Services.GetRequiredService<GatewayKeyStore>().GetAsync();
 
@@ -87,6 +99,10 @@ public sealed class RouterHost : IAsyncDisposable
         await _app.StopAsync();
         await _app.DisposeAsync();
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        if (KeepData)
+        {
+            return;
+        }
         try { Directory.Delete(DataDirectory, recursive: true); } catch (IOException) { }
     }
 }
