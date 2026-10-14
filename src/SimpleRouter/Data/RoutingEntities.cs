@@ -71,3 +71,11 @@ public sealed class ProviderModelList
     /// <summary>Why the last attempt failed; null when it succeeded.</summary>
     public string? LastError { get; set; }
 }
+
+/// <summary>A model that must not be chosen until <see cref="Until"/>: a usage limit, plan rejection or overload.</summary>
+public sealed class ModelCooldown
+{
+    public required string ModelId { get; set; }
+    public DateTimeOffset Until { get; set; }
+    public FaultKind Reason { get; set; }
+}

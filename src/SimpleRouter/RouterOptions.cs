@@ -35,6 +35,8 @@ public sealed class RouterOptions
 
     public LocalOptions Local { get; set; } = new();
 
+    public LimitOptions Limits { get; set; } = new();
+
     public string SeedOverridePath => string.IsNullOrWhiteSpace(SeedOverrideFile) ? Path.Combine(DataDirectory, "seed.local.json") : SeedOverrideFile;
 
     public IReadOnlyList<string> ModelIds => Models.Length > 0 ? Models : DefaultModels;
@@ -83,4 +85,20 @@ public sealed class LocalOptions
 
     /// <summary>A streaming response that sends nothing for this long is ended with an error event.</summary>
     public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromSeconds(120);
+}
+
+/// <summary>How long a model is skipped after a fault, when the provider reports no reset.</summary>
+public sealed class LimitOptions
+{
+    /// <summary>A usage limit or rate limit (429) without a reported reset.</summary>
+    public TimeSpan LimitCooldown { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>The provider refused the model for the plan; retried only after this long.</summary>
+    public TimeSpan PlanRejectionCooldown { get; set; } = TimeSpan.FromHours(6);
+
+    /// <summary>An overloaded or failing (5xx, 529) or unreachable subscription.</summary>
+    public TimeSpan OverloadedCooldown { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>The provider rejected the subscription account or credentials; applies to all of its models.</summary>
+    public TimeSpan AuthRejectionCooldown { get; set; } = TimeSpan.FromMinutes(5);
 }

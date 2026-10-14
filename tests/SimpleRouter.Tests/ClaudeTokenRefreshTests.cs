@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using SimpleRouter.Claude;
+using SimpleRouter.Routing;
 using SimpleRouter.Tests.Support;
 
 namespace SimpleRouter.Tests;
@@ -80,7 +81,7 @@ public class ClaudeTokenRefreshTests
     }
 
     [Fact]
-    public async Task Rejected_refresh_returns_502_without_calling_upstream_or_leaking_the_token_response()
+    public async Task Rejected_refresh_benches_claude_and_answers_the_exhaustion_429_with_the_login_hint_without_leaking_the_token_response()
     {
         await using var host = await RouterHost.StartAsync();
         await host.LoginAsync(accessToken: "access-old", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1), refreshToken: "refresh-old");
@@ -89,11 +90,11 @@ public class ClaudeTokenRefreshTests
 
         using var response = await client.SendAsync(MessagesRequest());
 
-        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        var body = await response.Content.ReadAsStringAsync();
+        var body = await AssertExhaustedAsync(response, 295, 300);
         Assert.DoesNotContain("leak-me", body);
-        Assert.Contains("expired or were revoked; run 'simple-router login claude'.", body);
+        Assert.Contains("'simple-router login claude'", body);
         Assert.Empty(host.Upstream.Requests);
+        await AssertClaudeStatusesAsync(host, ModelStatus.AuthRejected);
         Assert.Equal("refresh-old", (await host.Services.GetRequiredService<ClaudeCredentialStore>().GetAsync())!.RefreshToken);
     }
 
@@ -161,7 +162,7 @@ public class ClaudeTokenRefreshTests
     }
 
     [Fact]
-    public async Task Malformed_token_response_returns_an_anthropic_shaped_502()
+    public async Task Malformed_token_response_benches_claude_as_an_account_rejection()
     {
         await using var host = await RouterHost.StartAsync();
         await host.LoginAsync(accessToken: "access-old", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1));
@@ -170,12 +171,14 @@ public class ClaudeTokenRefreshTests
 
         using var response = await client.SendAsync(MessagesRequest());
 
-        await AssertAnthropic502Async(response, "Claude token response was malformed.");
+        var body = await AssertExhaustedAsync(response, 295, 300);
+        Assert.Contains("'simple-router login claude'", body);
         Assert.Empty(host.Upstream.Requests);
+        await AssertClaudeStatusesAsync(host, ModelStatus.AuthRejected);
     }
 
     [Fact]
-    public async Task Unreachable_token_endpoint_returns_an_anthropic_shaped_502()
+    public async Task Unreachable_token_endpoint_cools_the_model_briefly_without_asking_for_a_login()
     {
         await using var host = await RouterHost.StartAsync();
         await host.LoginAsync(accessToken: "access-old", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1));
@@ -184,8 +187,13 @@ public class ClaudeTokenRefreshTests
 
         using var response = await client.SendAsync(MessagesRequest());
 
-        await AssertAnthropic502Async(response, "Claude token endpoint is unreachable.");
+        var body = await AssertExhaustedAsync(response, 25, 30);
+        Assert.DoesNotContain("'simple-router login claude'", body);
         Assert.Empty(host.Upstream.Requests);
+        var statuses = (await host.Services.GetRequiredService<ModelSelector>().StatusesAsync(CancellationToken.None))
+            .Where(m => m.Provider == ProviderKind.Claude).ToList();
+        Assert.Single(statuses, m => m.Status == ModelStatus.Cooling);
+        Assert.DoesNotContain(statuses, m => m.Status == ModelStatus.AuthRejected);
     }
 
     private static HttpResponseMessage RotatedTokens() => new(HttpStatusCode.OK)
@@ -193,13 +201,24 @@ public class ClaudeTokenRefreshTests
         Content = new StringContent("""{"access_token":"access-new","refresh_token":"refresh-new","expires_in":3600}""", Encoding.UTF8, "application/json"),
     };
 
-    private static async Task AssertAnthropic502Async(HttpResponseMessage response, string message)
+    /// <summary>Only Claude is logged in, so a Claude refresh failure leaves the tier empty.</summary>
+    private static async Task<string> AssertExhaustedAsync(HttpResponseMessage response, int minRetryAfter, int maxRetryAfter)
     {
-        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal("error", body.RootElement.GetProperty("type").GetString());
-        Assert.Equal("api_error", body.RootElement.GetProperty("error").GetProperty("type").GetString());
-        Assert.Equal(message, body.RootElement.GetProperty("error").GetProperty("message").GetString());
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        Assert.InRange(int.Parse(response.Headers.GetValues("Retry-After").Single()), minRetryAfter, maxRetryAfter);
+        var text = await response.Content.ReadAsStringAsync();
+        using var body = JsonDocument.Parse(text);
+        Assert.Equal("rate_limit_error", body.RootElement.GetProperty("error").GetProperty("type").GetString());
+        Assert.StartsWith("model_class_unavailable: ", body.RootElement.GetProperty("error").GetProperty("message").GetString());
+        return text;
+    }
+
+    private static async Task AssertClaudeStatusesAsync(RouterHost host, ModelStatus expected)
+    {
+        var claude = (await host.Services.GetRequiredService<ModelSelector>().StatusesAsync(CancellationToken.None))
+            .Where(m => m.Provider == ProviderKind.Claude).ToList();
+        Assert.NotEmpty(claude);
+        Assert.All(claude, m => Assert.Equal(expected, m.Status));
     }
 
     private static Task WaitUntilAsync(Func<bool> condition) => WaitUntilAsync(() => Task.FromResult(condition()));

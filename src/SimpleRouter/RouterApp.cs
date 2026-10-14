@@ -73,6 +73,7 @@ public static class RouterApp
         builder.Services.AddSingleton<ModelDiscovery>();
         builder.Services.AddHostedService<ModelDiscoveryMonitor>();
         builder.Services.AddSingleton<CatalogSeeder>();
+        builder.Services.AddSingleton<ModelCooldowns>();
         builder.Services.AddSingleton<ModelSelector>();
         builder.Services.AddSingleton<MessageRouter>();
         builder.Services.AddHttpClient(ClaudeOAuthClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30));

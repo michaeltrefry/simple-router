@@ -300,8 +300,7 @@ public class LocalRoutingTests
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.BadRequest, """{"error":{"message":"context too long","type":"invalid_request_error"}}""", 400, "invalid_request_error", "context too long")]
-    [InlineData(HttpStatusCode.TooManyRequests, "busy", 429, "rate_limit_error", "Local model local-a returned HTTP 429.")]
+    [InlineData(HttpStatusCode.BadRequest, """{"error":{"message":"unknown field","type":"invalid_request_error"}}""", 400, "invalid_request_error", "unknown field")]
     [InlineData(HttpStatusCode.Unauthorized, """{"error":{"message":"bad key"}}""", 502, "api_error", "bad key")]
     [InlineData(HttpStatusCode.InternalServerError, "<html>oops</html>", 502, "api_error", "Local model local-a returned HTTP 500.")]
     public async Task Local_upstream_errors_become_anthropic_errors(HttpStatusCode upstreamStatus, string upstreamBody, int status, string type, string message)
@@ -320,17 +319,32 @@ public class LocalRoutingTests
     }
 
     [Fact]
-    public async Task An_unreachable_local_is_a_502_and_is_marked_unhealthy()
+    public async Task Unreachable_locals_are_marked_unhealthy_and_the_request_moves_to_the_next_model_in_the_tier()
     {
         var (host, locals) = await StartAsync();
         await using var _host = host;
         locals.Chat = _ => throw new HttpRequestException("connection refused");
 
-        using var response = await host.Client.SendAsync(Message(sessionId: "s1"));
+        Assert.Equal("claude", await ServedByAsync(host, Message(sessionId: "s1")));
 
-        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        Assert.Equal("api_error", JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["type"]!.GetValue<string>());
+        Assert.Equal(["local-a.test", "local-b.test"], ChatRequests(host).Select(r => r.Uri.Host));
         Assert.False(host.Services.GetRequiredService<LocalHealth>().IsHealthy("local-a"));
+        Assert.False(host.Services.GetRequiredService<LocalHealth>().IsHealthy("local-b"));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task A_busy_local_is_cooled_and_the_request_moves_to_the_next_model_in_the_tier(HttpStatusCode busy)
+    {
+        var (host, locals) = await StartAsync();
+        await using var _host = host;
+        locals.Chat = _ => new HttpResponseMessage(busy) { Content = new StringContent("busy") };
+
+        Assert.Equal("claude", await ServedByAsync(host, Message(sessionId: "s1")));
+
+        var statuses = await host.Services.GetRequiredService<ModelSelector>().StatusesAsync(CancellationToken.None);
+        Assert.Equal([ModelStatus.Cooling, ModelStatus.Cooling], statuses.Where(s => s.ModelId is "local-a" or "local-b").Select(s => s.Status));
     }
 
     [Fact]

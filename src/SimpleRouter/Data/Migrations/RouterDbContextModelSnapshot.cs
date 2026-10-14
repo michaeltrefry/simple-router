@@ -97,6 +97,23 @@ namespace SimpleRouter.Data.Migrations
                     b.ToTable("CodexCredentials");
                 });
 
+            modelBuilder.Entity("SimpleRouter.Data.ModelCooldown", b =>
+                {
+                    b.Property<string>("ModelId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("Until")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("ModelId");
+
+                    b.ToTable("ModelCooldowns");
+                });
+
             modelBuilder.Entity("SimpleRouter.Data.ProviderModelList", b =>
                 {
                     b.Property<string>("Provider")

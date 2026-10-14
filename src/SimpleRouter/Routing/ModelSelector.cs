@@ -7,7 +7,8 @@ namespace SimpleRouter.Routing;
 /// <summary>
 /// Picks the model for a (session, tier): its existing pin if still eligible, else the next eligible tier member in
 /// round-robin order. Eligible means enabled, served by a registered upstream, logged in and present in the provider's
-/// discovered model list (subscriptions), healthy (locals) and able to serve the request (<see cref="RequestNeeds"/>). Mid and Low give new sessions to eligible local models first and use subscriptions only when none is.
+/// discovered model list (subscriptions), not cooling after a fault (<see cref="ModelCooldowns"/>), healthy (locals) and
+/// able to serve the request (<see cref="RequestNeeds"/>). Mid and Low give new sessions to eligible local models first and use subscriptions only when none is.
 /// Both the pin and the per-tier round-robin cursor are persisted, so assignments survive restarts.
 /// </summary>
 public sealed class ModelSelector(
@@ -31,12 +32,17 @@ public sealed class ModelSelector(
         return new TierRules(aliases.Select(a => (a.Pattern, a.Tier)).ToList(), defaultTier);
     }
 
-    /// <summary>Returns the session's model in <paramref name="tier"/>, assigning and persisting a pin if it has none; null when the tier has no eligible model.</summary>
-    public async Task<CatalogModel?> SelectAsync(ModelTier tier, SessionIdentity session, RequestNeeds needs, CancellationToken ct)
+    /// <summary>
+    /// Returns the session's model in <paramref name="tier"/>, assigning and persisting a pin if it has none or its pinned
+    /// model is no longer eligible; null when the tier has no eligible model. Models in <paramref name="exclude"/> (already
+    /// tried by this request) count as ineligible, so a failed pinned model is re-pinned.
+    /// </summary>
+    public async Task<CatalogModel?> SelectAsync(ModelTier tier, SessionIdentity session, RequestNeeds needs, CancellationToken ct,
+        IReadOnlySet<string>? exclude = null)
     {
         await using (var reader = await dbFactory.CreateDbContextAsync(ct))
         {
-            var eligible = await EligibleAsync(reader, tier, needs, ct);
+            var eligible = await EligibleAsync(reader, tier, needs, ct, exclude: exclude);
             if (eligible.Count == 0)
             {
                 return null;
@@ -51,7 +57,7 @@ public sealed class ModelSelector(
         try
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct);
-            var eligible = await EligibleAsync(db, tier, needs, ct);
+            var eligible = await EligibleAsync(db, tier, needs, ct, exclude: exclude);
             if (eligible.Count == 0)
             {
                 return null;
@@ -87,7 +93,7 @@ public sealed class ModelSelector(
             }
             else
             {
-                // The pinned model was disabled, removed from the tier, went unhealthy or cannot serve this request.
+                // The pinned model was disabled, removed from the tier, went unhealthy, is cooling, failed this request or cannot serve it.
                 pin.ModelId = model.Id;
             }
             await db.SaveChangesAsync(ct);
@@ -137,13 +143,35 @@ public sealed class ModelSelector(
         return eligible.FirstOrDefault(m => m.Id == pin?.ModelId);
     }
 
-    /// <summary>The subscriptions whose login would make a model in <paramref name="tier"/> eligible, for an empty tier's error.</summary>
+    /// <summary>
+    /// The subscriptions whose login would make a model in <paramref name="tier"/> eligible (none stored, or the stored one
+    /// was just rejected), for an empty tier's error.
+    /// </summary>
     public async Task<List<ProviderKind>> MissingLoginsAsync(ModelTier tier, RequestNeeds needs, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var eligible = await EligibleAsync(db, tier, needs, ct, requireLogin: false);
-        var loggedIn = await LoggedInAsync(db, ct);
-        return eligible.Select(m => m.Provider).Where(p => !loggedIn(p)).Distinct().ToList();
+        var status = await StatusOfAsync(db, ct);
+        return (await MembersAsync(db, tier, ct))
+            .Where(m => _wired.Contains(m.Provider) && status(m) is ModelStatus.NotLoggedIn or ModelStatus.AuthRejected && needs.CanUse(m))
+            .Select(m => m.Provider)
+            .Distinct()
+            .ToList();
+    }
+
+    /// <summary>
+    /// The earliest moment a cooling model of <paramref name="tier"/> that could otherwise serve this request becomes
+    /// eligible again; null when none is cooling, so the tier is empty for reasons other than usage.
+    /// </summary>
+    public async Task<DateTimeOffset?> EarliestResetAsync(ModelTier tier, RequestNeeds needs, CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var cooling = await ModelCooldowns.ActiveAsync(db, time.GetUtcNow(), ct);
+        var status = await StatusOfAsync(db, ct);
+        var resets = (await MembersAsync(db, tier, ct))
+            .Where(m => _wired.Contains(m.Provider) && status(m) is ModelStatus.Cooling or ModelStatus.AuthRejected && needs.CanUse(m))
+            .Select(m => cooling[m.Id].Until)
+            .ToList();
+        return resets.Count == 0 ? null : resets.Min();
     }
 
     /// <summary>Every catalog model's status, for the dashboard.</summary>
@@ -151,13 +179,15 @@ public sealed class ModelSelector(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var models = await db.Models.AsNoTracking().OrderBy(m => m.Id).ToListAsync(ct);
+        var cooling = await ModelCooldowns.ActiveAsync(db, time.GetUtcNow(), ct);
         var status = await StatusOfAsync(db, ct);
-        return models.Select(m => new ModelStatusEntry(m.Id, m.Provider, status(m))).ToList();
+        return models.Select(m => status(m) is var s && s is ModelStatus.Cooling or ModelStatus.AuthRejected
+            ? new ModelStatusEntry(m.Id, m.Provider, s, cooling[m.Id].Until)
+            : new ModelStatusEntry(m.Id, m.Provider, s)).ToList();
     }
 
-    private async Task<List<CatalogModel>> EligibleAsync(RouterDbContext db, ModelTier tier, RequestNeeds needs, CancellationToken ct, bool requireLogin = true)
-    {
-        var members = await db.TierMembers
+    private static Task<List<CatalogModel>> MembersAsync(RouterDbContext db, ModelTier tier, CancellationToken ct) =>
+        db.TierMembers
             .Where(t => t.Tier == tier)
             .Join(db.Models, t => t.ModelId, m => m.Id, (t, m) => new { t.Position, Model = m })
             .Where(x => x.Model.Enabled)
@@ -165,10 +195,16 @@ public sealed class ModelSelector(
             .Select(x => x.Model)
             .AsNoTracking()
             .ToListAsync(ct);
+
+    private async Task<List<CatalogModel>> EligibleAsync(RouterDbContext db, ModelTier tier, RequestNeeds needs, CancellationToken ct,
+        IReadOnlySet<string>? exclude = null)
+    {
+        var members = await MembersAsync(db, tier, ct);
         var status = await StatusOfAsync(db, ct);
         return members.Where(m => _wired.Contains(m.Provider)
-                && (status(m) == ModelStatus.Eligible || (!requireLogin && status(m) == ModelStatus.NotLoggedIn))
-                && needs.CanUse(m))
+                && status(m) == ModelStatus.Eligible
+                && needs.CanUse(m)
+                && exclude?.Contains(m.Id) != true)
             .ToList();
     }
 
@@ -176,6 +212,7 @@ public sealed class ModelSelector(
     private async Task<Func<CatalogModel, ModelStatus>> StatusOfAsync(RouterDbContext db, CancellationToken ct)
     {
         var loggedIn = await LoggedInAsync(db, ct);
+        var cooling = await ModelCooldowns.ActiveAsync(db, time.GetUtcNow(), ct);
         // A provider without a successfully fetched list allows every model, so routing never goes dark before the first fetch.
         var lists = (await db.ProviderModelLists.AsNoTracking().ToListAsync(ct))
             .Where(l => l.ModelIds is not null)
@@ -193,6 +230,10 @@ public sealed class ModelSelector(
             if (m.Provider != ProviderKind.Local && lists.TryGetValue(m.Provider, out var list) && !ModelDiscovery.Lists(list, m.UpstreamModelId))
             {
                 return ModelStatus.UnknownModel;
+            }
+            if (cooling.TryGetValue(m.Id, out var cooldown))
+            {
+                return cooldown.Reason == FaultKind.AuthRejected ? ModelStatus.AuthRejected : ModelStatus.Cooling;
             }
             return m.Provider == ProviderKind.Local && !health.IsHealthy(m.Id) ? ModelStatus.Unhealthy : ModelStatus.Eligible;
         };

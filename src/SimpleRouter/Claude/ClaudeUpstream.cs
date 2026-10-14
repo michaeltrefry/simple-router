@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
 using SimpleRouter.Api;
@@ -10,17 +11,25 @@ using SimpleRouter.Routing;
 
 namespace SimpleRouter.Claude;
 
-/// <summary>Forwards a Messages API body to Claude with the subscription token and streams the response back unchanged.</summary>
+/// <summary>
+/// Forwards a Messages API body to Claude with the subscription token and streams the response back unchanged. A limit,
+/// plan or account rejection, overload or connection failure on a message is returned unwritten so the router can fail
+/// over; token counting is always passed through.
+/// </summary>
 public sealed class ClaudeUpstream(
     IHttpClientFactory httpClientFactory,
     ClaudeTokenProvider tokens,
     IOptions<RouterOptions> options,
+    TimeProvider time,
     ILogger<ClaudeUpstream> logger) : IModelUpstream
 {
     public const string HttpClientName = "claude-upstream";
     public const string OAuthBeta = "oauth-2025-04-20";
     internal const string DefaultAnthropicVersion = "2023-06-01";
     private const int CopyBufferBytes = 16 * 1024;
+    private const int MaxErrorBodyBytes = 64 * 1024;
+
+    private static readonly Regex PlanRefusal = new("model|plan|access to", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly HashSet<string> HopByHopHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -29,12 +38,12 @@ public sealed class ClaudeUpstream(
 
     public ProviderKind Provider => ProviderKind.Claude;
 
-    public Task SendAsync(UpstreamCall call)
+    public Task<UpstreamResult> SendAsync(UpstreamCall call)
     {
         call.Request["model"] = call.Model.UpstreamModelId;
         DropForeignThinking(call.Request);
         var path = call.CountTokens ? "/v1/messages/count_tokens" : "/v1/messages";
-        return ForwardAsync(call.Context, path, JsonSerializer.SerializeToUtf8Bytes(call.Request, WireJson.Relaxed), injectIdentity: !call.CountTokens);
+        return ForwardAsync(call.Context, path, JsonSerializer.SerializeToUtf8Bytes(call.Request, WireJson.Relaxed), message: !call.CountTokens);
     }
 
     /// <summary>
@@ -72,7 +81,7 @@ public sealed class ClaudeUpstream(
 
     private static string? Str(JsonNode? node) => ChatRequestTranslator.Str(node);
 
-    private async Task ForwardAsync(HttpContext context, string path, byte[] body, bool injectIdentity)
+    private async Task<UpstreamResult> ForwardAsync(HttpContext context, string path, byte[] body, bool message)
     {
         var ct = context.RequestAborted;
         string accessToken;
@@ -83,16 +92,20 @@ public sealed class ClaudeUpstream(
         catch (ClaudeNotLoggedInException e)
         {
             await AnthropicError.WriteAsync(context, StatusCodes.Status503ServiceUnavailable, "api_error", e.Message);
-            return;
+            return UpstreamResult.Served;
         }
         catch (ClaudeOAuthException e)
         {
             logger.LogWarning("Claude access token refresh failed with status {status}", e.Status);
+            if (message)
+            {
+                return UpstreamResult.NotServed(ModelFault.RefreshFailed(e.Status));
+            }
             await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", e.Message);
-            return;
+            return UpstreamResult.Served;
         }
 
-        if (injectIdentity)
+        if (message)
         {
             body = ClaudeIdentity.Ensure(body);
         }
@@ -107,13 +120,78 @@ public sealed class ClaudeUpstream(
         catch (HttpRequestException e)
         {
             logger.LogWarning("Claude upstream request failed: {error}", e.Message);
+            if (message)
+            {
+                return UpstreamResult.NotServed(new ModelFault(FaultKind.Unreachable));
+            }
             await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", "Claude upstream is unreachable.");
-            return;
+            return UpstreamResult.Served;
         }
 
         using (response)
         {
-            await CopyResponseAsync(response, context, ct);
+            var now = time.GetUtcNow();
+            var limits = LimitHeaders.Anthropic(response.Headers);
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            var head = message && (int)response.StatusCode is 401 or 403 or 404 ? await ReadHeadAsync(stream, ct) : [];
+            if (message && Fault(response, limits, now, head) is { } fault)
+            {
+                logger.LogWarning("Claude answered HTTP {status}; not serving this request from it ({reason})", (int)response.StatusCode, fault.Kind);
+                return UpstreamResult.NotServed(fault);
+            }
+            await CopyResponseAsync(response, head, stream, context, ct);
+            return UpstreamResult.ServedWith(limits.Exhausted ? new ModelFault(FaultKind.Limited, limits.ResetAt) : null);
+        }
+    }
+
+    /// <summary>
+    /// A status another model may do better on: a limit (429), a model the plan does not offer (404
+    /// <c>not_found_error</c>, 403 <c>permission_error</c> naming the model or plan), a rejected account or credential
+    /// (401, any other 403) or an overloaded or failing service.
+    /// </summary>
+    private static ModelFault? Fault(HttpResponseMessage response, LimitReading limits, DateTimeOffset now, byte[] errorBody)
+    {
+        var status = (int)response.StatusCode;
+        if (status is 401 or 403 or 404)
+        {
+            var (type, text) = Error(errorBody);
+            return status switch
+            {
+                404 => type == "not_found_error" ? new ModelFault(FaultKind.PlanRejected) : null,
+                403 when type == "permission_error" && text is not null && PlanRefusal.IsMatch(text) => new ModelFault(FaultKind.PlanRejected),
+                _ => new ModelFault(FaultKind.AuthRejected),
+            };
+        }
+        return status switch
+        {
+            429 => new ModelFault(FaultKind.Limited, (limits.Exhausted ? limits.ResetAt : null) ?? LimitHeaders.RetryAfter(response.Headers, now)),
+            500 or 502 or 503 or 504 or 529 => new ModelFault(FaultKind.Overloaded, LimitHeaders.RetryAfter(response.Headers, now)),
+            _ => null,
+        };
+    }
+
+    /// <summary>Reads at most one byte past the error limit, so an oversized or endless body is never buffered whole.</summary>
+    private static async Task<byte[]> ReadHeadAsync(Stream stream, CancellationToken ct)
+    {
+        var buffer = new byte[MaxErrorBodyBytes + 1];
+        var length = await stream.ReadAtLeastAsync(buffer, buffer.Length, throwOnEndOfStream: false, ct);
+        return buffer[..length];
+    }
+
+    private static (string? Type, string? Message) Error(byte[] body)
+    {
+        if (body.Length > MaxErrorBodyBytes)
+        {
+            return (null, null);
+        }
+        try
+        {
+            var error = JsonNode.Parse(body) is JsonObject root ? root["error"] as JsonObject : null;
+            return (Str(error?["type"]), Str(error?["message"]));
+        }
+        catch (JsonException)
+        {
+            return (null, null);
         }
     }
 
@@ -150,7 +228,8 @@ public sealed class ClaudeUpstream(
         return string.Join(",", flags);
     }
 
-    private static async Task CopyResponseAsync(HttpResponseMessage upstream, HttpContext context, CancellationToken ct)
+    /// <param name="head">Bytes already read from <paramref name="stream"/>, sent first.</param>
+    private static async Task CopyResponseAsync(HttpResponseMessage upstream, byte[] head, Stream stream, HttpContext context, CancellationToken ct)
     {
         var response = context.Response;
         response.StatusCode = (int)upstream.StatusCode;
@@ -163,7 +242,11 @@ public sealed class ClaudeUpstream(
         }
         context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
-        await using var stream = await upstream.Content.ReadAsStreamAsync(ct);
+        if (head.Length > 0)
+        {
+            await response.Body.WriteAsync(head, ct);
+            await response.Body.FlushAsync(ct);
+        }
         var buffer = new byte[CopyBufferBytes];
         int read;
         while ((read = await stream.ReadAsync(buffer, ct)) > 0)
