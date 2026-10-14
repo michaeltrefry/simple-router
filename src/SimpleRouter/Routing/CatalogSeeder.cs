@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -7,7 +8,7 @@ namespace SimpleRouter.Routing;
 
 /// <summary>
 /// Loads the model catalog, tier membership, aliases and default tier from the seed file into an empty database, then
-/// applies the optional per-machine override file to existing models on every start.
+/// applies the optional per-machine override file to existing models whenever its content has changed.
 /// </summary>
 public sealed class CatalogSeeder(
     IDbContextFactory<RouterDbContext> dbFactory,
@@ -20,7 +21,11 @@ public sealed class CatalogSeeder(
     /// <summary>Set once effort mappings have been taken from the seed, so a mapping cleared afterwards stays cleared.</summary>
     public const string EffortSeededSetting = "effort_seeded";
 
+    /// <summary>SHA-256 of the override file content last applied.</summary>
+    public const string OverrideHashSetting = "seed_override_hash";
+
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
 
     private sealed record SeedModel(
         string Id,
@@ -174,7 +179,10 @@ public sealed class CatalogSeeder(
         }
     }
 
-    /// <summary>Overrides only the fields each entry sets, so real endpoints and keys never live in the committed seed.</summary>
+    /// <summary>
+    /// Overrides only the fields each entry sets, so real endpoints and keys never live in the committed seed. Applied
+    /// only when the file's content changed since it was last applied, so edits made in the dashboard survive a restart.
+    /// </summary>
     private async Task ApplyOverridesAsync(CancellationToken ct)
     {
         var path = options.Value.SeedOverridePath;
@@ -183,14 +191,17 @@ public sealed class CatalogSeeder(
             return;
         }
 
-        Overrides overrides;
-        await using (var file = File.OpenRead(path))
+        var content = await File.ReadAllBytesAsync(path, ct);
+        var hash = Convert.ToHexString(SHA256.HashData(content));
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var applied = await db.Settings.FindAsync([OverrideHashSetting], ct);
+        if (applied?.Value == hash)
         {
-            overrides = await JsonSerializer.DeserializeAsync<Overrides>(file, Json, ct)
-                ?? throw new InvalidDataException($"Seed override file '{path}' is empty.");
+            return;
         }
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var overrides = JsonSerializer.Deserialize<Overrides>(content.AsSpan().StartsWith(Utf8Bom) ? content.AsSpan(Utf8Bom.Length) : content, Json)
+            ?? throw new InvalidDataException($"Seed override file '{path}' is empty.");
         foreach (var o in overrides.Models ?? [])
         {
             Effort.Validate(o.Effort, o.Id);
@@ -208,7 +219,16 @@ public sealed class CatalogSeeder(
             model.SupportsVision = o.SupportsVision ?? model.SupportsVision;
             model.Effort = o.Effort ?? model.Effort;
         }
+        if (applied is null)
+        {
+            db.Settings.Add(new Setting { Key = OverrideHashSetting, Value = hash });
+        }
+        else
+        {
+            applied.Value = hash;
+        }
         await db.SaveChangesAsync(ct);
+        logger.LogInformation("Applied the seed override file");
     }
 
     private string? Protect(string? apiKey) => string.IsNullOrEmpty(apiKey) ? null : secrets.Protect(apiKey);

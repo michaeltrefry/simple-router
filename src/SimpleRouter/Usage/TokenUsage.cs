@@ -24,12 +24,27 @@ public sealed record TokenUsage(long InputTokens, long OutputTokens, long CacheR
             Count(u["cache_creation_input_tokens"]) ?? CacheWriteTokens,
             Count(u["cache_creation"]?["ephemeral_1h_input_tokens"]) ?? CacheWrite1hTokens);
 
-    /// <summary>The cost in micro-USD: tokens times USD per million tokens is exactly micro-USD.</summary>
-    public long CostUsdMicros(ModelPrice? price) => price is null
-        ? 0
-        : (long)Math.Round(InputTokens * price.InputPerMTok + OutputTokens * price.OutputPerMTok
-            + CacheReadTokens * price.CacheReadPerMTok + (CacheWriteTokens - CacheWrite1hTokens) * price.CacheWritePerMTok
-            + CacheWrite1hTokens * price.CacheWrite1hPerMTok, MidpointRounding.AwayFromZero);
+    /// <summary>
+    /// The cost in micro-USD: tokens times USD per million tokens is exactly micro-USD. Saturates at <see cref="long.MaxValue"/>
+    /// rather than throwing, so an absurd count or price cannot stop the request from being recorded.
+    /// </summary>
+    public long CostUsdMicros(ModelPrice? price)
+    {
+        if (price is null)
+        {
+            return 0;
+        }
+        try
+        {
+            return (long)Math.Round(InputTokens * price.InputPerMTok + OutputTokens * price.OutputPerMTok
+                + CacheReadTokens * price.CacheReadPerMTok + (CacheWriteTokens - CacheWrite1hTokens) * price.CacheWritePerMTok
+                + CacheWrite1hTokens * price.CacheWrite1hPerMTok, MidpointRounding.AwayFromZero);
+        }
+        catch (OverflowException)
+        {
+            return long.MaxValue;
+        }
+    }
 
     private static long? Count(JsonNode? node) =>
         node is JsonValue v && v.TryGetValue<long>(out var n) && n >= 0 ? n : null;

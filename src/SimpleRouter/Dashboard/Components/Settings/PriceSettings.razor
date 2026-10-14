@@ -1,0 +1,74 @@
+@using System.Globalization
+@inherits SettingsSection
+
+<section class="card" id="price-settings">
+    <h2>Prices</h2>
+    <p class="muted">USD per million tokens, used only to report spend. A model without a stored price costs $0.</p>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Cache write 1h</th><th></th></tr>
+            </thead>
+            <tbody>
+                @foreach (var p in Snapshot.Prices)
+                {
+                    var values = _edits[p.ModelId];
+                    <tr data-model="@p.ModelId">
+                        <td class="mono">@p.ModelId@(p.Stored ? "" : " (no price)")</td>
+                        @for (var i = 0; i < Columns; i++)
+                        {
+                            var column = i;
+                            <td><input class="price price-@column num" inputmode="decimal" value="@values[column]" aria-label="@Labels[column] price for @p.ModelId"
+                                       @onchange="e => Edit(p.ModelId, column, e.Value as string)" /></td>
+                        }
+                        <td><button class="save-price" disabled="@Busy" @onclick="() => SaveAsync(p.ModelId)">Save</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <FormStatus Error="@Error" Notice="@Notice" />
+</section>
+
+@code {
+    private const int Columns = 5;
+    private static readonly string[] Labels = ["Input", "Output", "Cache read", "Cache write", "Cache write 1h"];
+
+    private readonly Dictionary<string, string[]> _edits = [];
+    private readonly HashSet<string> _dirty = [];
+
+    protected override void OnParametersSet()
+    {
+        foreach (var p in Snapshot.Prices.Where(p => !_dirty.Contains(p.ModelId)))
+        {
+            _edits[p.ModelId] = new[] { p.Input, p.Output, p.CacheRead, p.CacheWrite, p.CacheWrite1h }
+                .Select(v => v.ToString(CultureInfo.InvariantCulture)).ToArray();
+        }
+    }
+
+    private void Edit(string modelId, int column, string? value)
+    {
+        _edits[modelId][column] = value ?? "";
+        _dirty.Add(modelId);
+    }
+
+    private async Task SaveAsync(string modelId)
+    {
+        var values = new decimal[Columns];
+        for (var i = 0; i < Columns; i++)
+        {
+            if (!decimal.TryParse(_edits[modelId][i].Trim(), NumberStyles.Number, CultureInfo.InvariantCulture, out values[i]))
+            {
+                Error = $"{Labels[i]} price for {modelId} must be a number.";
+                Notice = null;
+                return;
+            }
+        }
+        _dirty.Remove(modelId);
+        var row = new PriceRow(modelId, values[0], values[1], values[2], values[3], values[4]);
+        if (!await RunAsync(() => Catalog.SavePriceAsync(row), $"Prices for {modelId} saved."))
+        {
+            _dirty.Add(modelId);
+        }
+    }
+}

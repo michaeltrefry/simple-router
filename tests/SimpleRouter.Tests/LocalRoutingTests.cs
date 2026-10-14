@@ -348,7 +348,7 @@ public class LocalRoutingTests
     }
 
     [Fact]
-    public async Task The_local_override_file_points_seeded_models_at_real_endpoints_on_every_start()
+    public async Task The_local_override_file_points_seeded_models_at_real_endpoints_on_the_next_start()
     {
         var dataDirectory = RouterHost.NewDataDirectory();
         var overridePath = Path.Combine(Path.GetTempPath(), "simple-router-tests", $"override-{Guid.NewGuid():N}.json");
@@ -369,6 +369,42 @@ public class LocalRoutingTests
         var sent = ChatRequests(host).Single();
         Assert.Equal("Bearer override-key", sent.Headers["authorization"]);
         Assert.Equal("real-id", JsonNode.Parse(sent.Body)!["model"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task A_dashboard_edit_survives_a_restart_until_the_override_file_itself_changes()
+    {
+        var dataDirectory = RouterHost.NewDataDirectory();
+        var overridePath = Path.Combine(Path.GetTempPath(), "simple-router-tests", $"override-{Guid.NewGuid():N}.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(overridePath)!);
+        await File.WriteAllTextAsync(overridePath, """
+            { "models": [ { "id": "local-off", "enabled": true, "baseUrl": "http://override.test/v1" } ] }
+            """);
+        var (first, _) = await StartAsync(dataDirectory, $"--SimpleRouter:SeedOverrideFile={overridePath}");
+        first.KeepData = true;
+        var settings = first.Services.GetRequiredService<SimpleRouter.Dashboard.CatalogSettings>();
+        var row = (await settings.GetAsync()).Models.Single(m => m.Id == "local-off");
+        await settings.SaveLocalModelAsync(new SimpleRouter.Dashboard.LocalModelInput(row.Id, row.UpstreamModelId, "http://edited.test/v1",
+            row.ContextWindow, row.SupportsTools, row.SupportsVision, row.Enabled, row.Effort, row.Tiers), isNew: false);
+        await first.DisposeAsync();
+
+        var (second, _) = await StartAsync(dataDirectory, $"--SimpleRouter:SeedOverrideFile={overridePath}");
+        second.KeepData = true;
+        Assert.Equal("http://edited.test/v1", await BaseUrlAsync(second));
+        await second.DisposeAsync();
+
+        await File.WriteAllTextAsync(overridePath, """
+            { "models": [ { "id": "local-off", "enabled": true, "baseUrl": "http://override-2.test/v1" } ] }
+            """);
+        var (third, _) = await StartAsync(dataDirectory, $"--SimpleRouter:SeedOverrideFile={overridePath}");
+        await using var _third = third;
+        Assert.Equal("http://override-2.test/v1", await BaseUrlAsync(third));
+
+        static async Task<string?> BaseUrlAsync(RouterHost host)
+        {
+            await using var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
+            return (await db.Models.FindAsync("local-off"))!.BaseUrl;
+        }
     }
 
     private static HttpResponseMessage Sse(string body) => Sse(new StringContent(body));

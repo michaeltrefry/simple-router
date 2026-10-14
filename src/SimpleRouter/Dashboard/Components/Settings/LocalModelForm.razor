@@ -1,0 +1,139 @@
+@inject CatalogSettings Catalog
+@inject ILogger<LocalModelForm> Logger
+
+<div class="form" id="local-model-form">
+    <h3>@(Existing is null ? "Add local model" : "Edit " + Existing.Id)</h3>
+    <div class="form-grid">
+        <label>Model ID <input class="id" @bind="_id" disabled="@(Existing is not null)" placeholder="my-local-model" /></label>
+        <label>Upstream model ID <input class="upstream" @bind="_upstream" placeholder="served model id" /></label>
+        <label>Base URL <input class="base-url" @bind="_baseUrl" placeholder="http://localhost:8000/v1" /></label>
+        <label>
+            API key <span class="muted api-key-state">(@(Existing?.HasApiKey == true ? "set" : "not set"))</span>
+            <input class="api-key" type="password" autocomplete="off" @bind="_apiKey"
+                   placeholder="@(Existing?.HasApiKey == true ? "leave empty to keep" : "optional")" />
+        </label>
+        @if (Existing?.HasApiKey == true)
+        {
+            <label class="check"><input class="clear-api-key" type="checkbox" @bind="_clearApiKey" /> Remove the stored key</label>
+        }
+        <label>Context window (tokens) <input class="context-window" @bind="_contextWindow" placeholder="empty = unlimited" /></label>
+        <label class="check"><input class="supports-tools" type="checkbox" @bind="_tools" /> Supports tools</label>
+        <label class="check"><input class="supports-vision" type="checkbox" @bind="_vision" /> Supports vision</label>
+        <label class="check"><input class="local-enabled" type="checkbox" @bind="_enabled" /> Enabled</label>
+        <fieldset class="tiers">
+            <legend>Tiers</legend>
+            @foreach (var tier in Enum.GetValues<ModelTier>())
+            {
+                <label class="check"><input type="checkbox" class="tier-@tier.Name()" checked="@_tiers.Contains(tier)" @onchange="e => Toggle(tier, e.Value is true)" /> @tier.Name()</label>
+            }
+        </fieldset>
+        <label>
+            Effort mode
+            <select class="effort-mode" @bind="_effortMode">
+                @foreach (var (_, name) in EffortInput.Modes)
+                {
+                    <option value="@name">@name</option>
+                }
+            </select>
+        </label>
+        <label>Effort levels <input class="effort-levels" @bind="_effortLevels" placeholder="low, medium, high" /></label>
+        <label class="wide">Kwargs per level (JSON) <textarea class="effort-kwargs" rows="2" @bind="_effortKwargs" placeholder='{"high": {"enable_thinking": true}}'></textarea></label>
+    </div>
+    <div class="buttons">
+        <button class="test-connection" disabled="@_busy" @onclick="TestAsync">Test connection</button>
+        <button class="save primary" disabled="@_busy" @onclick="SaveAsync">Save</button>
+        <button class="cancel" disabled="@_busy" @onclick="OnCancel">Cancel</button>
+    </div>
+    @if (_test is not null)
+    {
+        <p class="@(_testOk ? "form-notice" : "form-error") test-result" role="status">@_test</p>
+    }
+    <FormStatus Error="@_error" />
+</div>
+
+@code {
+    [Parameter] public ModelRow? Existing { get; set; }
+    [Parameter] public EventCallback<string> OnSaved { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private string _id = "", _upstream = "", _baseUrl = "", _apiKey = "", _contextWindow = "";
+    private string _effortMode = "none", _effortLevels = "", _effortKwargs = "";
+    private bool _tools = true, _vision, _enabled = true, _clearApiKey, _busy, _testOk;
+    private HashSet<ModelTier> _tiers = [];
+    private string? _test, _error;
+
+    protected override void OnInitialized()
+    {
+        if (Existing is not { } m)
+        {
+            return;
+        }
+        (_id, _upstream, _baseUrl) = (m.Id, m.UpstreamModelId, m.BaseUrl ?? "");
+        _contextWindow = m.ContextWindow?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        (_tools, _vision, _enabled) = (m.SupportsTools, m.SupportsVision, m.Enabled);
+        _tiers = m.Tiers.ToHashSet();
+        (_effortMode, _effortLevels, _effortKwargs) = EffortInput.Format(m.Effort);
+    }
+
+    private void Toggle(ModelTier tier, bool on)
+    {
+        if (on) _tiers.Add(tier); else _tiers.Remove(tier);
+    }
+
+    private async Task TestAsync()
+    {
+        _busy = true;
+        try
+        {
+            var failure = await Catalog.TestConnectionAsync(_baseUrl, _apiKey, Existing?.Id, _clearApiKey);
+            (_testOk, _test) = failure is null ? (true, "Connection OK: the endpoint answered.") : (false, "Connection failed: " + failure);
+        }
+        catch (SettingsException e)
+        {
+            (_testOk, _test) = (false, e.Message);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Logger.LogWarning("Testing a local model connection failed: {error}", e.GetType().Name);
+            (_testOk, _test) = (false, "The connection could not be tested; see the server log.");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            int? window = null;
+            if (!string.IsNullOrWhiteSpace(_contextWindow))
+            {
+                window = int.TryParse(_contextWindow.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var w)
+                    ? w
+                    : throw new SettingsException("Context window must be a whole number of tokens.");
+            }
+            var input = new LocalModelInput(_id, _upstream, _baseUrl, window, _tools, _vision, _enabled,
+                EffortInput.Parse(_effortMode, _effortLevels, _effortKwargs), _tiers, _apiKey, _clearApiKey);
+            await Catalog.SaveLocalModelAsync(input, isNew: Existing is null);
+            _apiKey = "";
+            await OnSaved.InvokeAsync($"{_id.Trim()} saved.");
+        }
+        catch (SettingsException e)
+        {
+            _error = e.Message;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Logger.LogWarning("Saving a local model failed: {error}", e.GetType().Name);
+            _error = "The change could not be saved; see the server log.";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

@@ -1,0 +1,110 @@
+@using SimpleRouter.Codex
+@implements IDisposable
+@inject CodexOAuthClient OAuth
+@inject CodexLoginCommand Login
+@inject ModelDiscovery Discovery
+@inject DashboardEvents Events
+@inject ILogger<CodexConnect> Logger
+
+<section class="card" id="codex-connect">
+    <h2>Codex subscription</h2>
+    @if (_device is null)
+    {
+        <button class="connect primary" disabled="@_busy" @onclick="StartAsync">Connect Codex</button>
+    }
+    else
+    {
+        <p>
+            Open <a class="verification" href="@_device.VerificationUrl" target="_blank" rel="noopener noreferrer">@_device.VerificationUrl</a>,
+            sign in to ChatGPT and enter this code:
+        </p>
+        <p class="user-code mono">@_device.UserCode</p>
+        <p class="muted waiting">Waiting for the code to be entered…</p>
+        <button class="cancel" @onclick="Cancel">Cancel</button>
+    }
+    <FormStatus Error="@_error" Notice="@_notice" />
+</section>
+
+@code {
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private DeviceCode? _device;
+    private CancellationTokenSource? _polling;
+    private bool _busy;
+    private string? _error, _notice;
+
+    private async Task StartAsync()
+    {
+        (_busy, _error, _notice) = (true, null, null);
+        try
+        {
+            _device = await OAuth.StartDeviceAsync();
+            _polling = new CancellationTokenSource();
+            _ = PollAsync(_device, _polling.Token);
+        }
+        catch (CodexOAuthException e)
+        {
+            _error = $"Codex login failed: {e.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task PollAsync(DeviceCode device, CancellationToken ct)
+    {
+        string? error = null, notice = null;
+        try
+        {
+            if (await Login.CompleteAsync(device, ct))
+            {
+                var report = new StringWriter();
+                await Discovery.ReportRefreshAsync(ProviderKind.Codex, report, ct);
+                notice = "Codex subscription connected. " + report.ToString().Trim();
+                Events.Publish();
+            }
+            else
+            {
+                error = $"Codex login failed: {CodexLoginCommand.NotEnteredInTime}";
+            }
+        }
+        catch (CodexOAuthException e)
+        {
+            error = $"Codex login failed: {e.Message}";
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception e)
+        {
+            Logger.LogWarning("The dashboard Codex login failed: {error}", e.GetType().Name);
+            error = "Codex login failed; see the server log.";
+        }
+        try
+        {
+            await InvokeAsync(async () =>
+            {
+                (_device, _error, _notice) = (null, error, notice);
+                if (notice is not null)
+                {
+                    await OnChanged.InvokeAsync();
+                }
+                StateHasChanged();
+            });
+        }
+        catch (Exception)
+        {
+            // The circuit went away while the login finished; the stored login is all that matters now.
+        }
+    }
+
+    private void Cancel()
+    {
+        _polling?.Cancel();
+        _device = null;
+    }
+
+    public void Dispose() => _polling?.Cancel();
+}
