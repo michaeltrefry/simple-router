@@ -28,6 +28,8 @@ public sealed class RouterOptions
 
     public ClaudeOptions Claude { get; set; } = new();
 
+    public CodexOptions Codex { get; set; } = new();
+
     public LocalOptions Local { get; set; } = new();
 
     public string SeedOverridePath => string.IsNullOrWhiteSpace(SeedOverrideFile) ? Path.Combine(DataDirectory, "seed.local.json") : SeedOverrideFile;
@@ -44,6 +46,27 @@ public sealed class ClaudeOptions
     public string ClientId { get; set; } = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
     public string RedirectUri { get; set; } = "https://console.anthropic.com/oauth/code/callback";
     public string Scope { get; set; } = "org:create_api_key user:profile user:inference";
+}
+
+/// <summary>Codex (ChatGPT) subscription endpoints; overridable so tests can point at fakes.</summary>
+public sealed class CodexOptions
+{
+    /// <summary>OAuth issuer serving the device-code flow and the token endpoint.</summary>
+    public string Issuer { get; set; } = "https://auth.openai.com";
+
+    /// <summary>The Codex CLI's public client ID.</summary>
+    public string ClientId { get; set; } = "app_EMoamEEZ73f0CkXaXp7hrann";
+
+    /// <summary>Responses API base; requests go to <c>{ApiBaseUrl}/responses</c>.</summary>
+    public string ApiBaseUrl { get; set; } = "https://chatgpt.com/backend-api/codex";
+
+    /// <summary>How long <c>login codex</c> waits for the code to be entered.</summary>
+    public TimeSpan DeviceCodeTimeout { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>A stream that sends nothing for this long is ended with an error event.</summary>
+    public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromSeconds(300);
+
+    public string TokenUrl => Issuer.TrimEnd('/') + "/oauth/token";
 }
 
 /// <summary>Local OpenAI-compatible endpoint settings.</summary>

@@ -8,6 +8,7 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
 {
     public DbSet<Setting> Settings => Set<Setting>();
     public DbSet<ClaudeCredential> ClaudeCredentials => Set<ClaudeCredential>();
+    public DbSet<CodexCredential> CodexCredentials => Set<CodexCredential>();
     public DbSet<CatalogModel> Models => Set<CatalogModel>();
     public DbSet<TierMember> TierMembers => Set<TierMember>();
     public DbSet<TierAlias> TierAliases => Set<TierAlias>();
@@ -18,6 +19,7 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
     {
         modelBuilder.Entity<Setting>().HasKey(s => s.Key);
         modelBuilder.Entity<ClaudeCredential>().Property(c => c.Id).ValueGeneratedNever();
+        modelBuilder.Entity<CodexCredential>().Property(c => c.Id).ValueGeneratedNever();
 
         modelBuilder.Entity<CatalogModel>().HasKey(m => m.Id);
         modelBuilder.Entity<CatalogModel>().Property(m => m.Provider).HasConversion(p => p.ToString().ToLowerInvariant(), p => Enum.Parse<ProviderKind>(p, true));
@@ -51,4 +53,14 @@ public sealed class ClaudeCredential
     public required string ProtectedRefreshToken { get; set; }
     public string? ProtectedAccessToken { get; set; }
     public DateTimeOffset? AccessTokenExpiresAt { get; set; }
+}
+
+/// <summary>The single Codex subscription credential; token and account columns are protected.</summary>
+public sealed class CodexCredential
+{
+    public int Id { get; set; }
+    public required string ProtectedRefreshToken { get; set; }
+    public string? ProtectedAccessToken { get; set; }
+    public DateTimeOffset? AccessTokenExpiresAt { get; set; }
+    public required string ProtectedAccountId { get; set; }
 }

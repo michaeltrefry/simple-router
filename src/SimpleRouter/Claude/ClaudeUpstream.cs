@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
 using SimpleRouter.Api;
@@ -29,9 +30,33 @@ public sealed class ClaudeUpstream(
     public Task SendAsync(UpstreamCall call)
     {
         call.Request["model"] = call.Model.UpstreamModelId;
+        DropUnsignedThinking(call.Request);
         var path = call.CountTokens ? "/v1/messages/count_tokens" : "/v1/messages";
         return ForwardAsync(call.Context, path, JsonSerializer.SerializeToUtf8Bytes(call.Request, WireJson.Relaxed), injectIdentity: !call.CountTokens);
     }
+
+    /// <summary>
+    /// Thinking blocks served by another provider carry no signature, and Anthropic rejects the whole request over one,
+    /// so a session that moves to Claude drops them from its history.
+    /// </summary>
+    private static void DropUnsignedThinking(JsonObject request)
+    {
+        foreach (var message in request["messages"] as JsonArray ?? [])
+        {
+            if (message?["content"] is not JsonArray blocks)
+            {
+                continue;
+            }
+            foreach (var block in blocks.Where(IsUnsignedThinking).ToList())
+            {
+                blocks.Remove(block);
+            }
+        }
+    }
+
+    private static bool IsUnsignedThinking(JsonNode? block) =>
+        block?["type"] is JsonValue t && t.TryGetValue<string>(out var type) && type == "thinking"
+        && !(block["signature"] is JsonValue s && s.TryGetValue<string>(out var signature) && signature.Length > 0);
 
     private async Task ForwardAsync(HttpContext context, string path, byte[] body, bool injectIdentity)
     {

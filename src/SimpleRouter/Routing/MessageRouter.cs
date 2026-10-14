@@ -50,7 +50,7 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         }
 
         var upstream = upstreams.First(u => u.Provider == chosen.Provider);
-        await upstream.SendAsync(new UpstreamCall(context, request, chosen, countTokens, needs.EstimatedTokens));
+        await upstream.SendAsync(new UpstreamCall(context, request, session, chosen, countTokens, needs.EstimatedTokens));
     }
 
     /// <summary>

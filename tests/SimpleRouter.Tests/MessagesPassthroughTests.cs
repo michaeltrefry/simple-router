@@ -44,6 +44,31 @@ public class MessagesPassthroughTests
     }
 
     [Fact]
+    public async Task Unsigned_thinking_from_another_provider_is_dropped_but_signed_thinking_is_kept()
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginAsync();
+        host.Upstream.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
+        var client = await host.AuthorizedClientAsync();
+        const string body = """
+            {"model":"claude-sonnet-4-5","max_tokens":64,"messages":[
+              {"role":"user","content":"hi"},
+              {"role":"assistant","content":[{"type":"thinking","thinking":"from codex","signature":""},{"type":"text","text":"a"}]},
+              {"role":"user","content":"again"},
+              {"role":"assistant","content":[{"type":"thinking","thinking":"from claude","signature":"sig-1"},{"type":"thinking","thinking":"bare"},{"type":"text","text":"b"}]},
+              {"role":"user","content":"more"}]}
+            """;
+
+        using var response = await client.SendAsync(MessagesRequest(body: body));
+
+        using var sent = JsonDocument.Parse(Assert.Single(host.Upstream.Requests).Body);
+        var messages = sent.RootElement.GetProperty("messages");
+        Assert.Equal(["text"], messages[1].GetProperty("content").EnumerateArray().Select(b => b.GetProperty("type").GetString()));
+        Assert.Equal(["thinking", "text"], messages[3].GetProperty("content").EnumerateArray().Select(b => b.GetProperty("type").GetString()));
+        Assert.Equal("sig-1", messages[3].GetProperty("content")[0].GetProperty("signature").GetString());
+    }
+
+    [Fact]
     public async Task Upstream_request_uses_subscription_auth_and_claude_code_identity()
     {
         await using var host = await RouterHost.StartAsync();

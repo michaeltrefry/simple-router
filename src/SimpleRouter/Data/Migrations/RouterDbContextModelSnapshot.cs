@@ -73,6 +73,30 @@ namespace SimpleRouter.Data.Migrations
                     b.ToTable("ClaudeCredentials");
                 });
 
+            modelBuilder.Entity("SimpleRouter.Data.CodexCredential", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTimeOffset?>("AccessTokenExpiresAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ProtectedAccessToken")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ProtectedAccountId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ProtectedRefreshToken")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("CodexCredentials");
+                });
+
             modelBuilder.Entity("SimpleRouter.Data.SessionPin", b =>
                 {
                     b.Property<string>("SessionKey")

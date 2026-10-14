@@ -18,10 +18,9 @@ public class ModelRoutingTests
           "models": [
             { "id": "model-a", "provider": "claude", "upstreamModelId": "upstream-a", "enabled": true },
             { "id": "model-b", "provider": "claude", "upstreamModelId": "upstream-b", "enabled": true },
-            { "id": "model-codex", "provider": "codex", "upstreamModelId": "upstream-codex", "enabled": true },
             { "id": "model-off", "provider": "claude", "upstreamModelId": "upstream-off", "enabled": false }
           ],
-          "tiers": { "mid": [ "model-a", "model-codex", "model-off", "model-b" ], "high": [ "model-b" ] },
+          "tiers": { "mid": [ "model-a", "model-off", "model-b" ], "high": [ "model-b" ] },
           "aliases": [ { "pattern": "*sonnet*", "tier": "mid" } ]
         }
         """;
@@ -112,20 +111,6 @@ public class ModelRoutingTests
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         Assert.Equal("low", response.Headers.GetValues(MessageRouter.ModelClassHeader).Single());
-    }
-
-    [Fact]
-    public async Task Disabled_and_unwired_tier_members_are_never_selected()
-    {
-        await using var host = await StartLoggedInAsync(RouterHost.NewDataDirectory());
-
-        var models = new List<string>();
-        for (var i = 0; i < 3; i++)
-        {
-            models.Add((await SendAsync(host, Message("claude-fable-5-1", firstUser: $"task {i}"))).Model);
-        }
-
-        Assert.All(models, m => Assert.Equal("claude-fable-5-1", m));
     }
 
     [Fact]
