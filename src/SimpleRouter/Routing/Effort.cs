@@ -40,14 +40,18 @@ public static class Effort
     /// <summary>The seed file's shape (camelCase), used wherever an <see cref="EffortMapping"/> is stored.</summary>
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    /// <summary>Codex models accept these unless the catalog lists their own; <c>max</c> only where a model lists it.</summary>
+    /// <summary>Codex models accept these unless the catalog lists their own; <c>none</c>, <c>minimal</c> and <c>max</c> only where a model lists them.</summary>
     public static readonly EffortLevel[] CodexDefaultLevels =
-        [EffortLevel.Minimal, EffortLevel.Low, EffortLevel.Medium, EffortLevel.High, EffortLevel.XHigh];
+        [EffortLevel.Low, EffortLevel.Medium, EffortLevel.High, EffortLevel.XHigh];
+
+    private static readonly Dictionary<string, EffortLevel> ByName =
+        Enum.GetValues<EffortLevel>().ToDictionary(Name, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// The client's effort: <c>output_config.effort</c> when set, else derived from an enabled thinking budget (below
     /// 4,096 tokens low, below 16,384 medium, below 32,768 high, below 65,536 xhigh, else max). Null when neither says
-    /// anything (no effort, thinking absent, disabled or adaptive), so the target keeps its own default.
+    /// anything (no effort, thinking absent or adaptive), so the target keeps its own default. Disabled thinking is
+    /// <c>none</c>, so each target gets its lowest level.
     /// </summary>
     public static EffortLevel? Read(JsonObject request)
     {
@@ -55,8 +59,15 @@ public static class Effort
         {
             return level;
         }
-        if (request["thinking"] is not JsonObject thinking
-            || thinking["type"] is not JsonValue t || !t.TryGetValue<string>(out var type) || type != "enabled"
+        if (request["thinking"] is not JsonObject thinking || thinking["type"] is not JsonValue t || !t.TryGetValue<string>(out var type))
+        {
+            return null;
+        }
+        if (type == "disabled")
+        {
+            return EffortLevel.None;
+        }
+        if (type != "enabled"
             || thinking["budget_tokens"] is not JsonValue b || !b.TryGetValue<long>(out var budget))
         {
             return null;
@@ -79,8 +90,40 @@ public static class Effort
 
     public static string Name(EffortLevel level) => level.ToString().ToLowerInvariant();
 
-    public static bool TryParse(string? name, out EffortLevel level) =>
-        Enum.TryParse(name, ignoreCase: true, out level) && Enum.IsDefined(level) && !int.TryParse(name, out _);
+    public static bool TryParse(string? name, out EffortLevel level)
+    {
+        level = default;
+        return name is not null && ByName.TryGetValue(name.Trim(), out level);
+    }
+
+    /// <summary>
+    /// Throws when a <c>chat_template_kwargs</c> mapping lists a level without kwargs, which would otherwise send nothing.
+    /// </summary>
+    public static void Validate(EffortMapping? mapping, string modelId)
+    {
+        if (mapping is not { Mode: EffortMode.ChatTemplateKwargs })
+        {
+            return;
+        }
+        var missing = (mapping.Levels ?? []).Where(l => mapping.Kwargs?.ContainsKey(Name(l)) != true).Select(Name).ToArray();
+        if (missing.Length > 0)
+        {
+            throw new InvalidDataException($"Model '{modelId}' effort mapping lists {string.Join(", ", missing)} without kwargs.");
+        }
+    }
+
+    /// <summary>A stored mapping, or null when it cannot be read, so one bad row never fails every catalog query.</summary>
+    public static EffortMapping? Deserialize(string stored)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<EffortMapping>(stored, Json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 }
 
 /// <summary>Reads and writes <see cref="EffortLevel"/> by its lowercase name (<c>xhigh</c>, not <c>x_high</c>).</summary>

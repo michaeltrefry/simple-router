@@ -95,6 +95,10 @@ public sealed class RouterHost : IAsyncDisposable
     public static Task<RouterHost> StartInAsync(string dataDirectory, FakeHandler local, params string[] extraArgs) =>
         StartInAsync(dataDirectory, _ => { }, [.. Args(dataDirectory), .. extraArgs], local);
 
+    /// <summary>As above, with extra service registrations (a log capture, say).</summary>
+    public static Task<RouterHost> StartInAsync(string dataDirectory, FakeHandler local, Action<IServiceCollection> configureServices, params string[] extraArgs) =>
+        StartInAsync(dataDirectory, configureServices, [.. Args(dataDirectory), .. extraArgs], local);
+
     private static async Task<RouterHost> StartInAsync(string dataDirectory, Action<IServiceCollection> configureServices, string[] args, FakeHandler? local = null)
     {
         var upstream = new FakeHandler();

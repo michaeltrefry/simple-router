@@ -1,8 +1,10 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using SimpleRouter.Data;
 using SimpleRouter.Routing;
 using SimpleRouter.Tests.Support;
@@ -31,16 +33,18 @@ public class EffortRoutingTests
         return request;
     }
 
+    private const string QwenOverride = """
+        { "models": [ { "id": "qwen-3.8-37b", "enabled": true, "baseUrl": "http://qwen.test/v1",
+            "effort": { "mode": "chat_template_kwargs", "levels": [ "low", "medium" ],
+                        "kwargs": { "low": { "enable_thinking": false }, "medium": { "enable_thinking": true, "depth": 2 } } } } ] }
+        """;
+
     /// <summary>The seeded catalog with qwen-3.8-37b enabled by the local override file and given a kwargs mapping.</summary>
-    private static async Task<RouterHost> StartAsync(string? dataDirectory = null)
+    private static async Task<RouterHost> StartAsync(string? dataDirectory = null, string overrides = QwenOverride, ILoggerProvider? logs = null)
     {
         var overridePath = Path.Combine(Path.GetTempPath(), "simple-router-tests", $"override-{Guid.NewGuid():N}.json");
         Directory.CreateDirectory(Path.GetDirectoryName(overridePath)!);
-        await File.WriteAllTextAsync(overridePath, """
-            { "models": [ { "id": "qwen-3.8-37b", "enabled": true, "baseUrl": "http://qwen.test/v1",
-                "effort": { "mode": "chat_template_kwargs", "levels": [ "low", "medium" ],
-                            "kwargs": { "low": { "enable_thinking": false }, "medium": { "enable_thinking": true, "depth": 2 } } } } ] }
-            """);
+        await File.WriteAllTextAsync(overridePath, overrides);
         var local = new FakeHandler
         {
             Respond = r => r.RequestUri!.AbsolutePath.EndsWith("/models")
@@ -50,7 +54,9 @@ public class EffortRoutingTests
                     Content = new StringContent("""{"id":"c","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}]}""", Encoding.UTF8, "application/json"),
                 },
         };
-        var host = await RouterHost.StartInAsync(dataDirectory ?? RouterHost.NewDataDirectory(), local, $"--SimpleRouter:SeedOverrideFile={overridePath}");
+        var host = await RouterHost.StartInAsync(dataDirectory ?? RouterHost.NewDataDirectory(), local,
+            services => { if (logs is not null) { services.AddLogging(b => b.AddProvider(logs)); } },
+            $"--SimpleRouter:SeedOverrideFile={overridePath}");
         await host.LoginAsync();
         await host.LoginCodexAsync();
         host.Upstream.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
@@ -107,24 +113,110 @@ public class EffortRoutingTests
             host.Codex.Requests.Select(r => JsonNode.Parse(r.Body)!).Select(b => (b["model"]!.GetValue<string>(), b["reasoning"]!["effort"]!.GetValue<string>())));
     }
 
-    [Fact]
-    public async Task A_catalog_seeded_without_effort_mappings_takes_them_from_the_seed_and_keeps_its_own()
+    private static async Task EditAsync(RouterHost host, Func<RouterDbContext, Task> edit)
     {
-        var dataDirectory = RouterHost.NewDataDirectory();
-        var first = await StartAsync(dataDirectory);
-        first.KeepData = true;
-        await using (var db = await first.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        await using var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
+        await edit(db);
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task<RouterHost> RestartAsync(RouterHost previous, ILoggerProvider? logs = null)
+    {
+        previous.KeepData = true;
+        await previous.DisposeAsync();
+        return await StartAsync(previous.DataDirectory, logs: logs);
+    }
+
+    [Fact]
+    public async Task A_catalog_seeded_without_effort_mappings_takes_them_from_the_seed_once_and_keeps_its_own()
+    {
+        var first = await StartAsync();
+        await EditAsync(first, async db =>
         {
+            // As a catalog seeded before effort mappings existed.
+            db.Settings.Remove((await db.Settings.FindAsync(CatalogSeeder.EffortSeededSetting))!);
             (await db.Models.FindAsync("gpt-6-astra"))!.Effort = null;
             (await db.Models.FindAsync("gpt-6-luna"))!.Effort = new EffortMapping(Levels: [EffortLevel.Low]);
-            await db.SaveChangesAsync();
-        }
-        await first.DisposeAsync();
+        });
 
-        await using var host = await StartAsync(dataDirectory);
+        var second = await RestartAsync(first);
+        await EditAsync(second, async db =>
+        {
+            var models = await db.Models.ToDictionaryAsync(m => m.Id);
+            Assert.Equal(EffortLevel.Max, models["gpt-6-astra"].Effort!.Levels![^1]);
+            Assert.Equal([EffortLevel.Low], models["gpt-6-luna"].Effort!.Levels);
+            Assert.Null(models["gpt-6.1-sol"].Effort);
+            models["gpt-6-astra"].Effort = null;
+        });
+
+        await using var third = await RestartAsync(second);
+        await using var reread = await third.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
+        Assert.Null((await reread.Models.FindAsync("gpt-6-astra"))!.Effort);
+    }
+
+    [Fact]
+    public async Task An_override_with_a_kwargs_level_missing_fails_startup()
+    {
+        var e = await Assert.ThrowsAsync<InvalidDataException>(() => StartAsync(overrides: """
+            { "models": [ { "id": "qwen-3.8-37b", "effort": { "mode": "chat_template_kwargs", "levels": [ "none", "high" ],
+                "kwargs": { "none": { "enable_thinking": false } } } } ] }
+            """));
+        Assert.Contains("qwen-3.8-37b", e.Message);
+    }
+
+    [Fact]
+    public async Task A_mapping_cleared_after_a_fresh_seed_stays_cleared()
+    {
+        var first = await StartAsync();
+        await EditAsync(first, async db => (await db.Models.FindAsync("gpt-6-astra"))!.Effort = null);
+
+        await using var host = await RestartAsync(first);
         await using var reread = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
-        Assert.Equal(EffortLevel.Max, (await reread.Models.FindAsync("gpt-6-astra"))!.Effort!.Levels![^1]);
-        Assert.Equal([EffortLevel.Low], (await reread.Models.FindAsync("gpt-6-luna"))!.Effort!.Levels);
-        Assert.Null((await reread.Models.FindAsync("gpt-6.1-sol"))!.Effort);
+        Assert.Null((await reread.Models.FindAsync("gpt-6-astra"))!.Effort);
+    }
+
+    [Fact]
+    public async Task A_seed_with_a_kwargs_level_missing_fails_startup()
+    {
+        var seedPath = Path.Combine(Path.GetTempPath(), "simple-router-tests", $"seed-{Guid.NewGuid():N}.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(seedPath)!);
+        var seed = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "seed.json"));
+        const string complete = """ "kwargs": { "none": { "enable_thinking": false }, "high": { "enable_thinking": true } }""";
+        Assert.Contains(complete, seed);
+        await File.WriteAllTextAsync(seedPath, seed.Replace(complete, """ "kwargs": { "none": { "enable_thinking": false } }"""));
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => RouterHost.StartInAsync(RouterHost.NewDataDirectory(), $"--SimpleRouter:SeedFile={seedPath}"));
+    }
+
+    [Fact]
+    public async Task An_unreadable_stored_mapping_is_ignored_and_named_in_one_warning_at_startup()
+    {
+        var first = await StartAsync();
+        await EditAsync(first, db => db.Database.ExecuteSqlAsync($"UPDATE Models SET Effort = '{{\"levels\":[\"huge\"]}}' WHERE Id = 'gpt-6-astra'"));
+
+        var logs = new CapturingLogs();
+        await using var host = await RestartAsync(first, logs);
+        Assert.Single(logs.Warnings, w => w.Contains("gpt-6-astra") && w.Contains("effort"));
+
+        // The tier's first new session goes to Claude, the second to gpt-6-astra, which now has only the Codex defaults.
+        await SendAsync(host, Message("claude", "max", "max"));
+        await SendAsync(host, Message("astra", "max", "max"));
+        Assert.Equal("""{"summary":"auto","effort":"xhigh"}""", JsonNode.Parse(Assert.Single(host.Codex.Requests).Body)!["reasoning"]!.ToJsonString());
+    }
+
+    private sealed class CapturingLogs : ILoggerProvider, ILogger
+    {
+        public ConcurrentQueue<string> Warnings { get; } = new();
+        public ILogger CreateLogger(string categoryName) => this;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning)
+            {
+                Warnings.Enqueue(formatter(state, exception));
+            }
+        }
+        public void Dispose() { }
     }
 }

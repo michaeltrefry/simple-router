@@ -73,13 +73,13 @@ The seeded local models are disabled and point at placeholder `localhost` URLs w
 
 ### Reasoning effort
 
-The client's effort is `output_config.effort` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Without it, an enabled `thinking` budget sets it: under 4,096 tokens `low`, under 16,384 `medium`, under 32,768 `high`, under 65,536 `xhigh`, else `max`. With neither (thinking absent, disabled or adaptive) no effort is sent and the target uses its default. A level the target does not list is sent as the nearest one it does (the lower on a tie).
+The client's effort is `output_config.effort` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Without it, an enabled `thinking` budget sets it: under 4,096 tokens `low`, under 16,384 `medium`, under 32,768 `high`, under 65,536 `xhigh`, else `max`. Disabled thinking is `none`, so each target gets its lowest listed level. With neither (thinking absent or adaptive) no effort is sent and the target uses its default. A level the target does not list is sent as the nearest one it does (the lower on a tie).
 
 - Claude: the request is passed through unchanged.
-- Codex: `reasoning.effort`, from the model's `effort.levels` (default `minimal` to `xhigh`; `max` becomes `xhigh` unless the model lists `max`).
-- Local: per the model's `effort` in the seed or `seed.local.json`. `mode` is `none` (default, nothing sent), `reasoning_effort` (sends `reasoning_effort: <level>`) or `chat_template_kwargs` (sends `kwargs[<level>]` as `chat_template_kwargs`, e.g. `{ "none": { "enable_thinking": false }, "high": { "enable_thinking": true } }`); `levels` lists the levels the model accepts.
+- Codex: `reasoning.effort`, from the model's `effort.levels` (default `low` to `xhigh`; `none` and `minimal` become `low` and `max` becomes `xhigh` unless the model lists them).
+- Local: per the model's `effort` in the seed or `seed.local.json`. `mode` is `none` (default, nothing sent), `reasoning_effort` (sends `reasoning_effort: <level>`) or `chat_template_kwargs` (sends `kwargs[<level>]` as `chat_template_kwargs`, e.g. `{ "none": { "enable_thinking": false }, "high": { "enable_thinking": true } }`); `levels` lists the levels the model accepts; in `chat_template_kwargs` mode every listed level needs a `kwargs` entry or the router refuses to start.
 
-A database seeded before a model had an `effort` mapping takes it from `seed.json` on the next start.
+A database seeded before effort mappings existed takes them from `seed.json` once, on the next start; a mapping cleared after that stays cleared. A stored mapping that cannot be read is ignored (with a startup warning naming the model).
 
 ## Usage and cost
 

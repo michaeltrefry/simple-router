@@ -52,7 +52,16 @@ public class EffortTests
         """, null)]
     [InlineData("""
         ,"thinking":{"type":"disabled"}
+        """, "none")]
+    [InlineData("""
+        ,"thinking":{"type":"disabled"},"output_config":{"effort":"high"}
+        """, "high")]
+    [InlineData("""
+        ,"output_config":{"effort":"low,high"}
         """, null)]
+    [InlineData("""
+        ,"output_config":{"effort":" medium "}
+        """, "medium")]
     [InlineData("", null)]
     [InlineData("""
         ,"output_config":{"effort":"3"}
@@ -79,8 +88,8 @@ public class EffortTests
         ResponsesRequestTranslator.Translate(Request($$""","output_config":{"effort":"{{effort}}"}"""), model, "k")["reasoning"]?["effort"]?.GetValue<string>();
 
     [Theory]
-    [InlineData("none", "minimal")]
-    [InlineData("minimal", "minimal")]
+    [InlineData("none", "low")]
+    [InlineData("minimal", "low")]
     [InlineData("low", "low")]
     [InlineData("medium", "medium")]
     [InlineData("high", "high")]
@@ -91,6 +100,21 @@ public class EffortTests
 
     [Fact]
     public void A_codex_model_that_lists_max_gets_max() => Assert.Equal("max", CodexEffort(CodexWithMax, "max"));
+
+    [Fact]
+    public void A_codex_model_that_lists_minimal_gets_it() => Assert.Equal("minimal", CodexEffort(CodexWithMax, "none"));
+
+    private const string DisabledThinking = """
+        ,"thinking":{"type":"disabled"}
+        """;
+
+    [Fact]
+    public void Disabled_thinking_sends_the_lowest_level_each_target_lists()
+    {
+        Assert.Equal("low", ResponsesRequestTranslator.Translate(Request(DisabledThinking), CodexDefault, "k")["reasoning"]!["effort"]!.GetValue<string>());
+        var qwen = ChatRequestTranslator.Translate(Request(DisabledThinking), Local(NoneOrHigh), 0);
+        Assert.Equal("""{"enable_thinking":false}""", qwen["chat_template_kwargs"]!.ToJsonString());
+    }
 
     [Fact]
     public void Codex_keeps_its_reasoning_summary_and_gets_no_effort_without_one()
@@ -117,6 +141,11 @@ public class EffortTests
     private const string Kwargs = """
         {"mode":"chat_template_kwargs","levels":["low","high"],
          "kwargs":{"low":{"enable_thinking":false},"high":{"enable_thinking":true}}}
+        """;
+
+    private const string NoneOrHigh = """
+        {"mode":"chat_template_kwargs","levels":["none","high"],
+         "kwargs":{"none":{"enable_thinking":false},"high":{"enable_thinking":true}}}
         """;
 
     private static JsonObject LocalChat(string? mapping, string effort) =>
@@ -178,5 +207,24 @@ public class EffortTests
         Assert.Contains("\"chat_template_kwargs\"", json);
         Assert.Equal(json, JsonSerializer.Serialize(Mapping(json), Effort.Json));
         Assert.Throws<JsonException>(() => Mapping("""{"levels":["huge"]}"""));
+        Assert.Throws<JsonException>(() => Mapping("""{"levels":["low,high"]}"""));
+    }
+
+    [Fact]
+    public void A_chat_template_kwargs_mapping_must_give_kwargs_for_every_listed_level()
+    {
+        Effort.Validate(Mapping(Kwargs), "local-a");
+        Effort.Validate(Mapping("""{"mode":"reasoning_effort","levels":["low"]}"""), "local-a");
+        var missing = Mapping("""{"mode":"chat_template_kwargs","levels":["low","high"],"kwargs":{"low":{"enable_thinking":false}}}""");
+        var e = Assert.Throws<InvalidDataException>(() => Effort.Validate(missing, "local-a"));
+        Assert.Contains("local-a", e.Message);
+        Assert.Contains("high", e.Message);
+    }
+
+    [Fact]
+    public void A_stored_mapping_that_does_not_read_is_null()
+    {
+        Assert.Null(Effort.Deserialize("""{"levels":["huge"]}"""));
+        Assert.Equal([EffortLevel.Low, EffortLevel.High], Effort.Deserialize(Kwargs)!.Levels);
     }
 }

@@ -32,7 +32,7 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
         // Stored as seed-shaped JSON and compared by it, so a mapping edited in place is still saved.
         modelBuilder.Entity<CatalogModel>().Property(m => m.Effort).HasConversion(
             e => e == null ? null : JsonSerializer.Serialize(e, Effort.Json),
-            e => e == null ? null : JsonSerializer.Deserialize<EffortMapping>(e, Effort.Json),
+            e => e == null ? null : Effort.Deserialize(e),
             new ValueComparer<EffortMapping?>(
                 (a, b) => JsonSerializer.Serialize(a, Effort.Json) == JsonSerializer.Serialize(b, Effort.Json),
                 e => JsonSerializer.Serialize(e, Effort.Json).GetHashCode(),
