@@ -98,4 +98,7 @@ public sealed class LimitOptions
 
     /// <summary>An overloaded or failing (5xx, 529) or unreachable subscription.</summary>
     public TimeSpan OverloadedCooldown { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>The provider rejected the subscription account or credentials; applies to all of its models.</summary>
+    public TimeSpan AuthRejectionCooldown { get; set; } = TimeSpan.FromMinutes(5);
 }

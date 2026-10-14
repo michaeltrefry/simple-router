@@ -250,7 +250,7 @@ public sealed class LocalUpstream(
 
     // The token estimate is approximate, so an OpenAI-compatible server's own context-length rejection still moves the request.
     private static readonly Regex ContextOverflow = new(
-        @"context[ _-]?(length|window|size)|maximum context|too many tokens|prompt is too long|exceeds? the (model'?s )?(max|context)",
+        @"context[ _-]?(length|window|size)|maximum context|too many tokens|prompt (is )?too long|context (the )?overflow|exceeds? the (model'?s )?(max|context)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static string? ErrorMessage(JsonNode? error) =>

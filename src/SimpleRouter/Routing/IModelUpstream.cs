@@ -23,6 +23,9 @@ public enum FaultKind
 
     /// <summary>The model reported the request does not fit its context window.</summary>
     ContextOverflow,
+
+    /// <summary>The provider rejected the subscription credentials or account; cools every model of that provider.</summary>
+    AuthRejected,
 }
 
 /// <summary>A <see cref="FaultKind"/> with the reset the provider reported, if any.</summary>

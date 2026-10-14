@@ -109,7 +109,7 @@ public class ModelRoutingTests
 
         using var response = await client.SendAsync(Message("claude-haiku-5-5"));
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
         Assert.Equal("low", response.Headers.GetValues(MessageRouter.ModelClassHeader).Single());
     }
 

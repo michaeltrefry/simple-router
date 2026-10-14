@@ -60,7 +60,7 @@ public static class LimitHeaders
         _ => null,
     };
 
-    /// <summary>A reset instant given as unix seconds or an RFC 3339 timestamp.</summary>
+    /// <summary>A reset instant given as unix seconds, unix milliseconds or an RFC 3339 timestamp.</summary>
     public static DateTimeOffset? Instant(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -69,10 +69,15 @@ public static class LimitHeaders
         }
         if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
         {
-            return seconds > 0 ? DateTimeOffset.FromUnixTimeMilliseconds((long)(seconds * 1000)) : null;
+            // Unix seconds pass 1e11 only in the year 5138; anything larger is milliseconds.
+            var milliseconds = seconds > UnixSecondsCeiling ? seconds : seconds * 1000;
+            return seconds > 0 && milliseconds <= MaxUnixMilliseconds ? DateTimeOffset.FromUnixTimeMilliseconds((long)milliseconds) : null;
         }
         return DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var instant) ? instant : null;
     }
+
+    private const double UnixSecondsCeiling = 1e11;
+    private static readonly double MaxUnixMilliseconds = DateTimeOffset.MaxValue.ToUnixTimeMilliseconds();
 
     public static DateTimeOffset? After(DateTimeOffset now, double? seconds) => seconds > 0 ? now.AddSeconds(seconds.Value) : null;
 

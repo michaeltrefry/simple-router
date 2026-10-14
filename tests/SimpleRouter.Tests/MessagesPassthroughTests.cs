@@ -222,16 +222,19 @@ public class MessagesPassthroughTests
     }
 
     [Fact]
-    public async Task Without_any_login_the_tier_is_empty_and_the_503_names_the_login_commands()
+    public async Task Without_any_login_the_tier_is_empty_and_the_exhaustion_429_names_the_login_commands()
     {
         await using var host = await RouterHost.StartAsync();
         var client = await host.AuthorizedClientAsync();
 
         using var response = await client.SendAsync(MessagesRequest());
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        var message = JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["message"]!.GetValue<string>();
-        Assert.StartsWith("No enabled model is available in the mid tier.", message);
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        Assert.Equal("60", response.Headers.GetValues("Retry-After").Single());
+        var error = JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!;
+        Assert.Equal("rate_limit_error", error["type"]!.GetValue<string>());
+        var message = error["message"]!.GetValue<string>();
+        Assert.StartsWith("model_class_unavailable: no model in the mid tier", message);
         Assert.Contains("'simple-router login claude'", message);
         Assert.Contains("'simple-router login codex'", message);
         Assert.Empty(host.Upstream.Requests);

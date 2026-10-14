@@ -48,4 +48,19 @@ public class LimitHeadersTests
 
         Assert.Equal(new LimitReading(true, Now.AddHours(3)), LimitHeaders.Anthropic(response.Headers));
     }
+
+    [Theory]
+    [InlineData("1760000000")]
+    [InlineData("1760000000000")]
+    [InlineData("2025-10-09T08:53:20Z")]
+    public void A_reset_given_in_unix_seconds_milliseconds_or_rfc_3339_names_the_same_instant(string value)
+    {
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1760000000), LimitHeaders.Instant(value));
+    }
+
+    [Fact]
+    public void A_reset_beyond_any_representable_instant_is_ignored()
+    {
+        Assert.Null(LimitHeaders.Instant("1e30"));
+    }
 }

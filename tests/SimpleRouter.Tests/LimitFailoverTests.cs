@@ -336,12 +336,17 @@ public class LimitFailoverTests
         Assert.Equal("claude-a", await PinAsync(host, "s1"));
     }
 
-    [Fact]
-    public async Task A_local_context_length_rejection_is_served_by_a_fitting_model_and_re_pins_the_session()
+    [Theory]
+    [InlineData("This model's maximum context length is 1000 tokens.")]
+    [InlineData("Context overflow: the request does not fit.")]
+    [InlineData("Trying to keep the first 2000 tokens when context the overflows.")]
+    [InlineData("Prompt too long for this model.")]
+    public async Task A_local_context_length_rejection_is_served_by_a_fitting_model_and_re_pins_the_session(string rejection)
     {
         var (host, fakes) = await StartAsync();
         await using var _host = host;
-        fakes.LocalChat = _ => Json("""{"error":{"message":"This model's maximum context length is 1000 tokens.","type":"invalid_request_error"}}""", HttpStatusCode.BadRequest);
+        fakes.LocalChat = _ => Json(new JsonObject { ["error"] = new JsonObject { ["message"] = rejection, ["type"] = "invalid_request_error" } }.ToJsonString(),
+            HttpStatusCode.BadRequest);
 
         await SendOkAsync(host, Message("s1", "mid"));
 
@@ -412,5 +417,181 @@ public class LimitFailoverTests
         await Task.Delay(TimeSpan.FromSeconds(1.5));
 
         Assert.Equal(ModelStatus.Eligible, (await StatusAsync(host, "claude-a")).Status);
+    }
+
+    private static HttpResponseMessage ClaudeError(HttpStatusCode status, string type, string message) =>
+        Json(new JsonObject
+        {
+            ["type"] = "error",
+            ["error"] = new JsonObject { ["type"] = type, ["message"] = message },
+        }.ToJsonString(), status);
+
+    private static async Task<string> ExhaustionMessageAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        var error = JsonNode.Parse(body)!["error"]!;
+        Assert.Equal("rate_limit_error", error["type"]!.GetValue<string>());
+        var message = error["message"]!.GetValue<string>();
+        Assert.StartsWith("model_class_unavailable: ", message);
+        Assert.True(DarkFactoryMatchers.ReviewerUsageLimited((int)response.StatusCode, body));
+        Assert.True(DarkFactoryMatchers.WorkerUsageLimited(body));
+        Assert.True(DarkFactoryMatchers.WorkerModelClassUnavailable(message));
+        return message;
+    }
+
+    [Fact]
+    public async Task A_tier_whose_only_local_refuses_the_connection_answers_the_exhaustion_429_with_the_fixed_backoff()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        {
+            (await db.Models.SingleAsync(m => m.Id == "claude-a")).Enabled = false;
+            await db.SaveChangesAsync();
+        }
+        fakes.LocalChat = _ => throw new HttpRequestException("connection refused");
+
+        using var response = await host.Client.SendAsync(Message("s1", "mid"));
+
+        var message = await ExhaustionMessageAsync(response);
+        Assert.Equal("60", response.Headers.GetValues("Retry-After").Single());
+        Assert.Equal("mid", response.Headers.GetValues(MessageRouter.ModelClassHeader).Single());
+        Assert.DoesNotContain("simple-router login", message);
+        Assert.Single(LocalChats(host));
+        Assert.Equal(ModelStatus.Unhealthy, (await StatusAsync(host, "local-l")).Status);
+    }
+
+    [Fact]
+    public async Task A_claude_403_refusing_the_model_for_the_plan_re_pins_and_cools_that_model_for_hours()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        fakes.Claude["upstream-a"] = () => ClaudeError(HttpStatusCode.Forbidden, "permission_error", "Your plan does not include this model.");
+
+        var before = DateTimeOffset.UtcNow;
+        await SendOkAsync(host, Message("s1", "high"));
+
+        Assert.Equal(["upstream-a", "upstream-b"], ClaudeModels(host));
+        Assert.Equal("claude-b", await PinAsync(host, "s1"));
+        AssertNear(before.AddHours(6), await CoolingUntilAsync(host, "claude-a"));
+        Assert.Equal(ModelStatus.Eligible, (await StatusAsync(host, "claude-b")).Status);
+    }
+
+    [Fact]
+    public async Task A_claude_404_not_found_re_pins_and_cools_that_model_for_hours()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        fakes.Claude["upstream-a"] = () => ClaudeError(HttpStatusCode.NotFound, "not_found_error", "model: upstream-a");
+
+        var before = DateTimeOffset.UtcNow;
+        await SendOkAsync(host, Message("s1", "high"));
+
+        Assert.Equal(["upstream-a", "upstream-b"], ClaudeModels(host));
+        Assert.Equal("claude-b", await PinAsync(host, "s1"));
+        AssertNear(before.AddHours(6), await CoolingUntilAsync(host, "claude-a"));
+    }
+
+    [Fact]
+    public async Task Any_other_claude_404_is_passed_through_unchanged()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        var error = new JsonObject { ["type"] = "error", ["error"] = new JsonObject { ["type"] = "invalid_request_error", ["message"] = new string('n', 70_000) } }.ToJsonString();
+        fakes.Claude["upstream-a"] = () => Json(error, HttpStatusCode.NotFound);
+
+        using var response = await host.Client.SendAsync(Message("s1", "high"));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal(error, await response.Content.ReadAsStringAsync());
+        Assert.Equal(["upstream-a"], ClaudeModels(host));
+        Assert.Equal(ModelStatus.Eligible, (await StatusAsync(host, "claude-a")).Status);
+    }
+
+    [Fact]
+    public async Task A_claude_account_rejection_moves_the_session_to_another_provider_and_benches_every_claude_model_briefly()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        // The low tier's first turn goes to Codex; the next new session lands on Claude.
+        await SendOkAsync(host, Message("codex-first", "low"));
+        fakes.Claude["upstream-b"] = () => ClaudeError(HttpStatusCode.Forbidden, "permission_error", "OAuth authentication is currently not allowed for this organization.");
+
+        var before = DateTimeOffset.UtcNow;
+        await SendOkAsync(host, Message("s1", "low"));
+
+        Assert.Equal(["upstream-b"], ClaudeModels(host));
+        Assert.Equal(2, host.Codex.Requests.Count);
+        Assert.Equal("codex-c", await PinAsync(host, "s1"));
+        foreach (var claude in new[] { "claude-a", "claude-b", "claude-x" })
+        {
+            var status = await StatusAsync(host, claude);
+            Assert.Equal(ModelStatus.AuthRejected, status.Status);
+            Assert.Equal("login needed (auth rejected)", status.Label);
+            AssertNear(before.AddMinutes(5), status.CoolingUntil!.Value);
+        }
+        Assert.Equal(ModelStatus.Eligible, (await StatusAsync(host, "codex-c")).Status);
+    }
+
+    [Fact]
+    public async Task A_tier_exhausted_by_an_account_rejection_answers_the_exhaustion_429_with_the_login_hint()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        fakes.Claude["upstream-a"] = () => Json("""{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}""", HttpStatusCode.Unauthorized);
+
+        using var response = await host.Client.SendAsync(Message("s1", "high"));
+
+        var message = await ExhaustionMessageAsync(response);
+        Assert.EndsWith("Run 'simple-router login claude'.", message);
+        Assert.InRange(int.Parse(response.Headers.GetValues("Retry-After").Single()), 295, 300);
+        Assert.Equal(["upstream-a"], ClaudeModels(host));
+    }
+
+    [Fact]
+    public async Task A_refused_claude_connection_re_pins_and_cools_that_model_briefly()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        fakes.Claude["upstream-a"] = () => throw new HttpRequestException("connection refused");
+
+        var before = DateTimeOffset.UtcNow;
+        await SendOkAsync(host, Message("s1", "high"));
+
+        Assert.Equal(["upstream-a", "upstream-b"], ClaudeModels(host));
+        Assert.Equal("claude-b", await PinAsync(host, "s1"));
+        AssertNear(before.AddSeconds(30), await CoolingUntilAsync(host, "claude-a"));
+    }
+
+    [Fact]
+    public async Task An_overload_before_anything_is_written_to_a_non_streaming_client_moves_the_request_and_cools_codex_briefly()
+    {
+        var (host, _) = await StartAsync();
+        await using var _host = host;
+        host.Codex.Respond = _ => Stream(Sse(Created, TextDelta(0, "Half"),
+            """{"type":"response.failed","response":{"error":{"code":"server_is_overloaded","message":"Overloaded."}}}"""));
+
+        var before = DateTimeOffset.UtcNow;
+        await SendOkAsync(host, Message("s1", "low"));
+
+        Assert.Single(host.Codex.Requests);
+        Assert.Equal(["upstream-b"], ClaudeModels(host));
+        Assert.Equal("claude-b", await PinAsync(host, "s1"));
+        AssertNear(before.AddSeconds(30), await CoolingUntilAsync(host, "codex-c"));
+    }
+
+    [Fact]
+    public async Task A_reported_reset_more_than_eight_days_away_cools_the_model_for_eight_days()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        fakes.Claude["upstream-a"] = () => Limited(("anthropic-ratelimit-unified-status", "rejected"),
+            ("anthropic-ratelimit-unified-reset", DateTimeOffset.UtcNow.AddDays(20).ToUnixTimeSeconds().ToString()));
+
+        var before = DateTimeOffset.UtcNow;
+        await SendOkAsync(host, Message("s1", "high"));
+
+        AssertNear(before.AddDays(8), await CoolingUntilAsync(host, "claude-a"));
     }
 }

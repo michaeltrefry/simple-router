@@ -7,12 +7,11 @@ namespace SimpleRouter.Routing;
 /// <summary>
 /// Resolves the tier and session model for a Messages request and hands it to that model's upstream. A model that fails
 /// before writing anything is cooled (<see cref="ModelCooldowns"/>) and the request moves to the next eligible model of
-/// the same tier, re-pinning the session; each model is tried at most once. When the tier runs out, cooling models make
-/// it the exhaustion 429 (<see cref="Unavailable"/>), never another tier; a tier empty for other reasons (no login, no
-/// model fits) stays a 503.
+/// the same tier, re-pinning the session; each model is tried at most once. A tier left with no model, for any reason,
+/// is the exhaustion 429 (<see cref="Unavailable"/>), never another tier.
 /// </summary>
 public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpstream> upstreams, ModelCooldowns cooldowns, TimeProvider time,
-    ILogger<MessageRouter> logger)
+    Microsoft.Extensions.Options.IOptions<RouterOptions> options, ILogger<MessageRouter> logger)
 {
     public const string ModelClassHeader = "X-Weave-Model-Class";
 
@@ -83,22 +82,25 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
 
     private IModelUpstream UpstreamFor(Data.CatalogModel model) => upstreams.First(u => u.Provider == model.Provider);
 
+    /// <summary>
+    /// Clients pause on a 429 <c>rate_limit_error</c> and retry after <c>Retry-After</c>, so every empty tier answers so:
+    /// until the earliest cooldown ends, else after the fixed limit backoff. Missing or rejected logins are named.
+    /// </summary>
     private async Task WriteTierEmptyAsync(HttpContext context, ModelTier tier, RequestNeeds needs, CancellationToken ct)
     {
-        if (await selector.EarliestResetAsync(tier, needs, ct) is { } reset)
-        {
-            var seconds = Math.Max(1, (long)Math.Ceiling((reset - time.GetUtcNow()).TotalSeconds));
-            context.Response.Headers.RetryAfter = seconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            await AnthropicError.WriteAsync(context, StatusCodes.Status429TooManyRequests, "rate_limit_error",
-                $"{Unavailable}: every model in the {tier.Name()} tier is at a usage limit or unavailable; the earliest resets at {reset.UtcDateTime:u}.");
-            return;
-        }
+        var now = time.GetUtcNow();
+        var reset = await selector.EarliestResetAsync(tier, needs, ct);
+        var wait = reset is { } r ? r - now : options.Value.Limits.LimitCooldown;
+        var seconds = Math.Max(1, (long)Math.Ceiling(wait.TotalSeconds));
+        context.Response.Headers.RetryAfter = seconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
         var missing = await selector.MissingLoginsAsync(tier, needs, ct);
         var hint = missing.Count == 0
             ? ""
             : " Run " + string.Join(" or ", missing.Select(p => $"'simple-router login {p.ToString().ToLowerInvariant()}'")) + ".";
-        await AnthropicError.WriteAsync(context, StatusCodes.Status503ServiceUnavailable, "api_error",
-            $"No enabled model is available in the {tier.Name()} tier.{hint}");
+        var when = reset is { } at ? $"the earliest resets at {at.UtcDateTime:u}" : $"retry in {seconds} s";
+        await AnthropicError.WriteAsync(context, StatusCodes.Status429TooManyRequests, "rate_limit_error",
+            $"{Unavailable}: no model in the {tier.Name()} tier can serve this request now (usage limit, login or availability); {when}.{hint}");
     }
 
     /// <summary>

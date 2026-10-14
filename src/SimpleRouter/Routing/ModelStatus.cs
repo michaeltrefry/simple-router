@@ -9,6 +9,9 @@ public enum ModelStatus
     UnknownModel,
     Unhealthy,
     Cooling,
+
+    /// <summary>Cooling because the provider rejected the subscription account; a new login may be needed.</summary>
+    AuthRejected,
 }
 
 public static class ModelStatuses
@@ -20,11 +23,12 @@ public static class ModelStatuses
         ModelStatus.NotLoggedIn => "not logged in",
         ModelStatus.UnknownModel => "unknown model",
         ModelStatus.Cooling => "cooling",
+        ModelStatus.AuthRejected => "login needed (auth rejected)",
         _ => "unhealthy",
     };
 }
 
-/// <summary>A catalog model, its current <see cref="ModelStatus"/> and, while cooling, when it may be chosen again.</summary>
+/// <summary>A catalog model, its current <see cref="ModelStatus"/> and, while cooling or auth-rejected, when it may be chosen again.</summary>
 public sealed record ModelStatusEntry(string ModelId, ProviderKind Provider, ModelStatus Status, DateTimeOffset? CoolingUntil = null)
 {
     public string Label => Status == ModelStatus.Cooling && CoolingUntil is { } until

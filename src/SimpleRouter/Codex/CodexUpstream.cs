@@ -75,12 +75,14 @@ public sealed class CodexUpstream(
             {
                 return await ErrorAsync(context, response, limits, now, ct);
             }
-            var errorType = call.Request["stream"] is JsonValue s && s.TryGetValue<bool>(out var streaming) && streaming
-                ? await StreamAsync(context, translator, response, ct)
+            var (errorType, written) = call.Request["stream"] is JsonValue s && s.TryGetValue<bool>(out var streaming) && streaming
+                ? (await StreamAsync(context, translator, response, ct), true)
                 : await AggregateAsync(context, translator, response, ct);
-            if (errorType == AggregateFailover)
+            if (!written)
             {
-                return UpstreamResult.NotServed(new ModelFault(FaultKind.Limited, limits.ResetAt));
+                return UpstreamResult.NotServed(errorType == "rate_limit_error"
+                    ? new ModelFault(FaultKind.Limited, limits.ResetAt)
+                    : new ModelFault(FaultKind.Overloaded));
             }
             return UpstreamResult.ServedWith(errorType switch
             {
@@ -91,9 +93,6 @@ public sealed class CodexUpstream(
             });
         }
     }
-
-    // Returned by AggregateAsync when a usage-limit failure arrived before anything was written.
-    private const string AggregateFailover = "failover";
 
     /// <summary>Sends the translated request with the access token used; a null response means an error was already written.</summary>
     private async Task<(HttpResponseMessage? Response, string? AccessToken)> SendOnceAsync(HttpContext context, byte[] body, string cacheKey, string? rejected)
@@ -150,8 +149,8 @@ public sealed class CodexUpstream(
         return errorType;
     }
 
-    /// <returns><see cref="AggregateFailover"/> when nothing was written because of a usage limit, else as <see cref="StreamAsync"/>.</returns>
-    private async Task<string?> AggregateAsync(HttpContext context, ResponsesStreamTranslator translator, HttpResponseMessage response, CancellationToken ct)
+    /// <returns>The error type as <see cref="StreamAsync"/>; not written when a usage limit or overload left nothing to send.</returns>
+    private async Task<(string? ErrorType, bool Written)> AggregateAsync(HttpContext context, ResponsesStreamTranslator translator, HttpResponseMessage response, CancellationToken ct)
     {
         var builder = new AnthropicMessageBuilder();
         builder.Apply(translator.Start());
@@ -164,16 +163,16 @@ public sealed class CodexUpstream(
         if (builder.Error is { } error)
         {
             var type = ChatRequestTranslator.Str(error["type"]) ?? "api_error";
-            if (type == "rate_limit_error")
+            if (type is "rate_limit_error" or "overloaded_error")
             {
-                return AggregateFailover;
+                return (type, false);
             }
             await AnthropicError.WriteAsync(context, CodexErrors.Status(type), type, ChatRequestTranslator.Str(error["message"]) ?? "Codex response failed.");
-            return type;
+            return (type, true);
         }
         context.Response.ContentType = "application/json";
         await context.Response.Body.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(builder.Message, WireJson.Relaxed), ct);
-        return null;
+        return (null, true);
     }
 
     /// <summary>Feeds every upstream event to the translator until it ends; a stalled, broken or truncated stream ends with an error event.</summary>
@@ -257,8 +256,8 @@ public sealed class CodexUpstream(
     }
 
     /// <summary>
-    /// A limit, plan rejection or overload is returned unwritten for failover. Anything else keeps the upstream status
-    /// with an Anthropic-shaped body.
+    /// A limit, plan rejection, overload or a credential still rejected after the forced refresh is returned unwritten for
+    /// failover. Anything else keeps the upstream status with an Anthropic-shaped body.
     /// </summary>
     private async Task<UpstreamResult> ErrorAsync(HttpContext context, HttpResponseMessage response, LimitReading limits, DateTimeOffset now, CancellationToken ct)
     {
@@ -290,14 +289,14 @@ public sealed class CodexUpstream(
         var type = CodexErrors.TypeForStatus(status);
         if (status is 401 or 403)
         {
-            // A plan or usage refusal is the user's to know about; a rejected credential is the router's to fix, and
-            // passed through it would make the client ask for its own login.
+            // A rejected credential is the router's to fix: passed through it would make the client ask for its own login.
             type = CodexErrors.Type(code);
-            status = CodexErrors.Status(type);
             if (type == "api_error")
             {
-                message = $"Codex rejected the subscription credentials (HTTP {(int)response.StatusCode}); run 'simple-router login codex'.";
+                logger.LogWarning("Codex rejected the subscription credentials (HTTP {status}); not serving this request from it", status);
+                return UpstreamResult.NotServed(new ModelFault(FaultKind.AuthRejected));
             }
+            status = CodexErrors.Status(type);
         }
         await AnthropicError.WriteAsync(context, status, type, message ?? $"Codex returned HTTP {(int)response.StatusCode}.");
         return UpstreamResult.Served;

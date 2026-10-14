@@ -188,18 +188,32 @@ public class CodexRoutingTests
     }
 
     [Fact]
-    public async Task A_credential_rejected_even_after_a_forced_refresh_is_a_router_side_502_not_a_client_401()
+    public async Task A_credential_rejected_even_after_a_forced_refresh_moves_the_session_and_benches_every_codex_model_briefly()
     {
         await using var host = await StartAsync(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("{}") });
         host.CodexAuth.Respond = _ => Refreshed();
         await PinNextSessionToCodexAsync(host, "high");
 
+        var before = DateTimeOffset.UtcNow;
         using var response = await host.Client.SendAsync(Message("codex-session"));
 
-        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        Assert.Contains("login codex", await response.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("claude-opus-5-5", await PinnedModelAsync(host, "codex-session"));
         Assert.Equal(["Bearer codex-access-current", "Bearer codex-access-new"], host.Codex.Requests.Select(r => r.Headers["authorization"]));
         Assert.Single(host.CodexAuth.Requests);
+        await AssertCodexAuthRejectedAsync(host, before);
+    }
+
+    private static async Task AssertCodexAuthRejectedAsync(RouterHost host, DateTimeOffset before)
+    {
+        var codex = (await host.Services.GetRequiredService<ModelSelector>().StatusesAsync(CancellationToken.None))
+            .Where(m => m.Provider == ProviderKind.Codex).ToList();
+        Assert.Equal(4, codex.Count);
+        Assert.All(codex, m =>
+        {
+            Assert.Equal("login needed (auth rejected)", m.Label);
+            Assert.InRange(m.CoolingUntil!.Value, before.AddMinutes(5).AddSeconds(-5), before.AddMinutes(5).AddSeconds(5));
+        });
     }
 
     [Fact]
@@ -236,16 +250,18 @@ public class CodexRoutingTests
     }
 
     [Fact]
-    public async Task A_403_without_a_known_code_asks_for_a_codex_login()
+    public async Task A_403_without_a_known_code_is_an_account_rejection_that_moves_the_session()
     {
         await using var host = await StartAsync(_ => new HttpResponseMessage(HttpStatusCode.Forbidden) { Content = new StringContent("""{"detail":"Forbidden"}""") });
         await PinNextSessionToCodexAsync(host, "high");
 
+        var before = DateTimeOffset.UtcNow;
         using var response = await host.Client.SendAsync(Message("codex-session"));
 
-        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        Assert.Contains("run 'simple-router login codex'", await response.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("claude-opus-5-5", await PinnedModelAsync(host, "codex-session"));
         Assert.Single(host.Codex.Requests);
+        await AssertCodexAuthRejectedAsync(host, before);
     }
 
     [Fact]
