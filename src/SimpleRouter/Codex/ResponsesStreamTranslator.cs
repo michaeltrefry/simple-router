@@ -43,6 +43,9 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
     /// <summary>The Anthropic error type the stream ended with; null unless it failed.</summary>
     public string? ErrorType { get; private set; }
 
+    /// <summary>The message the stream failed with; null unless it failed.</summary>
+    public string? ErrorMessage { get; private set; }
+
     public JsonObject Start() => new()
     {
         ["type"] = "message_start",
@@ -119,7 +122,7 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
     {
         var events = new List<JsonObject>();
         CloseLive(events);
-        (ErrorCode, ErrorType) = (code, CodexErrors.Type(code));
+        (ErrorCode, ErrorType, ErrorMessage) = (code, CodexErrors.Type(code), message);
         events.Add(new JsonObject
         {
             ["type"] = "error",

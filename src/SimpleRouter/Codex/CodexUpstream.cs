@@ -95,7 +95,7 @@ public sealed class CodexUpstream(
     /// <summary>A stream failure another model may do better on: a limit, an overload or a prompt too long for the context.</summary>
     private static ModelFault? StreamFault(ResponsesStreamTranslator translator, LimitReading limits) => translator switch
     {
-        { ErrorCode: "context_length_exceeded" } => new ModelFault(FaultKind.ContextOverflow),
+        { ErrorCode: "context_length_exceeded" } => new ModelFault(FaultKind.ContextOverflow, Message: translator.ErrorMessage),
         { ErrorType: "rate_limit_error" } => new ModelFault(FaultKind.Limited, limits.ResetAt),
         { ErrorType: "overloaded_error" } => new ModelFault(FaultKind.Overloaded),
         _ => null,
@@ -138,14 +138,33 @@ public sealed class CodexUpstream(
     }
 
     /// <summary>
-    /// Streams the translation, withholding <c>message_start</c> until the first content or terminal event so a failure
-    /// another model may serve (<see cref="StreamFault"/>) that arrives first leaves the response untouched.
+    /// Streams the translation, withholding <c>message_start</c> until the first content or terminal event (or the end of
+    /// the <see cref="StreamStartGrace"/>) so a failure another model may serve (<see cref="StreamFault"/>) that arrives
+    /// first leaves the response untouched.
     /// </summary>
     /// <returns>False when nothing was written.</returns>
     private async Task<bool> StreamAsync(HttpContext context, ResponsesStreamTranslator translator, HttpResponseMessage response, CancellationToken ct)
     {
         var start = translator.Start();
         var started = false;
+        void Begin(List<JsonObject> events)
+        {
+            context.Response.StatusCode = StatusCodes.Status200OK;
+            context.Response.ContentType = "text/event-stream";
+            context.Response.Headers.CacheControl = "no-cache";
+            context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+            events.Insert(0, start);
+            started = true;
+        }
+        var grace = new StreamStartGrace(options.Value.Limits.StreamStartGrace, time, async () =>
+        {
+            if (!started)
+            {
+                var events = new List<JsonObject>();
+                Begin(events);
+                await WriteAsync(context, events, ct);
+            }
+        });
         await TranslateAsync(translator, response, async events =>
         {
             if (!started)
@@ -154,15 +173,10 @@ public sealed class CodexUpstream(
                 {
                     return;
                 }
-                context.Response.StatusCode = StatusCodes.Status200OK;
-                context.Response.ContentType = "text/event-stream";
-                context.Response.Headers.CacheControl = "no-cache";
-                context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
-                events.Insert(0, start);
-                started = true;
+                Begin(events);
             }
             await WriteAsync(context, events, ct);
-        }, ct);
+        }, ct, grace);
         return started;
     }
 
@@ -175,7 +189,7 @@ public sealed class CodexUpstream(
         {
             events.ForEach(builder.Apply);
             return Task.CompletedTask;
-        }, ct);
+        }, ct, grace: null);
 
         if (builder.Error is { } error)
         {
@@ -193,7 +207,8 @@ public sealed class CodexUpstream(
     }
 
     /// <summary>Feeds every upstream event to the translator until it ends; a stalled, broken or truncated stream ends with an error event.</summary>
-    private async Task TranslateAsync(ResponsesStreamTranslator translator, HttpResponseMessage response, Func<List<JsonObject>, Task> emit, CancellationToken ct)
+    private async Task TranslateAsync(ResponsesStreamTranslator translator, HttpResponseMessage response, Func<List<JsonObject>, Task> emit,
+        CancellationToken ct, StreamStartGrace? grace)
     {
         try
         {
@@ -208,7 +223,8 @@ public sealed class CodexUpstream(
                     idle.CancelAfter(idleTimeout);
                     try
                     {
-                        line = await reader.ReadLineAsync(idle.Token);
+                        var read = reader.ReadLineAsync(idle.Token).AsTask();
+                        line = grace is null ? await read : await grace.AwaitAsync(read, ct);
                     }
                     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                     {
@@ -333,7 +349,7 @@ public sealed class CodexUpstream(
         }
         if (code == "context_length_exceeded" || (status is 400 or 413 && ContextOverflow.IsReported(message)))
         {
-            return new ModelFault(FaultKind.ContextOverflow);
+            return new ModelFault(FaultKind.ContextOverflow, Message: message);
         }
         if (status == 429 || CodexErrors.Type(code) == "rate_limit_error")
         {

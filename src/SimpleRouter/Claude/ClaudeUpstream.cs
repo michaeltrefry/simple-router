@@ -181,7 +181,7 @@ public sealed class ClaudeUpstream(
             var (type, text) = Error(errorBody);
             return status switch
             {
-                400 => ContextOverflow.IsReported(text) ? new ModelFault(FaultKind.ContextOverflow) : null,
+                400 => ContextOverflow.IsReported(text) ? new ModelFault(FaultKind.ContextOverflow, Message: text) : null,
                 404 => type == "not_found_error" ? new ModelFault(FaultKind.PlanRejected) : null,
                 403 when type == "permission_error" && text is not null && PlanRefusal.IsMatch(text) => new ModelFault(FaultKind.PlanRejected),
                 _ => new ModelFault(FaultKind.AuthRejected),

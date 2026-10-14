@@ -8,7 +8,7 @@ namespace SimpleRouter.Tests;
 public class ResponsesStreamTranslatorTests
 {
     /// <summary>Runs a Responses SSE fixture through the translator as the upstream loop does, and parses the result strictly.</summary>
-    private static AnthropicSse.Message Translate(string responsesSse, int estimate = 7)
+    internal static AnthropicSse.Message Translate(string responsesSse, int estimate = 7)
     {
         var translator = new ResponsesStreamTranslator("gpt-6.1-sol", estimate);
         var events = new List<JsonObject> { translator.Start() };
@@ -50,17 +50,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void Parallel_calls_with_fragmented_arguments_keep_their_own_call_ids_and_inputs()
     {
-        var message = Translate(Sse(
-            Created,
-            CallAdded(0, "call_one", "read_file"),
-            ArgsDelta(0, "{\"pa"),
-            CallAdded(1, "call_two", "read_file"),
-            ArgsDelta(1, "{\"path\":"),
-            ArgsDelta(0, "th\":\"a.txt\"}"),
-            ArgsDelta(1, "\"b.txt\"}"),
-            CallDone(0, "call_one", "read_file", ""),
-            CallDone(1, "call_two", "read_file", ""),
-            Completed()));
+        var message = Translate(ParallelCalls);
 
         Assert.Equal(["tool_use", "tool_use"], message.Blocks.Select(b => b.Type));
         Assert.Equal(["call_one", "call_two"], message.Blocks.Select(b => b.Id));
@@ -72,7 +62,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void A_plain_text_completion_ends_the_turn()
     {
-        var message = Translate(Sse(Created, TextDelta(0, "Hello"), ItemDone(0, "message"), Completed(input: 9, output: 1)));
+        var message = Translate(PlainText);
 
         Assert.Equal("Hello", Assert.Single(message.Blocks).Text);
         Assert.Equal("end_turn", message.StopReason);
@@ -83,13 +73,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void An_incomplete_response_stops_at_max_tokens_and_drops_an_unfinished_call()
     {
-        var message = Translate(Sse(
-            Created,
-            TextDelta(0, "Partial"),
-            ItemDone(0, "message"),
-            CallAdded(1, "call_cut", "write_file"),
-            ArgsDelta(1, "{\"content\":\"abc"),
-            """{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":5,"output_tokens":64}}}"""));
+        var message = Translate(IncompleteWithUnfinishedCall);
 
         Assert.Equal("Partial", Assert.Single(message.Blocks).Text);
         Assert.Equal("max_tokens", message.StopReason);
@@ -99,10 +83,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void An_incomplete_response_after_a_finished_call_still_asks_the_client_to_run_it()
     {
-        var message = Translate(Sse(
-            Created,
-            CallDone(0, "call_done", "ls", "{}"),
-            """{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"""));
+        var message = Translate(IncompleteAfterFinishedCall);
 
         Assert.Equal("call_done", Assert.Single(message.Blocks).Id);
         Assert.Equal("tool_use", message.StopReason);
@@ -111,10 +92,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void A_failed_response_ends_with_an_error_event_and_no_message_stop()
     {
-        var message = Translate(Sse(
-            Created,
-            TextDelta(0, "Start"),
-            """{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"The model crashed."}}}"""));
+        var message = Translate(FailedAfterText);
 
         Assert.Equal("The model crashed.", message.Error);
         Assert.Equal("Start", Assert.Single(message.Blocks).Text);
@@ -142,7 +120,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void A_stream_without_a_terminal_event_is_aborted()
     {
-        var message = Translate(Sse(Created, TextDelta(0, "Half")));
+        var message = Translate(WithoutTerminal);
 
         Assert.Equal("ended early", message.Error);
         Assert.DoesNotContain("message_stop", message.Events);
@@ -151,11 +129,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void Items_that_only_arrive_whole_are_synthesized()
     {
-        var message = Translate(Sse(
-            Created,
-            """{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","summary":[{"type":"summary_text","text":"Thought."}]}}""",
-            """{"type":"response.output_item.done","output_index":1,"item":{"type":"message","content":[{"type":"output_text","text":"Answer."}]}}""",
-            Completed()));
+        var message = Translate(WholeItems);
 
         Assert.Equal(["thinking", "text"], message.Blocks.Select(b => b.Type));
         Assert.Equal(["Thought.", "Answer."], message.Blocks.Select(b => b.Text));
@@ -164,9 +138,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void Output_only_present_on_the_completed_response_is_still_delivered()
     {
-        var output = """[{"type":"message","content":[{"type":"output_text","text":"Late."}]},{"type":"function_call","call_id":"call_late","name":"ls","arguments":"{}"}]""";
-
-        var message = Translate(Sse(Created, Completed(outputItems: output)));
+        var message = Translate(OutputOnlyOnCompleted);
 
         Assert.Equal(["text", "tool_use"], message.Blocks.Select(b => b.Type));
         Assert.Equal("call_late", message.Blocks[1].Id);
@@ -176,11 +148,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void Nameless_calls_are_dropped_and_invalid_call_ids_are_replaced()
     {
-        var message = Translate(Sse(
-            Created,
-            CallDone(0, "call_x", "", "{}"),
-            CallDone(1, "call.with.dots", "ls", "not json"),
-            Completed()));
+        var message = Translate(NamelessAndInvalidCalls);
 
         var block = Assert.Single(message.Blocks);
         Assert.Matches("^toolu_[0-9a-f]{24}$", block.Id);
@@ -214,12 +182,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void A_refusal_streams_as_text_and_stops_with_refusal()
     {
-        var message = Translate(Sse(
-            Created,
-            """{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"I can't "}""",
-            """{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"help with that."}""",
-            ItemDone(0, "message"),
-            Completed()));
+        var message = Translate(Refusal);
 
         Assert.Equal("I can't help with that.", Assert.Single(message.Blocks).Text);
         Assert.Equal("refusal", message.StopReason);
@@ -228,10 +191,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void A_refusal_that_only_arrives_whole_is_folded_and_stops_with_refusal()
     {
-        var message = Translate(Sse(
-            Created,
-            """{"type":"response.output_item.done","output_index":0,"item":{"type":"message","content":[{"type":"refusal","refusal":"No."}]}}""",
-            Completed()));
+        var message = Translate(WholeRefusal);
 
         Assert.Equal("No.", Assert.Single(message.Blocks).Text);
         Assert.Equal("refusal", message.StopReason);
@@ -240,11 +200,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void An_incomplete_response_still_delivers_text_only_on_the_terminal_response_but_not_a_truncated_call()
     {
-        var output = """[{"type":"message","content":[{"type":"output_text","text":"Late."}]},{"type":"function_call","call_id":"call_cut","name":"ls","arguments":"{\"pa"}]""";
-
-        var message = Translate(Sse(
-            Created,
-            $$$"""{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":{{{output}}}}}"""));
+        var message = Translate(IncompleteWithTerminalOutput);
 
         Assert.Equal("Late.", Assert.Single(message.Blocks).Text);
         Assert.Equal("max_tokens", message.StopReason);
@@ -253,14 +209,7 @@ public class ResponsesStreamTranslatorTests
     [Fact]
     public void Encrypted_reasoning_becomes_the_thinking_signature_even_without_a_summary()
     {
-        var message = Translate(Sse(
-            Created,
-            SummaryDelta(0, 0, "Thought."),
-            """{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","summary":[],"encrypted_content":"ENC-A"}}""",
-            """{"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","summary":[],"encrypted_content":"ENC-B"}}""",
-            TextDelta(2, "Done."),
-            ItemDone(2, "message"),
-            Completed()));
+        var message = Translate(EncryptedReasoning);
 
         Assert.Equal(["thinking", "thinking", "text"], message.Blocks.Select(b => b.Type));
         Assert.Equal(["Thought.", ""], message.Blocks.Take(2).Select(b => b.Text));
