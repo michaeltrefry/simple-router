@@ -1,0 +1,47 @@
+@inherits LivePanel<List<RequestRow>>
+@inject DashboardData Dashboard
+
+<section class="card">
+    <h2>Recent requests</h2>
+    @if (Data is null)
+    {
+        <p class="muted">Loading…</p>
+    }
+    else if (Data.Count == 0)
+    {
+        <p class="muted empty">No requests served yet.</p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table id="recent-requests">
+                <thead>
+                    <tr>
+                        <th>Time (UTC)</th><th>Session</th><th>Tier</th><th>Model</th><th>Effort</th>
+                        <th class="num">Latency</th><th>Status</th><th class="num">In / out tokens</th><th class="num">Cost</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in Data)
+                    {
+                        <tr>
+                            <td class="mono">@Time(r.At)</td>
+                            <td class="mono session">@(r.ClientSessionId ?? "—")</td>
+                            <td>@r.Tier.Name()</td>
+                            <td class="mono">@r.ModelId</td>
+                            <td>@(r.Effort ?? "—")</td>
+                            <td class="num">@Latency(r.LatencyMs)</td>
+                            <td><span class="@Pill(r.Status)">@r.Status</span></td>
+                            <td class="num">@Tokens(r.InputTokens) / @Tokens(r.OutputTokens)</td>
+                            <td class="num">@Cost(r.CostUsdMicros)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    protected override Task<List<RequestRow>> QueryAsync(CancellationToken ct) => Dashboard.RecentRequestsAsync(ct);
+}

@@ -39,7 +39,7 @@ public class ModelCooldownsTests
         {
             await db.Database.EnsureCreatedAsync();
         }
-        var cooldowns = new ModelCooldowns(new Factory(options), Options.Create(new RouterOptions()), TimeProvider.System, NullLogger<ModelCooldowns>.Instance);
+        var cooldowns = new ModelCooldowns(new Factory(options), Options.Create(new RouterOptions()), new SimpleRouter.Dashboard.DashboardEvents(), TimeProvider.System, NullLogger<ModelCooldowns>.Instance);
         var model = new CatalogModel { Id = "claude-a", Provider = ProviderKind.Claude, UpstreamModelId = "upstream-a" };
 
         await cooldowns.RecordAsync(model, new ModelFault(FaultKind.Limited));

@@ -1,0 +1,53 @@
+using System.Globalization;
+using SimpleRouter.Routing;
+
+namespace SimpleRouter.Dashboard;
+
+/// <summary>Display text and status-pill styles shared by the dashboard panels.</summary>
+public static class DashboardFormat
+{
+    public static string Time(DateTimeOffset? at) => at is { } value ? value.UtcDateTime.ToString("u", CultureInfo.InvariantCulture) : "—";
+
+    public static string Cost(long micros) => (micros / 1_000_000m).ToString("$0.0000", CultureInfo.InvariantCulture);
+
+    public static string Latency(long ms) => ms < 1000
+        ? $"{ms} ms"
+        : (ms / 1000d).ToString("0.0 s", CultureInfo.InvariantCulture);
+
+    public static string Tokens(long count) => count.ToString("N0", CultureInfo.InvariantCulture);
+
+    /// <summary>Session keys are hashes; a prefix is enough to tell pins apart.</summary>
+    public static string ShortKey(string key) => key.Length <= 12 ? key : key[..12];
+
+    public static string Pill(ModelStatus status) => status switch
+    {
+        ModelStatus.Eligible => "pill ok",
+        ModelStatus.Cooling => "pill warn",
+        ModelStatus.Disabled or ModelStatus.NotLoggedIn => "pill muted",
+        _ => "pill bad",
+    };
+
+    public static string Pill(int httpStatus) => httpStatus switch
+    {
+        < 400 => "pill ok",
+        429 => "pill warn",
+        _ => "pill bad",
+    };
+
+    public static string AccountPill(string state) => state switch
+    {
+        "ok" => "pill ok",
+        "cooling" => "pill warn",
+        "auth_rejected" => "pill bad",
+        _ => "pill muted",
+    };
+
+    public static string AccountLabel(string state) => state switch
+    {
+        "ok" => "ok",
+        "cooling" => "cooling",
+        "auth_rejected" => "login needed (auth rejected)",
+        "not_logged_in" => "not logged in",
+        _ => "no routable models",
+    };
+}

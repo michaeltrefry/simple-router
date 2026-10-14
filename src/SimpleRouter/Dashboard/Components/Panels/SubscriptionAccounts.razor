@@ -1,0 +1,36 @@
+@inherits LivePanel<List<AccountRow>>
+@inject DashboardData Dashboard
+
+<section class="card">
+    <h2>Subscription accounts</h2>
+    @if (Data is null)
+    {
+        <p class="muted">Loading…</p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table id="subscription-accounts">
+                <thead>
+                    <tr><th>Provider</th><th>Account</th><th>Model list fetched (UTC)</th><th class="num">Models</th><th>Last list error</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var a in Data)
+                    {
+                        <tr>
+                            <td>@a.Provider.ToString().ToLowerInvariant()</td>
+                            <td><span class="@AccountPill(a.State)">@AccountLabel(a.State)</span></td>
+                            <td class="mono" title="Last attempt: @Time(a.ListCheckedAt)">@Time(a.ListFetchedAt)</td>
+                            <td class="num">@(a.ListedModels?.ToString() ?? "—")</td>
+                            <td class="error">@(a.ListError ?? "—")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    protected override Task<List<AccountRow>> QueryAsync(CancellationToken ct) => Dashboard.AccountsAsync(ct);
+}

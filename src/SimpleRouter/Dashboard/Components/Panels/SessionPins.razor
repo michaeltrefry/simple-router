@@ -1,0 +1,50 @@
+@inherits LivePanel<List<PinRow>>
+@inject DashboardData Dashboard
+
+<section class="card">
+    <h2>Active session pins</h2>
+    @if (Data is null)
+    {
+        <p class="muted">Loading…</p>
+    }
+    else if (Data.Count == 0)
+    {
+        <p class="muted empty">No sessions pinned yet.</p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table id="session-pins">
+                <thead>
+                    <tr><th>Session</th><th>Pin key</th><th>Tier</th><th>Model</th><th>Model status</th><th>Pinned (UTC)</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var p in Data)
+                    {
+                        <tr>
+                            <td class="mono session">@(p.ClientSessionId ?? "—")</td>
+                            <td class="mono" title="@p.SessionKey">@ShortKey(p.SessionKey)</td>
+                            <td>@p.Tier.Name()</td>
+                            <td class="mono">@p.ModelId</td>
+                            <td>
+                                @if (p.Status is { } status)
+                                {
+                                    <span class="@Pill(status.Status)">@status.Label</span>
+                                }
+                                else
+                                {
+                                    <span class="pill muted">not in catalog</span>
+                                }
+                            </td>
+                            <td class="mono">@Time(p.CreatedAt)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    protected override Task<List<PinRow>> QueryAsync(CancellationToken ct) => Dashboard.PinsAsync(ct);
+}

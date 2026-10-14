@@ -22,6 +22,7 @@ Any setting can be overridden with `--SimpleRouter:<Name>=<value>` or `SimpleRou
 - `Routing/` — tier resolution, session-key derivation, round-robin selection with persisted pins (local-first in Mid/Low), catalog seeding (`seed.json`, plus the per-machine `seed.local.json` override in the data directory), `IModelUpstream`, the per-provider upstream contract (an attempt that fails before writing returns `NotServed` so `MessageRouter` fails over), limit headers and persisted per-model cooldowns (`ModelCooldowns`), and subscription model-list discovery (`ModelDiscovery`, timer, per-model status).
 - `Local/` — OpenAI-compatible local endpoints: Anthropic ⇄ Chat Completions translation (request, response, SSE stream), health checks.
 - `Usage/` — per-request usage recording (`UsageTap` reads token usage off the Anthropic-shaped response body, `UsageRecorder` prices it from `ModelPrices`) and the subscription usage report.
+- `Dashboard/` — Blazor Server monitoring UI at `/ui` (outside the `/v1` key check; loopback bind plus a loopback `Host` check, `DashboardHostFilter`, are the boundary). Panels derive from `LivePanel` and reload when `DashboardEvents` fires (usage recorded, pin assigned, cooldown written) or on a slow timer. Never render tokens, keys or bodies.
 - `Data/` — `RouterDbContext` and migrations.
 
 ## Conventions

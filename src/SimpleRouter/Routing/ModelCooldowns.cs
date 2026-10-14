@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using SimpleRouter.Dashboard;
 using SimpleRouter.Data;
 
 namespace SimpleRouter.Routing;
@@ -12,6 +13,7 @@ namespace SimpleRouter.Routing;
 public sealed class ModelCooldowns(
     IDbContextFactory<RouterDbContext> dbFactory,
     IOptions<RouterOptions> options,
+    DashboardEvents events,
     TimeProvider time,
     ILogger<ModelCooldowns> logger)
 {
@@ -49,6 +51,7 @@ public sealed class ModelCooldowns(
             }
         }
         logger.LogWarning("Model {model} is cooling until {until:u} ({reason})", model.Id, until.UtcDateTime, fault.Kind);
+        events.Publish();
     }
 
     /// <summary>Cooldowns still running, by model.</summary>
