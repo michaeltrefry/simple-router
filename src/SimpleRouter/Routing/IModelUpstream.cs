@@ -28,8 +28,8 @@ public enum FaultKind
     AuthRejected,
 }
 
-/// <summary>A <see cref="FaultKind"/> with the reset the provider reported, if any.</summary>
-public sealed record ModelFault(FaultKind Kind, DateTimeOffset? ResetAt = null)
+/// <summary>A <see cref="FaultKind"/> with the reset the provider reported, if any, and its error message.</summary>
+public sealed record ModelFault(FaultKind Kind, DateTimeOffset? ResetAt = null, string? Message = null)
 {
     /// <summary>A failed token refresh: an unreachable or failing token endpoint (status 0 or 5xx), else a rejected account.</summary>
     public static ModelFault RefreshFailed(int status) =>

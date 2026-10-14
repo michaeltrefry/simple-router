@@ -64,12 +64,11 @@ public class ModelsEndpointTests
     }
 
     [Fact]
-    public async Task Disabled_models_models_no_alias_maps_and_other_providers_are_not_listed()
+    public async Task Models_no_alias_maps_and_other_providers_are_not_listed()
     {
         await using var host = await RouterHost.StartAsync();
         await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
         {
-            (await db.Models.FindAsync("claude-opus-5-5"))!.Enabled = false;
             db.Models.Add(new CatalogModel { Id = "codex-sonnet-lookalike", Provider = ProviderKind.Codex, UpstreamModelId = "x", Enabled = true });
             db.TierAliases.Remove(await db.TierAliases.SingleAsync(a => a.Pattern == "*haiku*"));
             await db.SaveChangesAsync();
@@ -78,8 +77,40 @@ public class ModelsEndpointTests
 
         using var json = JsonDocument.Parse(await client.GetStringAsync("/v1/models?limit=1000"));
 
-        Assert.Equal(["claude-fable-5-1", "claude-sonnet-5-5"],
+        Assert.Equal(["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"],
             json.RootElement.GetProperty("data").EnumerateArray().Select(m => m.GetProperty("id").GetString()));
+    }
+
+    [Fact]
+    public async Task A_tier_whose_claude_model_is_disabled_is_still_offered_while_another_member_serves_it()
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginCodexAsync();
+        host.Codex.Respond = _ => ResponsesFixtures.Stream(ResponsesFixtures.ReasoningTextAndToolCall);
+        await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        {
+            (await db.Models.FindAsync("claude-opus-5-5"))!.Enabled = false;
+            (await db.Models.FindAsync("claude-sonnet-5-5"))!.Enabled = false;
+            (await db.Models.FindAsync("gpt-5.6-terra"))!.Enabled = false;
+            await db.SaveChangesAsync();
+        }
+        var client = await host.AuthorizedClientAsync();
+
+        using var json = JsonDocument.Parse(await client.GetStringAsync("/v1/models?limit=1000"));
+        var ids = json.RootElement.GetProperty("data").EnumerateArray().Select(m => m.GetProperty("id").GetString()).ToList();
+
+        // Mid has no enabled member left (its locals are disabled in the seed), so it is not offered.
+        Assert.Equal(["claude-fable-5-1", "claude-opus-5-5", "claude-haiku-5-5"], ids);
+        var body = new JsonObject
+        {
+            ["model"] = "claude-opus-5-5",
+            ["max_tokens"] = 8,
+            ["messages"] = new JsonArray { new JsonObject { ["role"] = "user", ["content"] = "hi" } },
+        };
+        using var response = await client.PostAsync("/v1/messages", new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("high", response.Headers.GetValues(MessageRouter.ModelClassHeader).Single());
+        Assert.Single(host.Codex.Requests);
     }
 
     [Fact]

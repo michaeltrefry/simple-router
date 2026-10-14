@@ -216,4 +216,52 @@ public class AnthropicSdkStreamTests
 
         Assert.Contains("\"message\":\"out of memory\"", error.Message);
     }
+
+    public static TheoryData<string> CompletingCodexStreams => new(Streams.Where(f => !f.Value.Fails).Select(f => f.Key));
+
+    public static TheoryData<string> FailingCodexStreams => new(Streams.Where(f => f.Value.Fails).Select(f => f.Key));
+
+    private static string BlockType(ContentBlock block) =>
+        block.TryPickText(out _) ? "text" : block.TryPickThinking(out _) ? "thinking" : block.TryPickToolUse(out _) ? "tool_use" : "other";
+
+    [Theory]
+    [MemberData(nameof(CompletingCodexStreams))]
+    public async Task Every_completing_codex_stream_fixture_accumulates_in_the_sdk(string fixture)
+    {
+        var sse = Streams[fixture].Sse;
+        await using var host = await StartCodexAsync(_ => Stream(sse));
+
+        var message = await StreamAsync(host, FirstTurn());
+
+        var expected = ResponsesStreamTranslatorTests.Translate(sse);
+        Assert.Equal(expected.Blocks.Select(b => b.Type), message.Content.Select(BlockType));
+        Assert.Equal(string.Concat(expected.Blocks.Where(b => b.Type == "text").Select(b => b.Text)), Text(message));
+        Assert.Equal(expected.StopReason, message.StopReason!.Raw());
+    }
+
+    [Theory]
+    [MemberData(nameof(FailingCodexStreams))]
+    public async Task Every_failing_codex_stream_fixture_surfaces_as_an_sdk_error(string fixture)
+    {
+        await using var host = await StartCodexAsync(_ => Stream(Streams[fixture].Sse));
+
+        var error = await Assert.ThrowsAsync<AnthropicSseException>(() => StreamAsync(host, FirstTurn()));
+
+        Assert.Contains("\"type\":\"error\"", error.Message);
+    }
+
+    [Theory]
+    [MemberData(nameof(LocalRoutingTests.FramingVariants), MemberType = typeof(LocalRoutingTests))]
+    public async Task Every_local_stream_framing_variant_accumulates_in_the_sdk(string _, string upstream)
+    {
+        await using var host = await StartLocalAsync(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(upstream, Encoding.UTF8, "text/event-stream"),
+        });
+
+        var message = await StreamAsync(host, FirstTurn());
+
+        Assert.Equal("hi", Text(message));
+        Assert.Equal(StopReason.EndTurn, message.StopReason!.Value());
+    }
 }

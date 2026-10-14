@@ -106,8 +106,9 @@ public sealed class LocalUpstream(
     }
 
     /// <summary>
-    /// Streams the translation, withholding <c>message_start</c> until the first output or closing event, so an error the
-    /// endpoint reports before any output leaves the response untouched for another model.
+    /// Streams the translation, withholding <c>message_start</c> until the first output or closing event (or the end of the
+    /// <see cref="StreamStartGrace"/>), so an error the endpoint reports before any output leaves the response untouched for
+    /// another model, or is answered as the client's request error.
     /// </summary>
     /// <returns>Null once written; else why nothing was.</returns>
     private async Task<ModelFault?> StreamAsync(HttpContext context, CatalogModel model, int estimate, HttpResponseMessage response, CancellationToken ct)
@@ -115,30 +116,43 @@ public sealed class LocalUpstream(
         var translator = new ChatStreamTranslator(model.Id, estimate);
         var start = translator.Start();
         var started = false;
+        string Begin(string sse)
+        {
+            context.Response.StatusCode = StatusCodes.Status200OK;
+            context.Response.ContentType = "text/event-stream";
+            context.Response.Headers.CacheControl = "no-cache";
+            context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+            started = true;
+            return start + sse;
+        }
         async Task Write(string sse)
         {
             if (sse.Length == 0)
             {
                 return;
             }
+            await WriteAsync(context, started ? sse : Begin(sse), ct);
+        }
+        var grace = new StreamStartGrace(options.Value.Limits.StreamStartGrace, time, async () =>
+        {
             if (!started)
             {
-                context.Response.StatusCode = StatusCodes.Status200OK;
-                context.Response.ContentType = "text/event-stream";
-                context.Response.Headers.CacheControl = "no-cache";
-                context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
-                (sse, started) = (start + sse, true);
+                await WriteAsync(context, Begin(""), ct);
             }
-            await WriteAsync(context, sse, ct);
-        }
+        });
 
         string tail;
         try
         {
-            (var closing, var early) = await TranslateChunksAsync(translator, Write, () => started, response, ct);
+            var (closing, early, rejection) = await TranslateChunksAsync(translator, Write, () => started, grace, response, ct);
             if (early is not null)
             {
                 return early;
+            }
+            if (rejection is not null)
+            {
+                await AnthropicError.WriteAsync(context, StatusCodes.Status400BadRequest, "invalid_request_error", rejection);
+                return null;
             }
             tail = closing!;
         }
@@ -152,11 +166,11 @@ public sealed class LocalUpstream(
     }
 
     /// <returns>
-    /// The closing events (a normal finish, or an error event when the upstream failed, stalled or stopped early), or the
-    /// fault of an error reported before anything was written.
+    /// The closing events (a normal finish, or an error event when the upstream failed, stalled or stopped early), the
+    /// fault of an error reported before anything was written, or the message of a request error reported before then.
     /// </returns>
-    private async Task<(string? Closing, ModelFault? Early)> TranslateChunksAsync(ChatStreamTranslator translator, Func<string, Task> write,
-        Func<bool> started, HttpResponseMessage response, CancellationToken ct)
+    private async Task<(string? Closing, ModelFault? Early, string? Rejection)> TranslateChunksAsync(ChatStreamTranslator translator, Func<string, Task> write,
+        Func<bool> started, StreamStartGrace grace, HttpResponseMessage response, CancellationToken ct)
     {
         using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct), Encoding.UTF8);
         var idleTimeout = options.Value.Local.StreamIdleTimeout;
@@ -169,11 +183,11 @@ public sealed class LocalUpstream(
                 idle.CancelAfter(idleTimeout);
                 try
                 {
-                    line = await reader.ReadLineAsync(idle.Token);
+                    line = await grace.AwaitAsync(reader.ReadLineAsync(idle.Token).AsTask(), ct);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
-                    return (translator.Abort($"Local model sent nothing for {idleTimeout.TotalSeconds:0.#} s."), null);
+                    return (translator.Abort($"Local model sent nothing for {idleTimeout.TotalSeconds:0.#} s."), null, null);
                 }
             }
 
@@ -198,18 +212,18 @@ public sealed class LocalUpstream(
             }
             if (line is null)
             {
-                return (translator.Finished ? translator.Finish() : translator.Abort("Local model stream ended before completion."), null);
+                return (translator.Finished ? translator.Finish() : translator.Abort("Local model stream ended before completion."), null, null);
             }
         }
     }
 
     /// <returns>Null after writing the event's translation, else how the stream ends (see <see cref="TranslateChunksAsync"/>).</returns>
-    private static async Task<(string? Closing, ModelFault? Early)?> DispatchAsync(ChatStreamTranslator translator, string payload,
+    private static async Task<(string? Closing, ModelFault? Early, string? Rejection)?> DispatchAsync(ChatStreamTranslator translator, string payload,
         Func<string, Task> write, Func<bool> started)
     {
         if (payload == "[DONE]")
         {
-            return (translator.Finish(), null);
+            return (translator.Finish(), null, null);
         }
         JsonObject? chunk;
         try
@@ -222,17 +236,25 @@ public sealed class LocalUpstream(
         }
         if (chunk is null)
         {
-            return (translator.Abort("Local model sent a malformed stream chunk."), null);
+            return (translator.Abort("Local model sent a malformed stream chunk."), null, null);
         }
         if (chunk["error"] is { } error)
         {
             var message = ErrorMessage(error);
             if (!started())
             {
-                // Nothing was produced yet, so this is the endpoint failing (or the prompt not fitting), not the answer.
-                return (null, new ModelFault(ContextOverflow.IsReported(message) ? FaultKind.ContextOverflow : FaultKind.Overloaded));
+                // Nothing was produced yet: the prompt not fitting, the request itself, or the endpoint failing; not the answer.
+                if (ContextOverflow.IsReported(message))
+                {
+                    return (null, new ModelFault(FaultKind.ContextOverflow, Message: message), null);
+                }
+                if (IsRequestError(error))
+                {
+                    return (null, null, message ?? "Local model rejected the request.");
+                }
+                return (null, new ModelFault(FaultKind.Overloaded), null);
             }
-            return (translator.Abort(message ?? "Local model reported an error mid-stream."), null);
+            return (translator.Abort(message ?? "Local model reported an error mid-stream."), null, null);
         }
         await write(translator.Feed(chunk));
         return null;
@@ -280,10 +302,22 @@ public sealed class LocalUpstream(
         if (status is 400 or 413 or 422 && ContextOverflow.IsReported(message))
         {
             logger.LogWarning("Local model {model} rejected the request as too long for its context", model.Id);
-            return UpstreamResult.NotServed(new ModelFault(FaultKind.ContextOverflow));
+            return UpstreamResult.NotServed(new ModelFault(FaultKind.ContextOverflow, Message: message));
         }
         await AnthropicError.WriteAsync(context, clientStatus, type, message ?? $"Local model {model.Id} returned HTTP {status}.");
         return UpstreamResult.Served;
+    }
+
+    /// <summary>An error typed or coded as the request's fault (vLLM <c>BadRequestError</c>, llama.cpp <c>invalid_request_error</c>, code 400/422).</summary>
+    private static bool IsRequestError(JsonNode error)
+    {
+        if (error is not JsonObject obj)
+        {
+            return false;
+        }
+        var type = ChatRequestTranslator.Str(obj["type"]);
+        var code = obj["code"]?.ToString();
+        return type is "invalid_request_error" or "BadRequestError" || code is "400" or "422";
     }
 
     private static string? ErrorMessage(JsonNode? error) =>

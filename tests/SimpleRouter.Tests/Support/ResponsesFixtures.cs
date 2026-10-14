@@ -58,4 +58,110 @@ public static class ResponsesFixtures
         ArgsDelta(2, "th\":2}"),
         CallDone(2, "call_abc123", "list_files", "{\"path\":\"src\",\"depth\":2}"),
         Completed(input: 120, output: 45, cached: 100));
+
+    /// <summary>Two calls whose argument fragments interleave.</summary>
+    public static readonly string ParallelCalls = Sse(
+        Created,
+        CallAdded(0, "call_one", "read_file"),
+        ArgsDelta(0, "{\"pa"),
+        CallAdded(1, "call_two", "read_file"),
+        ArgsDelta(1, "{\"path\":"),
+        ArgsDelta(0, "th\":\"a.txt\"}"),
+        ArgsDelta(1, "\"b.txt\"}"),
+        CallDone(0, "call_one", "read_file", ""),
+        CallDone(1, "call_two", "read_file", ""),
+        Completed());
+
+    /// <summary>Text only, ending the turn.</summary>
+    public static readonly string PlainText = Sse(Created, TextDelta(0, "Hello"), ItemDone(0, "message"), Completed(input: 9, output: 1));
+
+    /// <summary>Cut off at max_output_tokens with a call still streaming its arguments.</summary>
+    public static readonly string IncompleteWithUnfinishedCall = Sse(
+        Created,
+        TextDelta(0, "Partial"),
+        ItemDone(0, "message"),
+        CallAdded(1, "call_cut", "write_file"),
+        ArgsDelta(1, "{\"content\":\"abc"),
+        """{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":5,"output_tokens":64}}}""");
+
+    /// <summary>Cut off at max_output_tokens after a finished call.</summary>
+    public static readonly string IncompleteAfterFinishedCall = Sse(
+        Created,
+        CallDone(0, "call_done", "ls", "{}"),
+        """{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}""");
+
+    /// <summary>Fails with a server error after some text.</summary>
+    public static readonly string FailedAfterText = Sse(
+        Created,
+        TextDelta(0, "Start"),
+        """{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"The model crashed."}}}""");
+
+    /// <summary>Ends without a terminal event.</summary>
+    public static readonly string WithoutTerminal = Sse(Created, TextDelta(0, "Half"));
+
+    /// <summary>Reasoning and text that only arrive as whole items.</summary>
+    public static readonly string WholeItems = Sse(
+        Created,
+        """{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","summary":[{"type":"summary_text","text":"Thought."}]}}""",
+        """{"type":"response.output_item.done","output_index":1,"item":{"type":"message","content":[{"type":"output_text","text":"Answer."}]}}""",
+        Completed());
+
+    /// <summary>A nameless call and a call with an invalid ID and unparsable arguments.</summary>
+    public static readonly string NamelessAndInvalidCalls = Sse(
+        Created,
+        CallDone(0, "call_x", "", "{}"),
+        CallDone(1, "call.with.dots", "ls", "not json"),
+        Completed());
+
+    /// <summary>A refusal streamed in deltas.</summary>
+    public static readonly string Refusal = Sse(
+        Created,
+        """{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"I can't "}""",
+        """{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"help with that."}""",
+        ItemDone(0, "message"),
+        Completed());
+
+    /// <summary>A refusal that only arrives as a whole item.</summary>
+    public static readonly string WholeRefusal = Sse(
+        Created,
+        """{"type":"response.output_item.done","output_index":0,"item":{"type":"message","content":[{"type":"refusal","refusal":"No."}]}}""",
+        Completed());
+
+    /// <summary>Two reasoning items carrying encrypted content, one with a summary, then text.</summary>
+    public static readonly string EncryptedReasoning = Sse(
+        Created,
+        SummaryDelta(0, 0, "Thought."),
+        """{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","summary":[],"encrypted_content":"ENC-A"}}""",
+        """{"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","summary":[],"encrypted_content":"ENC-B"}}""",
+        TextDelta(2, "Done."),
+        ItemDone(2, "message"),
+        Completed());
+
+    /// <summary>Text and a call present only on the completed response.</summary>
+    public static readonly string OutputOnlyOnCompleted = Sse(Created, Completed(outputItems:
+        """[{"type":"message","content":[{"type":"output_text","text":"Late."}]},{"type":"function_call","call_id":"call_late","name":"ls","arguments":"{}"}]"""));
+
+    /// <summary>Cut off at max_output_tokens, with text and a truncated call only on the terminal response.</summary>
+    public static readonly string IncompleteWithTerminalOutput = Sse(
+        Created,
+        """{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","content":[{"type":"output_text","text":"Late."}]},{"type":"function_call","call_id":"call_cut","name":"ls","arguments":"{\"pa"}]}}""");
+
+    /// <summary>Every stream fixture by name, and whether it ends with an error event instead of <c>message_stop</c>.</summary>
+    public static readonly IReadOnlyDictionary<string, (string Sse, bool Fails)> Streams = new Dictionary<string, (string, bool)>
+    {
+        [nameof(ReasoningTextAndToolCall)] = (ReasoningTextAndToolCall, false),
+        [nameof(ParallelCalls)] = (ParallelCalls, false),
+        [nameof(PlainText)] = (PlainText, false),
+        [nameof(IncompleteWithUnfinishedCall)] = (IncompleteWithUnfinishedCall, false),
+        [nameof(IncompleteAfterFinishedCall)] = (IncompleteAfterFinishedCall, false),
+        [nameof(FailedAfterText)] = (FailedAfterText, true),
+        [nameof(WithoutTerminal)] = (WithoutTerminal, true),
+        [nameof(WholeItems)] = (WholeItems, false),
+        [nameof(NamelessAndInvalidCalls)] = (NamelessAndInvalidCalls, false),
+        [nameof(Refusal)] = (Refusal, false),
+        [nameof(WholeRefusal)] = (WholeRefusal, false),
+        [nameof(EncryptedReasoning)] = (EncryptedReasoning, false),
+        [nameof(OutputOnlyOnCompleted)] = (OutputOnlyOnCompleted, false),
+        [nameof(IncompleteWithTerminalOutput)] = (IncompleteWithTerminalOutput, false),
+    };
 }

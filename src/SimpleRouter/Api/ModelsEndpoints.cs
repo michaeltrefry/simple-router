@@ -40,17 +40,23 @@ public static class ModelsEndpoints
     }
 
     /// <summary>
-    /// Enabled Claude catalog models an alias maps to a tier, highest tier first, so a client's model picker offers every
-    /// tier and each ID, sent back as <c>model</c>, is served in that tier.
+    /// Claude catalog models an alias maps to a tier that has an enabled member, highest tier first, so a client's model
+    /// picker offers every servable tier and each ID, sent back as <c>model</c>, is served in that tier. A disabled Claude
+    /// model still names its tier while another member serves it.
     /// </summary>
     private static async Task<List<string>> AdvertisedAsync(IDbContextFactory<RouterDbContext> dbFactory, ModelSelector selector, CancellationToken ct)
     {
         var rules = await selector.GetTierRulesAsync(ct);
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var ids = await db.Models.AsNoTracking().Where(m => m.Enabled && m.Provider == ProviderKind.Claude).Select(m => m.Id).ToListAsync(ct);
+        var ids = await db.Models.AsNoTracking().Where(m => m.Provider == ProviderKind.Claude).Select(m => m.Id).ToListAsync(ct);
+        var servable = (await db.TierMembers.AsNoTracking()
+                .Join(db.Models.Where(m => m.Enabled), t => t.ModelId, m => m.Id, (t, _) => t.Tier)
+                .Distinct()
+                .ToListAsync(ct))
+            .ToHashSet();
         return ids
             .Select(id => (Id: id, Tier: TierResolver.AliasTier(id, rules)))
-            .Where(m => m.Tier is not null)
+            .Where(m => m.Tier is { } tier && servable.Contains(tier))
             .OrderBy(m => m.Tier)
             .ThenBy(m => m.Id, StringComparer.Ordinal)
             .Select(m => m.Id)

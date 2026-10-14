@@ -80,9 +80,15 @@ public sealed class LocalOptions
     public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromSeconds(120);
 }
 
-/// <summary>How long a model is skipped after a fault, when the provider reports no reset.</summary>
+/// <summary>How long a model is skipped after a fault, when the provider reports no reset, and how long failover stays possible on a stream.</summary>
 public sealed class LimitOptions
 {
+    /// <summary>
+    /// How long a translated (Codex or local) stream withholds <c>message_start</c> waiting for its first content or
+    /// terminal event; after it the start is sent and an error can no longer move the request to another model.
+    /// </summary>
+    public TimeSpan StreamStartGrace { get; set; } = TimeSpan.FromSeconds(15);
+
     /// <summary>A usage limit or rate limit (429) without a reported reset.</summary>
     public TimeSpan LimitCooldown { get; set; } = TimeSpan.FromSeconds(60);
 

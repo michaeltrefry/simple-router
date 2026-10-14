@@ -481,10 +481,16 @@ public class LocalRoutingTests
         Assert.DoesNotContain("message_stop", message.Events);
     }
 
+    /// <summary>Upstream SSE framings that must each still produce a complete Anthropic stream of the text "hi".</summary>
+    public static readonly TheoryData<string, string> FramingVariants = new()
+    {
+        { "crlf and keepalives", ": keepalive\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\r\n\r\n: keepalive\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\r\ndata: [DONE]\r\n\r\n" },
+        { "finish then eof without done", "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" },
+        { "multi-line data event", "data: {\"choices\":[{\"index\":0,\ndata: \"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n" },
+    };
+
     [Theory]
-    [InlineData("crlf and keepalives", ": keepalive\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\r\n\r\n: keepalive\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\r\ndata: [DONE]\r\n\r\n")]
-    [InlineData("finish then eof without done", "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")]
-    [InlineData("multi-line data event", "data: {\"choices\":[{\"index\":0,\ndata: \"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")]
+    [MemberData(nameof(FramingVariants))]
     public async Task Local_stream_framing_variants_produce_a_complete_anthropic_stream(string _, string upstream)
     {
         var (host, locals) = await StartAsync();
