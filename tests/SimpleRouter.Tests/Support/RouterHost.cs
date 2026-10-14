@@ -52,12 +52,18 @@ public sealed class RouterHost : IAsyncDisposable
     public static string NewDataDirectory() =>
         Path.Combine(Path.GetTempPath(), "simple-router-tests", Guid.NewGuid().ToString("N"));
 
-    public static async Task<RouterHost> StartAsync(params string[] models)
+    public static Task<RouterHost> StartAsync(params string[] models) => StartAsync(_ => { }, models);
+
+    public static async Task<RouterHost> StartAsync(Action<IServiceCollection> configureServices, params string[] models)
     {
         var dataDirectory = NewDataDirectory();
         var upstream = new FakeHandler();
         var oauth = new FakeHandler();
-        var app = RouterApp.Build(Args(dataDirectory, models), FakeHttp(upstream, oauth));
+        var app = RouterApp.Build(Args(dataDirectory, models), services =>
+        {
+            FakeHttp(upstream, oauth)(services);
+            configureServices(services);
+        });
         await RouterApp.InitializeAsync(app);
         await app.StartAsync();
         return new RouterHost(app, dataDirectory, upstream, oauth);

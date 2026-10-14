@@ -17,8 +17,10 @@ public sealed class ClaudeTokenProvider(ClaudeCredentialStore store, ClaudeOAuth
                 return tokens.AccessToken;
             }
 
-            var refreshed = await oauth.RefreshAsync(tokens.RefreshToken, ct);
-            await store.SaveAsync(refreshed, ct);
+            // The token endpoint rotates the refresh token, so once sent the exchange must finish and
+            // persist even if the caller disconnects; the OAuth client timeout bounds it.
+            var refreshed = await oauth.RefreshAsync(tokens.RefreshToken, CancellationToken.None);
+            await store.SaveAsync(refreshed, CancellationToken.None);
             return refreshed.AccessToken!;
         }
         finally

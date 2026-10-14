@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using SimpleRouter.Claude;
@@ -92,6 +93,123 @@ public class ClaudeTokenRefreshTests
         Assert.DoesNotContain("leak-me", await response.Content.ReadAsStringAsync());
         Assert.Empty(host.Upstream.Requests);
         Assert.Equal("refresh-old", (await host.Services.GetRequiredService<ClaudeCredentialStore>().GetAsync())!.RefreshToken);
+    }
+
+    [Fact]
+    public async Task Concurrent_requests_with_an_expired_token_share_one_refresh()
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginAsync(accessToken: "access-old", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1), refreshToken: "refresh-old");
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.OAuth.RespondAsync = async _ =>
+        {
+            await release.Task;
+            return RotatedTokens();
+        };
+        host.Upstream.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
+        var client = await host.AuthorizedClientAsync();
+
+        var sends = Enumerable.Range(0, 5).Select(_ => client.SendAsync(MessagesRequest())).ToArray();
+        await WaitUntilAsync(() => host.OAuth.Requests.Count > 0);
+        // Give the other requests time to reach the token provider while the first refresh is held open.
+        await Task.Delay(TimeSpan.FromMilliseconds(500));
+        release.SetResult();
+        var responses = await Task.WhenAll(sends);
+
+        Assert.All(responses, r => Assert.Equal(HttpStatusCode.OK, r.StatusCode));
+        Assert.Single(host.OAuth.Requests);
+        Assert.Equal(5, host.Upstream.Requests.Count);
+        Assert.All(host.Upstream.Requests, r => Assert.Equal("Bearer access-new", r.Headers["authorization"]));
+    }
+
+    [Fact]
+    public async Task Refresh_is_persisted_even_when_the_client_disconnects_mid_refresh()
+    {
+        await using var host = await RouterHost.StartAsync(services => services.AddHttpContextAccessor());
+        await host.LoginAsync(accessToken: "access-old", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1), refreshToken: "refresh-old");
+        var accessor = host.Services.GetRequiredService<IHttpContextAccessor>();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var abortObserved = false;
+        host.OAuth.RespondAsync = async _ =>
+        {
+            var aborted = accessor.HttpContext!.RequestAborted;
+            entered.SetResult();
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(10), aborted);
+            }
+            catch (OperationCanceledException)
+            {
+                abortObserved = true;
+            }
+            return RotatedTokens();
+        };
+        var client = await host.AuthorizedClientAsync();
+        using var cts = new CancellationTokenSource();
+
+        var send = client.SendAsync(MessagesRequest(), cts.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => send);
+
+        var store = host.Services.GetRequiredService<ClaudeCredentialStore>();
+        await WaitUntilAsync(async () => (await store.GetAsync())!.RefreshToken == "refresh-new");
+        Assert.True(abortObserved);
+        Assert.Equal("access-new", (await store.GetAsync())!.AccessToken);
+    }
+
+    [Fact]
+    public async Task Malformed_token_response_returns_an_anthropic_shaped_502()
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginAsync(accessToken: "access-old", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1));
+        host.OAuth.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("<html>not json</html>") };
+        var client = await host.AuthorizedClientAsync();
+
+        using var response = await client.SendAsync(MessagesRequest());
+
+        await AssertAnthropic502Async(response, "Claude token response was malformed.");
+        Assert.Empty(host.Upstream.Requests);
+    }
+
+    [Fact]
+    public async Task Unreachable_token_endpoint_returns_an_anthropic_shaped_502()
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginAsync(accessToken: "access-old", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1));
+        host.OAuth.Respond = _ => throw new HttpRequestException("connection refused");
+        var client = await host.AuthorizedClientAsync();
+
+        using var response = await client.SendAsync(MessagesRequest());
+
+        await AssertAnthropic502Async(response, "Claude token endpoint is unreachable.");
+        Assert.Empty(host.Upstream.Requests);
+    }
+
+    private static HttpResponseMessage RotatedTokens() => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent("""{"access_token":"access-new","refresh_token":"refresh-new","expires_in":3600}""", Encoding.UTF8, "application/json"),
+    };
+
+    private static async Task AssertAnthropic502Async(HttpResponseMessage response, string message)
+    {
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("error", body.RootElement.GetProperty("type").GetString());
+        Assert.Equal("api_error", body.RootElement.GetProperty("error").GetProperty("type").GetString());
+        Assert.Equal(message, body.RootElement.GetProperty("error").GetProperty("message").GetString());
+    }
+
+    private static Task WaitUntilAsync(Func<bool> condition) => WaitUntilAsync(() => Task.FromResult(condition()));
+
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!await condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "Condition was not met within 10 seconds.");
+            await Task.Delay(20);
+        }
     }
 
     private static string ReadCredentialRow(string dataDirectory)

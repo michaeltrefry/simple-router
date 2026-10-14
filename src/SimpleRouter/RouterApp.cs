@@ -31,7 +31,9 @@ public static class RouterApp
         }
         else
         {
-            Directory.CreateDirectory(options.DataDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            const UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            Directory.CreateDirectory(options.DataDirectory, ownerOnly);
+            File.SetUnixFileMode(options.DataDirectory, ownerOnly);
         }
 
         builder.WebHost.ConfigureKestrel(kestrel =>

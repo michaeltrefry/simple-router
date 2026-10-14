@@ -2,6 +2,7 @@ using System.Buffers.Text;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
 
@@ -64,14 +65,38 @@ public sealed class ClaudeOAuthClient(IHttpClientFactory httpClientFactory, IOpt
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, Claude.TokenUrl) { Content = JsonContent.Create(body) };
         request.Headers.UserAgent.ParseAdd(UserAgent);
-        using var response = await httpClientFactory.CreateClient(HttpClientName).SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode)
+        HttpResponseMessage response;
+        try
         {
-            throw new ClaudeOAuthException((int)response.StatusCode,
-                $"Claude token request failed with status {(int)response.StatusCode}.");
+            response = await httpClientFactory.CreateClient(HttpClientName).SendAsync(request, ct);
+        }
+        catch (Exception e) when (e is HttpRequestException || (e is TaskCanceledException && !ct.IsCancellationRequested))
+        {
+            throw new ClaudeOAuthException(0, "Claude token endpoint is unreachable.");
         }
 
-        var token = await response.Content.ReadFromJsonAsync<TokenResponse>(ct);
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new ClaudeOAuthException((int)response.StatusCode,
+                    $"Claude token request failed with status {(int)response.StatusCode}.");
+            }
+            return await ReadTokensAsync(response, fallbackRefreshToken, ct);
+        }
+    }
+
+    private async Task<ClaudeTokens> ReadTokensAsync(HttpResponseMessage response, string? fallbackRefreshToken, CancellationToken ct)
+    {
+        TokenResponse? token;
+        try
+        {
+            token = await response.Content.ReadFromJsonAsync<TokenResponse>(ct);
+        }
+        catch (JsonException)
+        {
+            throw new ClaudeOAuthException((int)response.StatusCode, "Claude token response was malformed.");
+        }
         var refresh = string.IsNullOrEmpty(token?.RefreshToken) ? fallbackRefreshToken : token.RefreshToken;
         if (string.IsNullOrEmpty(token?.AccessToken) || string.IsNullOrEmpty(refresh))
         {

@@ -9,10 +9,10 @@ public static class ModelsEndpoints
 
     public static void MapModelsEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/v1/models", (HttpContext context, IOptions<RouterOptions> options, int? limit) =>
+        app.MapGet("/v1/models", (HttpContext context, IOptions<RouterOptions> options, string? limit) =>
         {
-            var take = limit ?? DefaultLimit;
-            if (take is < 1 or > MaxLimit)
+            var take = DefaultLimit;
+            if ((limit is not null && !int.TryParse(limit, out take)) || take is < 1 or > MaxLimit)
             {
                 return AnthropicError.WriteAsync(context, StatusCodes.Status400BadRequest, "invalid_request_error",
                     $"limit must be between 1 and {MaxLimit}.");

@@ -99,6 +99,25 @@ public class ClaudeLoginTests
     }
 
     [Fact]
+    public async Task Unreachable_token_endpoint_fails_the_cli_with_exit_code_1()
+    {
+        var oauth = new FakeHandler { Respond = _ => throw new HttpRequestException("connection refused") };
+        var output = new StringWriter();
+        var input = new CallbackReader(() =>
+        {
+            var url = output.ToString().Split('\n').First(l => l.StartsWith("http"));
+            return "the-code#" + QueryHelpers.ParseQuery(new Uri(url.Trim()).Query)["state"];
+        });
+
+        var exit = await CommandLine.RunAsync(["login", "claude", .. RouterHost.Args(RouterHost.NewDataDirectory())], input, output,
+            RouterHost.FakeHttp(new FakeHandler(), oauth));
+
+        Assert.Equal(1, exit);
+        Assert.Single(oauth.Requests);
+        Assert.Contains("Claude login failed: Claude token endpoint is unreachable.", output.ToString());
+    }
+
+    [Fact]
     public async Task Key_show_prints_the_generated_gateway_key()
     {
         await using var host = await RouterHost.StartAsync();

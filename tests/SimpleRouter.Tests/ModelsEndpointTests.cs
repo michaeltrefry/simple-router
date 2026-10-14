@@ -55,7 +55,8 @@ public class ModelsEndpointTests
     [Theory]
     [InlineData("0")]
     [InlineData("1001")]
-    public async Task Out_of_range_limit_is_rejected(string limit)
+    [InlineData("abc")]
+    public async Task Invalid_limit_is_rejected_in_anthropic_shape(string limit)
     {
         await using var host = await RouterHost.StartAsync();
         var client = await host.AuthorizedClientAsync();
@@ -63,5 +64,8 @@ public class ModelsEndpointTests
         using var response = await client.GetAsync($"/v1/models?limit={limit}");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("error", body.RootElement.GetProperty("type").GetString());
+        Assert.Equal("invalid_request_error", body.RootElement.GetProperty("error").GetProperty("type").GetString());
     }
 }

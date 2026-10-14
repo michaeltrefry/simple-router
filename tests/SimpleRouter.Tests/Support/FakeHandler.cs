@@ -12,6 +12,9 @@ public sealed class FakeHandler : HttpMessageHandler
     public Func<HttpRequestMessage, HttpResponseMessage> Respond { get; set; } =
         _ => new HttpResponseMessage(HttpStatusCode.InternalServerError);
 
+    /// <summary>When set, takes precedence over <see cref="Respond"/> so a test can hold a response open.</summary>
+    public Func<HttpRequestMessage, Task<HttpResponseMessage>>? RespondAsync { get; set; }
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var headers = request.Headers.Concat(request.Content?.Headers ?? Enumerable.Empty<KeyValuePair<string, IEnumerable<string>>>())
@@ -21,6 +24,6 @@ public sealed class FakeHandler : HttpMessageHandler
         {
             Requests.Add(new Recorded(request.Method, request.RequestUri!, headers, body));
         }
-        return Respond(request);
+        return RespondAsync is null ? Respond(request) : await RespondAsync(request);
     }
 }
