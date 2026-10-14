@@ -65,14 +65,25 @@ The seeded local models are disabled and point at placeholder `localhost` URLs w
 ```json
 {
   "models": [
-    { "id": "mimo-2.6", "enabled": true, "baseUrl": "http://<host>:<port>/v1", "upstreamModelId": "<served model id>", "apiKey": "<optional>", "contextWindow": 131072, "supportsVision": false }
+    { "id": "mimo-2.6", "enabled": true, "baseUrl": "http://<host>:<port>/v1", "upstreamModelId": "<served model id>", "apiKey": "<optional>", "contextWindow": 131072, "supportsVision": false,
+      "effort": { "mode": "reasoning_effort", "levels": [ "low", "medium", "high" ] } }
   ]
 }
 ```
 
+### Reasoning effort
+
+The client's effort is `output_config.effort` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Without it, an enabled `thinking` budget sets it: under 4,096 tokens `low`, under 16,384 `medium`, under 32,768 `high`, under 65,536 `xhigh`, else `max`. Disabled thinking is `none`, so each target gets its lowest listed level. With neither (thinking absent or adaptive) no effort is sent and the target uses its default. A level the target does not list is sent as the nearest one it does (the lower on a tie).
+
+- Claude: the request is passed through unchanged.
+- Codex: `reasoning.effort`, from the model's `effort.levels` (default `low` to `xhigh`; `none` and `minimal` become `low` and `max` becomes `xhigh` unless the model lists them).
+- Local: per the model's `effort` in the seed or `seed.local.json`. `mode` is `none` (default, nothing sent), `reasoning_effort` (sends `reasoning_effort: <level>`) or `chat_template_kwargs` (sends `kwargs[<level>]` as `chat_template_kwargs`, e.g. `{ "none": { "enable_thinking": false }, "high": { "enable_thinking": true } }`); `levels` lists the levels the model accepts; in `chat_template_kwargs` mode every listed level needs a `kwargs` entry or the router refuses to start.
+
+A database seeded before effort mappings existed takes them from `seed.json` once, on the next start; a mapping cleared after that stays cleared. A stored mapping that cannot be read is ignored (with a startup warning naming the model).
+
 ## Usage and cost
 
-Every served `/v1/messages` request (not `count_tokens`) is stored in the `RequestUsages` table with its client session ID, model, provider, tier, HTTP status, input/output/cache-read/cache-write tokens, cost, latency and requested `output_config.effort`. Tokens are read from the Anthropic-shaped response as it passes through, without buffering a stream: `message_start` and `message_delta` usage for streams (passthrough Claude and the translated Codex and local streams alike), the top-level `usage` of a JSON body otherwise.
+Every served `/v1/messages` request (not `count_tokens`) is stored in the `RequestUsages` table with its client session ID, model, provider, tier, HTTP status, input/output/cache-read/cache-write tokens, cost, latency and the request's normalized effort level (see [Reasoning effort](#reasoning-effort); null when it has none). Tokens are read from the Anthropic-shaped response as it passes through, without buffering a stream: `message_start` and `message_delta` usage for streams (passthrough Claude and the translated Codex and local streams alike), the top-level `usage` of a JSON body otherwise.
 
 Cost is priced from the `ModelPrices` table (USD per million input, output, cache-read and cache-write tokens, with one-hour cache writes at their own `CacheWrite1hPerMTok` rate), seeded once from `prices` in `seed.json`. **The seeded prices are estimates** of public list prices (Codex prices are guesses; local models are $0), used only to report spend; edit the table to change them. A model without a price row costs $0.
 

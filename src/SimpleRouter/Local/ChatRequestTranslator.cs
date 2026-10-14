@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using SimpleRouter.Api;
 using SimpleRouter.Data;
+using SimpleRouter.Routing;
 
 namespace SimpleRouter.Local;
 
@@ -50,7 +51,26 @@ public static class ChatRequestTranslator
         {
             AddTools(chat, request);
         }
+        AddEffort(chat, request, model.Effort);
         return chat;
+    }
+
+    /// <summary>The client's effort goes as the nearest level the model's mapping lists; without one the server keeps its default.</summary>
+    private static void AddEffort(JsonObject chat, JsonObject request, EffortMapping? mapping)
+    {
+        if (mapping is null || Effort.Read(request) is not { } requested || Effort.Nearest(requested, mapping.Levels ?? []) is not { } level)
+        {
+            return;
+        }
+        switch (mapping.Mode)
+        {
+            case EffortMode.ReasoningEffort:
+                chat["reasoning_effort"] = Effort.Name(level);
+                break;
+            case EffortMode.ChatTemplateKwargs when mapping.Kwargs?.GetValueOrDefault(Effort.Name(level)) is { } kwargs:
+                chat["chat_template_kwargs"] = kwargs.DeepClone();
+                break;
+        }
     }
 
     /// <param name="tools">False for a model without tool support: tool calls are written into the text instead.</param>

@@ -17,6 +17,9 @@ public sealed class CatalogSeeder(
 {
     public const string DefaultTierSetting = "default_tier";
 
+    /// <summary>Set once effort mappings have been taken from the seed, so a mapping cleared afterwards stays cleared.</summary>
+    public const string EffortSeededSetting = "effort_seeded";
+
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     private sealed record SeedModel(
@@ -28,7 +31,8 @@ public sealed class CatalogSeeder(
         string? ApiKey = null,
         int? ContextWindow = null,
         bool SupportsTools = true,
-        bool SupportsVision = false);
+        bool SupportsVision = false,
+        EffortMapping? Effort = null);
 
     private sealed record SeedAlias(string Pattern, string Tier);
 
@@ -46,15 +50,19 @@ public sealed class CatalogSeeder(
         string? ApiKey,
         int? ContextWindow,
         bool? SupportsTools,
-        bool? SupportsVision);
+        bool? SupportsVision,
+        EffortMapping? Effort);
 
     private sealed record Overrides(ModelOverride[]? Models);
+
+    private sealed record StoredEffort(string Id, string Effort);
 
     public async Task SeedAsync(CancellationToken ct = default)
     {
         await SeedEmptyAsync(ct);
         await SeedPricesAsync(ct);
         await ApplyOverridesAsync(ct);
+        await WarnUnreadableEffortAsync(ct);
     }
 
     /// <summary>Seeds the price table once, separately from the catalog, so a database created before prices existed gets them.</summary>
@@ -78,19 +86,13 @@ public sealed class CatalogSeeder(
         await db.SaveChangesAsync(ct);
     }
 
-    private async Task<Seed> ReadSeedAsync(CancellationToken ct)
-    {
-        await using var file = File.OpenRead(options.Value.SeedFile);
-        return await JsonSerializer.DeserializeAsync<Seed>(file, Json, ct)
-            ?? throw new InvalidDataException($"Seed file '{options.Value.SeedFile}' is empty.");
-    }
-
     /// <summary>Seeds once; later edits to the tables are kept across restarts.</summary>
     private async Task SeedEmptyAsync(CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         if (await db.Models.AnyAsync(ct))
         {
+            await BackfillEffortAsync(db, ct);
             return;
         }
 
@@ -106,6 +108,7 @@ public sealed class CatalogSeeder(
             ContextWindow = m.ContextWindow,
             SupportsTools = m.SupportsTools,
             SupportsVision = m.SupportsVision,
+            Effort = m.Effort,
         }));
         foreach (var (tier, modelIds) in seed.Tiers)
         {
@@ -116,7 +119,59 @@ public sealed class CatalogSeeder(
         {
             db.Settings.Add(new Setting { Key = DefaultTierSetting, Value = ModelTiers.Parse(seed.DefaultTier).Name() });
         }
+        db.Settings.Add(new Setting { Key = EffortSeededSetting, Value = "true" });
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// A catalog seeded before effort mappings existed takes them from the seed once, without touching mappings already set.
+    /// </summary>
+    private async Task BackfillEffortAsync(RouterDbContext db, CancellationToken ct)
+    {
+        if (!File.Exists(options.Value.SeedFile) || await db.Settings.FindAsync([EffortSeededSetting], ct) is not null)
+        {
+            return;
+        }
+        var seeded = (await ReadSeedAsync(ct)).Models.Where(m => m.Effort is not null).ToDictionary(m => m.Id, m => m.Effort);
+        foreach (var model in await db.Models.ToListAsync(ct))
+        {
+            model.Effort ??= seeded.GetValueOrDefault(model.Id);
+        }
+        db.Settings.Add(new Setting { Key = EffortSeededSetting, Value = "true" });
+        await db.SaveChangesAsync(ct);
+    }
+
+    private async Task<Seed> ReadSeedAsync(CancellationToken ct)
+    {
+        Seed seed;
+        await using (var file = File.OpenRead(options.Value.SeedFile))
+        {
+            seed = await JsonSerializer.DeserializeAsync<Seed>(file, Json, ct)
+                ?? throw new InvalidDataException($"Seed file '{options.Value.SeedFile}' is empty.");
+        }
+        foreach (var m in seed.Models)
+        {
+            Effort.Validate(m.Effort, m.Id);
+        }
+        return seed;
+    }
+
+    /// <summary>A stored mapping that no longer reads is ignored at request time; say which model lost it.</summary>
+    private async Task WarnUnreadableEffortAsync(CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var stored = await db.Database.SqlQuery<StoredEffort>($"SELECT Id, Effort FROM Models WHERE Effort IS NOT NULL").ToListAsync(ct);
+        foreach (var row in stored)
+        {
+            try
+            {
+                Effort.Validate(Effort.Deserialize(row.Effort) ?? throw new InvalidDataException("unreadable"), row.Id);
+            }
+            catch (InvalidDataException e)
+            {
+                logger.LogWarning("Model {model} has an invalid stored effort mapping, which is ignored where it does not apply: {reason}", row.Id, e.Message);
+            }
+        }
     }
 
     /// <summary>Overrides only the fields each entry sets, so real endpoints and keys never live in the committed seed.</summary>
@@ -138,6 +193,7 @@ public sealed class CatalogSeeder(
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         foreach (var o in overrides.Models ?? [])
         {
+            Effort.Validate(o.Effort, o.Id);
             if (await db.Models.FindAsync([o.Id], ct) is not { } model)
             {
                 logger.LogWarning("Seed override names unknown model {model}; skipped", o.Id);
@@ -150,6 +206,7 @@ public sealed class CatalogSeeder(
             model.ContextWindow = o.ContextWindow ?? model.ContextWindow;
             model.SupportsTools = o.SupportsTools ?? model.SupportsTools;
             model.SupportsVision = o.SupportsVision ?? model.SupportsVision;
+            model.Effort = o.Effort ?? model.Effort;
         }
         await db.SaveChangesAsync(ct);
     }

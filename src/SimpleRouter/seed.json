@@ -5,13 +5,16 @@
     { "id": "claude-opus-5-5", "provider": "claude", "upstreamModelId": "claude-opus-5-5", "enabled": true },
     { "id": "claude-sonnet-5-5", "provider": "claude", "upstreamModelId": "claude-sonnet-5-5", "enabled": true },
     { "id": "claude-haiku-5-5", "provider": "claude", "upstreamModelId": "claude-haiku-5-5", "enabled": true },
-    { "id": "gpt-6-astra", "provider": "codex", "upstreamModelId": "gpt-6-astra", "enabled": true },
+    { "id": "gpt-6-astra", "provider": "codex", "upstreamModelId": "gpt-6-astra", "enabled": true, "effort": { "levels": [ "minimal", "low", "medium", "high", "xhigh", "max" ] } },
     { "id": "gpt-6.1-sol", "provider": "codex", "upstreamModelId": "gpt-6.1-sol", "enabled": true },
     { "id": "gpt-5.6-terra", "provider": "codex", "upstreamModelId": "gpt-5.6-terra", "enabled": true },
     { "id": "gpt-6-luna", "provider": "codex", "upstreamModelId": "gpt-6-luna", "enabled": true },
-    { "id": "mimo-2.6", "provider": "local", "upstreamModelId": "mimo-2.6", "enabled": false, "baseUrl": "http://localhost:8001/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false },
-    { "id": "qwen-3.8-flash-next", "provider": "local", "upstreamModelId": "qwen-3.8-flash-next", "enabled": false, "baseUrl": "http://localhost:8002/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false },
-    { "id": "qwen-3.8-37b", "provider": "local", "upstreamModelId": "qwen-3.8-37b", "enabled": false, "baseUrl": "http://localhost:8003/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false }
+    { "id": "mimo-2.6", "provider": "local", "upstreamModelId": "mimo-2.6", "enabled": false, "baseUrl": "http://localhost:8001/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false,
+      "effort": { "mode": "reasoning_effort", "levels": [ "low", "medium", "high" ] } },
+    { "id": "qwen-3.8-flash-next", "provider": "local", "upstreamModelId": "qwen-3.8-flash-next", "enabled": false, "baseUrl": "http://localhost:8002/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false,
+      "effort": { "mode": "chat_template_kwargs", "levels": [ "none", "high" ], "kwargs": { "none": { "enable_thinking": false }, "high": { "enable_thinking": true } } } },
+    { "id": "qwen-3.8-37b", "provider": "local", "upstreamModelId": "qwen-3.8-37b", "enabled": false, "baseUrl": "http://localhost:8003/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false,
+      "effort": { "mode": "chat_template_kwargs", "levels": [ "none", "high" ], "kwargs": { "none": { "enable_thinking": false }, "high": { "enable_thinking": true } } } }
   ],
   "tiers": {
     "max": [ "claude-fable-5-1", "gpt-6-astra" ],

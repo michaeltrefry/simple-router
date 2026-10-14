@@ -28,6 +28,9 @@ namespace SimpleRouter.Data.Migrations
                     b.Property<int?>("ContextWindow")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("Effort")
+                        .HasColumnType("TEXT");
+
                     b.Property<bool>("Enabled")
                         .HasColumnType("INTEGER");
 

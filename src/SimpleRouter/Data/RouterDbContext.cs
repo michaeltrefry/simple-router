@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SimpleRouter.Routing;
 
@@ -27,6 +29,14 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
 
         modelBuilder.Entity<CatalogModel>().HasKey(m => m.Id);
         modelBuilder.Entity<CatalogModel>().Property(m => m.Provider).HasConversion(p => p.ToString().ToLowerInvariant(), p => Enum.Parse<ProviderKind>(p, true));
+        // Stored as seed-shaped JSON and compared by it, so a mapping edited in place is still saved.
+        modelBuilder.Entity<CatalogModel>().Property(m => m.Effort).HasConversion(
+            e => e == null ? null : JsonSerializer.Serialize(e, Effort.Json),
+            e => e == null ? null : Effort.Deserialize(e),
+            new ValueComparer<EffortMapping?>(
+                (a, b) => JsonSerializer.Serialize(a, Effort.Json) == JsonSerializer.Serialize(b, Effort.Json),
+                e => JsonSerializer.Serialize(e, Effort.Json).GetHashCode(),
+                e => e == null ? null : JsonSerializer.Deserialize<EffortMapping>(JsonSerializer.Serialize(e, Effort.Json), Effort.Json)));
         modelBuilder.Entity<TierMember>().HasKey(m => new { m.Tier, m.ModelId });
         modelBuilder.Entity<TierMember>().Property(m => m.Tier).HasConversion(TierConverter);
         modelBuilder.Entity<TierMember>().HasOne<CatalogModel>().WithMany().HasForeignKey(m => m.ModelId);
