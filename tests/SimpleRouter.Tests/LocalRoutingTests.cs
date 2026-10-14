@@ -333,6 +333,7 @@ public class LocalRoutingTests
     {
         var dataDirectory = RouterHost.NewDataDirectory();
         var overridePath = Path.Combine(Path.GetTempPath(), "simple-router-tests", $"override-{Guid.NewGuid():N}.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(overridePath)!);
         await File.WriteAllTextAsync(overridePath, """
             { "models": [ { "id": "local-off", "enabled": true, "baseUrl": "http://override.test/v1", "upstreamModelId": "real-id", "apiKey": "override-key", "contextWindow": 5000 } ] }
             """);
