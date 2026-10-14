@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using SimpleRouter.Claude;
 using SimpleRouter.Gateway;
+using SimpleRouter.Local;
 
 namespace SimpleRouter.Tests.Support;
 
@@ -14,18 +15,21 @@ public sealed class RouterHost : IAsyncDisposable
 
     private readonly WebApplication _app;
 
-    private RouterHost(WebApplication app, string dataDirectory, FakeHandler upstream, FakeHandler oauth)
+    private RouterHost(WebApplication app, string dataDirectory, FakeHandler upstream, FakeHandler oauth, FakeHandler local)
     {
         _app = app;
         DataDirectory = dataDirectory;
         Upstream = upstream;
         OAuth = oauth;
+        Local = local;
         Client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
     }
 
     public string DataDirectory { get; }
     public FakeHandler Upstream { get; }
     public FakeHandler OAuth { get; }
+    /// <summary>Every local OpenAI-compatible endpoint (chat and health checks); route on the request URI.</summary>
+    public FakeHandler Local { get; }
     public HttpClient Client { get; }
     public IServiceProvider Services => _app.Services;
 
@@ -38,15 +42,22 @@ public sealed class RouterHost : IAsyncDisposable
             $"--SimpleRouter:Claude:ApiBaseUrl={UpstreamBase}",
             $"--SimpleRouter:Claude:TokenUrl={TokenUrl}",
             $"--SimpleRouter:Claude:AuthorizeUrl={AuthorizeUrl}",
+            // Tests run health checks explicitly so results never race the assertions.
+            "--SimpleRouter:Local:HealthCheckIntervalSeconds=0",
         };
         args.AddRange(models.Select((m, i) => $"--SimpleRouter:Models:{i}={m}"));
         return args.ToArray();
     }
 
-    public static Action<IServiceCollection> FakeHttp(FakeHandler upstream, FakeHandler oauth) => services =>
+    public static Action<IServiceCollection> FakeHttp(FakeHandler upstream, FakeHandler oauth, FakeHandler? local = null) => services =>
     {
         services.AddHttpClient(ClaudeUpstream.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => upstream);
         services.AddHttpClient(ClaudeOAuthClient.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => oauth);
+        if (local is not null)
+        {
+            services.AddHttpClient(LocalUpstream.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => local);
+            services.AddHttpClient(LocalHealth.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => local);
+        }
     };
 
     public static string NewDataDirectory() =>
@@ -68,14 +79,15 @@ public sealed class RouterHost : IAsyncDisposable
     {
         var upstream = new FakeHandler();
         var oauth = new FakeHandler();
+        var local = new FakeHandler();
         var app = RouterApp.Build(args, services =>
         {
-            FakeHttp(upstream, oauth)(services);
+            FakeHttp(upstream, oauth, local)(services);
             configureServices(services);
         });
         await RouterApp.InitializeAsync(app);
         await app.StartAsync();
-        return new RouterHost(app, dataDirectory, upstream, oauth);
+        return new RouterHost(app, dataDirectory, upstream, oauth, local);
     }
 
     /// <summary>When set, disposal stops the host but leaves the data directory for a restarted host.</summary>

@@ -1,21 +1,18 @@
-using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SimpleRouter.Api;
-using SimpleRouter.Claude;
 
 namespace SimpleRouter.Routing;
 
-/// <summary>Resolves the tier and session model for a Messages request, rewrites its <c>model</c>, and forwards it.</summary>
-public sealed class MessageRouter(ModelSelector selector, ClaudeUpstream claude)
+/// <summary>Resolves the tier and session model for a Messages request and hands it to that model's upstream.</summary>
+public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpstream> upstreams)
 {
     public const string ModelClassHeader = "X-Weave-Model-Class";
 
-    private static readonly JsonSerializerOptions Relaxed = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     private static readonly JsonDocumentOptions Strict = new() { AllowDuplicateProperties = false };
 
-    /// <param name="assignPin">False for token counting, which must not consume a round-robin turn or create a pin.</param>
-    public async Task RouteAsync(HttpContext context, string path, bool assignPin)
+    /// <param name="countTokens">Token counting must not consume a round-robin turn or create a pin.</param>
+    public async Task RouteAsync(HttpContext context, bool countTokens)
     {
         var ct = context.RequestAborted;
         var tierHeader = context.Request.Headers[TierResolver.HeaderName];
@@ -41,7 +38,10 @@ public sealed class MessageRouter(ModelSelector selector, ClaudeUpstream claude)
         context.Response.Headers[ModelClassHeader] = tier.Name();
 
         var session = SessionKey.Derive(context.Request.Headers[SessionKey.HeaderName], request);
-        var chosen = assignPin ? await selector.SelectAsync(tier, session, ct) : await selector.PeekAsync(tier, session, ct);
+        var estimate = TokenEstimator.Estimate(request);
+        var chosen = countTokens
+            ? await selector.PeekAsync(tier, session, estimate, ct)
+            : await selector.SelectAsync(tier, session, estimate, ct);
         if (chosen is null)
         {
             await AnthropicError.WriteAsync(context, StatusCodes.Status503ServiceUnavailable, "api_error",
@@ -49,8 +49,8 @@ public sealed class MessageRouter(ModelSelector selector, ClaudeUpstream claude)
             return;
         }
 
-        request["model"] = chosen.UpstreamModelId;
-        await claude.ForwardAsync(context, path, JsonSerializer.SerializeToUtf8Bytes(request, Relaxed), injectIdentity: assignPin);
+        var upstream = upstreams.First(u => u.Provider == chosen.Provider);
+        await upstream.SendAsync(new UpstreamCall(context, request, chosen, countTokens, estimate));
     }
 
     /// <summary>
@@ -64,7 +64,7 @@ public sealed class MessageRouter(ModelSelector selector, ClaudeUpstream claude)
             var body = await JsonNode.ParseAsync(request.Body, documentOptions: Strict, cancellationToken: ct) as JsonObject;
             if (body is not null)
             {
-                JsonSerializer.SerializeToUtf8Bytes(body, Relaxed);
+                JsonSerializer.SerializeToUtf8Bytes(body, WireJson.Relaxed);
             }
             return body;
         }

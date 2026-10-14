@@ -5,6 +5,7 @@ using SimpleRouter.Api;
 using SimpleRouter.Claude;
 using SimpleRouter.Data;
 using SimpleRouter.Gateway;
+using SimpleRouter.Local;
 using SimpleRouter.Routing;
 
 namespace SimpleRouter;
@@ -57,12 +58,18 @@ public static class RouterApp
         builder.Services.AddSingleton<ClaudeTokenProvider>();
         builder.Services.AddSingleton<ClaudeLoginCommand>();
         builder.Services.AddSingleton<ClaudeUpstream>();
+        builder.Services.AddSingleton<IModelUpstream>(sp => sp.GetRequiredService<ClaudeUpstream>());
+        builder.Services.AddSingleton<IModelUpstream, LocalUpstream>();
+        builder.Services.AddSingleton<LocalHealth>();
+        builder.Services.AddHostedService<LocalHealthMonitor>();
         builder.Services.AddSingleton<CatalogSeeder>();
         builder.Services.AddSingleton<ModelSelector>();
         builder.Services.AddSingleton<MessageRouter>();
         builder.Services.AddHttpClient(ClaudeOAuthClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30));
         // Streams can run for many minutes; cancellation follows the inbound request instead.
         builder.Services.AddHttpClient(ClaudeUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
+        builder.Services.AddHttpClient(LocalUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
+        builder.Services.AddHttpClient(LocalHealth.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(5));
 
         configureServices?.Invoke(builder.Services);
 

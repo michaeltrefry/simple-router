@@ -18,13 +18,15 @@ Any setting can be overridden with `--SimpleRouter:<Name>=<value>` or `SimpleRou
 - `Gateway/` — router-generated gateway key and `/v1` auth middleware.
 - `Claude/` — subscription OAuth (PKCE login, refresh), encrypted credential store, upstream forwarder.
 - `Api/` — endpoint mappings and Anthropic-shaped errors.
-- `Routing/` — tier resolution, session-key derivation, round-robin selection with persisted pins, catalog seeding (`seed.json`).
+- `Routing/` — tier resolution, session-key derivation, round-robin selection with persisted pins (local-first in Mid/Low), catalog seeding (`seed.json`, plus the per-machine `seed.local.json` override in the data directory), and `IModelUpstream`, the per-provider upstream contract.
+- `Local/` — OpenAI-compatible local endpoints: Anthropic ⇄ Chat Completions translation (request, response, SSE stream), health checks.
 - `Data/` — `RouterDbContext` and migrations.
 
 ## Conventions
 
 - Bind loopback only. Secrets at rest go through `SecretProtector` (ASP.NET Data Protection).
 - Never log secrets, tokens, keys or request/response bodies.
+- Real local endpoint hosts and keys belong in `seed.local.json` (gitignored), never in `seed.json`.
 - This repo is public: no private identifiers (emails, org names, account IDs, personal paths) in code, commits, fixtures or PR text.
 - Upstream endpoints are configurable; tests use fakes (`FakeHandler`, `FakeAnthropic`) and never call real services.
 - Tests assert behavior that would break if the production code were removed. Keep files small; minimal code; comments only for non-obvious why.

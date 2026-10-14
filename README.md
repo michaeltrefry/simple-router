@@ -27,3 +27,19 @@ Each request is served in a tier (`max`, `high`, `mid`, `low`), chosen by:
 Responses carry `X-Weave-Model-Class: <tier>`. A new session gets the next enabled model in its tier (round-robin, cursor persisted), and keeps it for the life of the session, across restarts. The session key combines the client session ID (`X-Claude-Code-Session-Id`, else the session in `metadata.user_id`, else a hash of the system prompt) with the first user message, so sub-agents get their own pins.
 
 The model catalog, tier membership, aliases and default tier are loaded from `seed.json` into the database on first run (`--SimpleRouter:SeedFile=...`); edit the `Models`, `TierMembers`, `TierAliases` tables and the `default_tier` setting to change them.
+
+### Local models
+
+Mid and Low give new sessions to a healthy local OpenAI-compatible model first (round-robin among them) and fall back to the subscription models only when no local model is eligible. A local model is eligible when it is enabled, its last health check (`GET {baseUrl}/models`, every 30 s, `--SimpleRouter:Local:HealthCheckIntervalSeconds`) succeeded, and the request's estimated tokens (about 4 characters each) fit its `contextWindow`. A pinned session moves only when its model stops being eligible.
+
+Requests are translated to Chat Completions (`{baseUrl}/chat/completions`) and responses, streamed or not, back to Anthropic messages. Upstream reasoning (`reasoning_content`, `reasoning`, a leading `<think>` block) is omitted, and thinking blocks from earlier turns are dropped. Images are sent as data URLs only to models with `supportsVision`; otherwise they are replaced by a short note. `count_tokens` for a local model returns the estimate without calling it.
+
+The seeded local models are disabled and point at placeholder `localhost` URLs with a placeholder 128k context window. To point them at real endpoints, create `~/.simple-router/seed.local.json` (`--SimpleRouter:SeedOverrideFile=...`); it is applied on every start and only changes the fields it sets. API keys are stored encrypted in the database and never logged.
+
+```json
+{
+  "models": [
+    { "id": "mimo-2.6", "enabled": true, "baseUrl": "http://<host>:<port>/v1", "upstreamModelId": "<served model id>", "apiKey": "<optional>", "contextWindow": 131072, "supportsVision": false }
+  ]
+}
+```

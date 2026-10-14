@@ -5,21 +5,55 @@ using SimpleRouter.Data;
 
 namespace SimpleRouter.Routing;
 
-/// <summary>Loads the model catalog, tier membership, aliases and default tier from the seed file into an empty database.</summary>
-public sealed class CatalogSeeder(IDbContextFactory<RouterDbContext> dbFactory, IOptions<RouterOptions> options)
+/// <summary>
+/// Loads the model catalog, tier membership, aliases and default tier from the seed file into an empty database, then
+/// applies the optional per-machine override file to existing models on every start.
+/// </summary>
+public sealed class CatalogSeeder(
+    IDbContextFactory<RouterDbContext> dbFactory,
+    IOptions<RouterOptions> options,
+    SecretProtector secrets,
+    ILogger<CatalogSeeder> logger)
 {
     public const string DefaultTierSetting = "default_tier";
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    private sealed record SeedModel(string Id, string Provider, string UpstreamModelId, bool Enabled);
+    private sealed record SeedModel(
+        string Id,
+        string Provider,
+        string UpstreamModelId,
+        bool Enabled,
+        string? BaseUrl = null,
+        string? ApiKey = null,
+        int? ContextWindow = null,
+        bool SupportsTools = true,
+        bool SupportsVision = false);
 
     private sealed record SeedAlias(string Pattern, string Tier);
 
     private sealed record Seed(string DefaultTier, SeedModel[] Models, Dictionary<string, string[]> Tiers, SeedAlias[] Aliases);
 
-    /// <summary>Seeds once; later edits to the tables are kept across restarts.</summary>
+    private sealed record ModelOverride(
+        string Id,
+        bool? Enabled,
+        string? BaseUrl,
+        string? UpstreamModelId,
+        string? ApiKey,
+        int? ContextWindow,
+        bool? SupportsTools,
+        bool? SupportsVision);
+
+    private sealed record Overrides(ModelOverride[]? Models);
+
     public async Task SeedAsync(CancellationToken ct = default)
+    {
+        await SeedEmptyAsync(ct);
+        await ApplyOverridesAsync(ct);
+    }
+
+    /// <summary>Seeds once; later edits to the tables are kept across restarts.</summary>
+    private async Task SeedEmptyAsync(CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         if (await db.Models.AnyAsync(ct))
@@ -37,6 +71,11 @@ public sealed class CatalogSeeder(IDbContextFactory<RouterDbContext> dbFactory, 
             Provider = Enum.Parse<ProviderKind>(m.Provider, ignoreCase: true),
             UpstreamModelId = m.UpstreamModelId,
             Enabled = m.Enabled,
+            BaseUrl = m.BaseUrl,
+            ProtectedApiKey = Protect(m.ApiKey),
+            ContextWindow = m.ContextWindow,
+            SupportsTools = m.SupportsTools,
+            SupportsVision = m.SupportsVision,
         }));
         foreach (var (tier, modelIds) in seed.Tiers)
         {
@@ -49,4 +88,41 @@ public sealed class CatalogSeeder(IDbContextFactory<RouterDbContext> dbFactory, 
         }
         await db.SaveChangesAsync(ct);
     }
+
+    /// <summary>Overrides only the fields each entry sets, so real endpoints and keys never live in the committed seed.</summary>
+    private async Task ApplyOverridesAsync(CancellationToken ct)
+    {
+        var path = options.Value.SeedOverridePath;
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        Overrides overrides;
+        await using (var file = File.OpenRead(path))
+        {
+            overrides = await JsonSerializer.DeserializeAsync<Overrides>(file, Json, ct)
+                ?? throw new InvalidDataException($"Seed override file '{path}' is empty.");
+        }
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        foreach (var o in overrides.Models ?? [])
+        {
+            if (await db.Models.FindAsync([o.Id], ct) is not { } model)
+            {
+                logger.LogWarning("Seed override names unknown model {model}; skipped", o.Id);
+                continue;
+            }
+            model.Enabled = o.Enabled ?? model.Enabled;
+            model.BaseUrl = o.BaseUrl ?? model.BaseUrl;
+            model.UpstreamModelId = o.UpstreamModelId ?? model.UpstreamModelId;
+            model.ProtectedApiKey = o.ApiKey is null ? model.ProtectedApiKey : Protect(o.ApiKey);
+            model.ContextWindow = o.ContextWindow ?? model.ContextWindow;
+            model.SupportsTools = o.SupportsTools ?? model.SupportsTools;
+            model.SupportsVision = o.SupportsVision ?? model.SupportsVision;
+        }
+        await db.SaveChangesAsync(ct);
+    }
+
+    private string? Protect(string? apiKey) => string.IsNullOrEmpty(apiKey) ? null : secrets.Protect(apiKey);
 }

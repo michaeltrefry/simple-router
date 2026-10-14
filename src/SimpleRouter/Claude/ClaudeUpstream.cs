@@ -1,7 +1,9 @@
 using System.Net.Http.Headers;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
 using SimpleRouter.Api;
+using SimpleRouter.Routing;
 
 namespace SimpleRouter.Claude;
 
@@ -10,7 +12,7 @@ public sealed class ClaudeUpstream(
     IHttpClientFactory httpClientFactory,
     ClaudeTokenProvider tokens,
     IOptions<RouterOptions> options,
-    ILogger<ClaudeUpstream> logger)
+    ILogger<ClaudeUpstream> logger) : IModelUpstream
 {
     public const string HttpClientName = "claude-upstream";
     public const string OAuthBeta = "oauth-2025-04-20";
@@ -22,7 +24,16 @@ public sealed class ClaudeUpstream(
         "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer", "Transfer-Encoding", "Upgrade",
     };
 
-    public async Task ForwardAsync(HttpContext context, string path, byte[] body, bool injectIdentity)
+    public ProviderKind Provider => ProviderKind.Claude;
+
+    public Task SendAsync(UpstreamCall call)
+    {
+        call.Request["model"] = call.Model.UpstreamModelId;
+        var path = call.CountTokens ? "/v1/messages/count_tokens" : "/v1/messages";
+        return ForwardAsync(call.Context, path, JsonSerializer.SerializeToUtf8Bytes(call.Request, WireJson.Relaxed), injectIdentity: !call.CountTokens);
+    }
+
+    private async Task ForwardAsync(HttpContext context, string path, byte[] body, bool injectIdentity)
     {
         var ct = context.RequestAborted;
         string accessToken;
