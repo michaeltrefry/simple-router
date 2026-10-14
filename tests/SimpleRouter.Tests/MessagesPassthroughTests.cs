@@ -180,24 +180,25 @@ public class MessagesPassthroughTests
     }
 
     [Fact]
-    public async Task Upstream_error_status_and_body_pass_through()
+    public async Task A_client_error_status_and_body_pass_through()
     {
         await using var host = await RouterHost.StartAsync();
         await host.LoginAsync();
-        const string error = """{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}""";
+        const string error = """{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}""";
         host.Upstream.Respond = _ =>
         {
-            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests) { Content = new StringContent(error) };
-            response.Headers.Add("retry-after", "7");
+            var response = new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(error) };
+            response.Headers.Add("request-id", "req_upstream_9");
             return response;
         };
         var client = await host.AuthorizedClientAsync();
 
         using var response = await client.SendAsync(MessagesRequest());
 
-        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(error, await response.Content.ReadAsStringAsync());
-        Assert.Equal("7", response.Headers.GetValues("retry-after").Single());
+        Assert.Equal("req_upstream_9", response.Headers.GetValues("request-id").Single());
+        Assert.Single(host.Upstream.Requests);
     }
 
     [Fact]

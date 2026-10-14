@@ -10,11 +10,16 @@ using SimpleRouter.Routing;
 
 namespace SimpleRouter.Claude;
 
-/// <summary>Forwards a Messages API body to Claude with the subscription token and streams the response back unchanged.</summary>
+/// <summary>
+/// Forwards a Messages API body to Claude with the subscription token and streams the response back unchanged. A limit,
+/// plan rejection, overload or connection failure on a message is returned unwritten so the router can fail over;
+/// token counting is always passed through.
+/// </summary>
 public sealed class ClaudeUpstream(
     IHttpClientFactory httpClientFactory,
     ClaudeTokenProvider tokens,
     IOptions<RouterOptions> options,
+    TimeProvider time,
     ILogger<ClaudeUpstream> logger) : IModelUpstream
 {
     public const string HttpClientName = "claude-upstream";
@@ -29,12 +34,12 @@ public sealed class ClaudeUpstream(
 
     public ProviderKind Provider => ProviderKind.Claude;
 
-    public Task SendAsync(UpstreamCall call)
+    public Task<UpstreamResult> SendAsync(UpstreamCall call)
     {
         call.Request["model"] = call.Model.UpstreamModelId;
         DropForeignThinking(call.Request);
         var path = call.CountTokens ? "/v1/messages/count_tokens" : "/v1/messages";
-        return ForwardAsync(call.Context, path, JsonSerializer.SerializeToUtf8Bytes(call.Request, WireJson.Relaxed), injectIdentity: !call.CountTokens);
+        return ForwardAsync(call.Context, path, JsonSerializer.SerializeToUtf8Bytes(call.Request, WireJson.Relaxed), message: !call.CountTokens);
     }
 
     /// <summary>
@@ -72,7 +77,7 @@ public sealed class ClaudeUpstream(
 
     private static string? Str(JsonNode? node) => ChatRequestTranslator.Str(node);
 
-    private async Task ForwardAsync(HttpContext context, string path, byte[] body, bool injectIdentity)
+    private async Task<UpstreamResult> ForwardAsync(HttpContext context, string path, byte[] body, bool message)
     {
         var ct = context.RequestAborted;
         string accessToken;
@@ -83,16 +88,16 @@ public sealed class ClaudeUpstream(
         catch (ClaudeNotLoggedInException e)
         {
             await AnthropicError.WriteAsync(context, StatusCodes.Status503ServiceUnavailable, "api_error", e.Message);
-            return;
+            return UpstreamResult.Served;
         }
         catch (ClaudeOAuthException e)
         {
             logger.LogWarning("Claude access token refresh failed with status {status}", e.Status);
             await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", e.Message);
-            return;
+            return UpstreamResult.Served;
         }
 
-        if (injectIdentity)
+        if (message)
         {
             body = ClaudeIdentity.Ensure(body);
         }
@@ -107,15 +112,39 @@ public sealed class ClaudeUpstream(
         catch (HttpRequestException e)
         {
             logger.LogWarning("Claude upstream request failed: {error}", e.Message);
+            if (message)
+            {
+                return UpstreamResult.NotServed(new ModelFault(FaultKind.Unreachable));
+            }
             await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", "Claude upstream is unreachable.");
-            return;
+            return UpstreamResult.Served;
         }
 
         using (response)
         {
+            var now = time.GetUtcNow();
+            var limits = LimitHeaders.Anthropic(response.Headers);
+            if (message && Fault(response, limits, now) is { } fault)
+            {
+                logger.LogWarning("Claude answered HTTP {status}; not serving this request from it", (int)response.StatusCode);
+                return UpstreamResult.NotServed(fault);
+            }
             await CopyResponseAsync(response, context, ct);
+            return UpstreamResult.ServedWith(limits.Exhausted ? new ModelFault(FaultKind.Limited, limits.ResetAt) : null);
         }
     }
+
+    /// <summary>
+    /// A status another model may do better on: a limit (429), a model the plan does not offer (403
+    /// <c>permission_error</c>, 404 <c>not_found_error</c>) or an overloaded or failing service.
+    /// </summary>
+    private static ModelFault? Fault(HttpResponseMessage response, LimitReading limits, DateTimeOffset now) => (int)response.StatusCode switch
+    {
+        429 => new ModelFault(FaultKind.Limited, (limits.Exhausted ? limits.ResetAt : null) ?? LimitHeaders.RetryAfter(response.Headers, now)),
+        403 or 404 => new ModelFault(FaultKind.PlanRejected),
+        500 or 502 or 503 or 504 or 529 => new ModelFault(FaultKind.Overloaded, LimitHeaders.RetryAfter(response.Headers, now)),
+        _ => null,
+    };
 
     private HttpRequestMessage BuildRequest(HttpRequest inbound, string path, byte[] body, string accessToken)
     {

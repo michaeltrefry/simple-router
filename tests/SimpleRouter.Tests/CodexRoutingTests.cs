@@ -129,19 +129,40 @@ public class CodexRoutingTests
     public async Task A_non_streaming_client_gets_a_mid_stream_failure_as_an_error_response()
     {
         await using var host = await StartAsync(_ => Stream(Sse(Created,
+            """{"type":"response.failed","response":{"error":{"code":"invalid_prompt","message":"Invalid prompt."}}}""")));
+        await PinNextSessionToCodexAsync(host, "high");
+
+        using var response = await host.Client.SendAsync(Message("codex-session", stream: false));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+        Assert.Equal("invalid_request_error", error["error"]!["type"]!.GetValue<string>());
+        Assert.Equal("Invalid prompt.", error["error"]!["message"]!.GetValue<string>());
+        Assert.Single(host.Upstream.Requests);
+    }
+
+    [Fact]
+    public async Task A_non_streaming_usage_limit_failure_writes_nothing_so_the_request_moves_to_claude()
+    {
+        await using var host = await StartAsync(_ => Stream(Sse(Created,
             """{"type":"response.failed","response":{"error":{"code":"usage_limit_reached","message":"Usage limit reached."}}}""")));
         await PinNextSessionToCodexAsync(host, "high");
 
         using var response = await host.Client.SendAsync(Message("codex-session", stream: false));
 
-        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
-        var error = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
-        Assert.Equal("rate_limit_error", error["error"]!["type"]!.GetValue<string>());
-        Assert.Equal("Usage limit reached.", error["error"]!["message"]!.GetValue<string>());
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, host.Upstream.Requests.Count);
+        Assert.Equal("claude-opus-5-5", await PinnedModelAsync(host, "codex-session"));
+    }
+
+    private static async Task<string> PinnedModelAsync(RouterHost host, string sessionId)
+    {
+        await using var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
+        return (await db.SessionPins.SingleAsync(p => p.ClientSessionId == sessionId)).ModelId;
     }
 
     [Fact]
-    public async Task An_upstream_429_keeps_its_status_and_retry_after_with_an_anthropic_body()
+    public async Task An_upstream_429_moves_the_session_to_claude_and_cools_codex_until_its_retry_after()
     {
         await using var host = await StartAsync(_ =>
         {
@@ -154,14 +175,16 @@ public class CodexRoutingTests
         });
         await PinNextSessionToCodexAsync(host, "high");
 
+        var before = DateTimeOffset.UtcNow;
         using var response = await host.Client.SendAsync(Message("codex-session"));
 
-        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
-        Assert.Equal("120", response.Headers.RetryAfter!.ToString());
-        var error = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
-        Assert.Equal("error", error["type"]!.GetValue<string>());
-        Assert.Equal("rate_limit_error", error["error"]!["type"]!.GetValue<string>());
-        Assert.Equal("The usage limit has been reached.", error["error"]!["message"]!.GetValue<string>());
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Single(host.Codex.Requests);
+        Assert.Equal(2, host.Upstream.Requests.Count);
+        Assert.Equal("claude-opus-5-5", await PinnedModelAsync(host, "codex-session"));
+        var codex = (await host.Services.GetRequiredService<ModelSelector>().StatusesAsync(CancellationToken.None)).Single(m => m.ModelId == "gpt-6.1-sol");
+        Assert.Equal(ModelStatus.Cooling, codex.Status);
+        Assert.InRange(codex.CoolingUntil!.Value, before.AddSeconds(115), before.AddSeconds(125));
     }
 
     [Fact]
@@ -197,7 +220,7 @@ public class CodexRoutingTests
     }
 
     [Fact]
-    public async Task A_403_for_a_plan_without_codex_reports_the_plan_error_not_a_login_problem()
+    public async Task A_403_for_a_plan_without_codex_is_a_plan_rejection_that_moves_the_session_not_a_login_problem()
     {
         await using var host = await StartAsync(_ => new HttpResponseMessage(HttpStatusCode.Forbidden)
         {
@@ -207,10 +230,8 @@ public class CodexRoutingTests
 
         using var response = await host.Client.SendAsync(Message("codex-session"));
 
-        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
-        var error = JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!;
-        Assert.Equal("rate_limit_error", error["type"]!.GetValue<string>());
-        Assert.Equal("Your plan does not include Codex.", error["message"]!.GetValue<string>());
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("claude-opus-5-5", await PinnedModelAsync(host, "codex-session"));
         Assert.Empty(host.CodexAuth.Requests);
     }
 

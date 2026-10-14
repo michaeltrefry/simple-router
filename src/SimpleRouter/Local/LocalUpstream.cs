@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http.Features;
 using SimpleRouter.Api;
 using SimpleRouter.Data;
@@ -9,12 +10,17 @@ using SimpleRouter.Routing;
 
 namespace SimpleRouter.Local;
 
-/// <summary>Serves Messages API calls from a local OpenAI-compatible Chat Completions endpoint, translating both ways.</summary>
+/// <summary>
+/// Serves Messages API calls from a local OpenAI-compatible Chat Completions endpoint, translating both ways. A refused
+/// connection (which also marks the endpoint unhealthy), a 429 or 503, or a context-length rejection is returned
+/// unwritten so the router can fail over.
+/// </summary>
 public sealed class LocalUpstream(
     IHttpClientFactory httpClientFactory,
     SecretProtector secrets,
     LocalHealth health,
     Microsoft.Extensions.Options.IOptions<RouterOptions> options,
+    TimeProvider time,
     ILogger<LocalUpstream> logger) : IModelUpstream
 {
     public const string HttpClientName = "local-upstream";
@@ -25,14 +31,14 @@ public sealed class LocalUpstream(
     public static string Endpoint(CatalogModel model, string path) =>
         (model.BaseUrl ?? throw new InvalidOperationException($"Local model {model.Id} has no base URL.")).TrimEnd('/') + "/" + path;
 
-    public async Task SendAsync(UpstreamCall call)
+    public async Task<UpstreamResult> SendAsync(UpstreamCall call)
     {
         var (context, model) = (call.Context, call.Model);
         var ct = context.RequestAborted;
         if (call.CountTokens)
         {
             await context.Response.WriteAsJsonAsync(new { input_tokens = call.EstimatedInputTokens }, ct);
-            return;
+            return UpstreamResult.Served;
         }
 
         var chat = ChatRequestTranslator.Translate(call.Request, model, call.EstimatedInputTokens);
@@ -55,17 +61,16 @@ public sealed class LocalUpstream(
         {
             logger.LogWarning("Local model {model} is unreachable: {error}", model.Id, e.Message);
             health.MarkUnhealthy(model.Id);
-            await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", $"Local model {model.Id} is unreachable.");
-            return;
+            return UpstreamResult.NotServed(new ModelFault(FaultKind.Unreachable));
         }
 
         using (response)
         {
             if (!response.IsSuccessStatusCode)
             {
-                await WriteUpstreamErrorAsync(context, model, response, ct);
+                return await ErrorAsync(context, model, response, ct);
             }
-            else if (chat["stream"] is not null)
+            if (chat["stream"] is not null)
             {
                 await StreamAsync(context, model, call.EstimatedInputTokens, response, ct);
             }
@@ -73,6 +78,7 @@ public sealed class LocalUpstream(
             {
                 await WriteMessageAsync(context, model, call.EstimatedInputTokens, response, ct);
             }
+            return UpstreamResult.Served;
         }
     }
 
@@ -204,14 +210,19 @@ public sealed class LocalUpstream(
         await context.Response.Body.FlushAsync(ct);
     }
 
-    private static async Task WriteUpstreamErrorAsync(HttpContext context, CatalogModel model, HttpResponseMessage response, CancellationToken ct)
+    private async Task<UpstreamResult> ErrorAsync(HttpContext context, CatalogModel model, HttpResponseMessage response, CancellationToken ct)
     {
         var status = (int)response.StatusCode;
+        var retryAfter = LimitHeaders.RetryAfter(response.Headers, time.GetUtcNow());
+        if (status is 429 or 503)
+        {
+            logger.LogWarning("Local model {model} answered HTTP {status}; not serving this request from it", model.Id, status);
+            return UpstreamResult.NotServed(new ModelFault(status == 429 ? FaultKind.Limited : FaultKind.Overloaded, retryAfter));
+        }
         var (clientStatus, type) = status switch
         {
             400 or 422 => (StatusCodes.Status400BadRequest, "invalid_request_error"),
             413 => (StatusCodes.Status413PayloadTooLarge, "request_too_large"),
-            429 => (StatusCodes.Status429TooManyRequests, "rate_limit_error"),
             // An auth or server failure is the router's local configuration, not the client's request.
             _ => (StatusCodes.Status502BadGateway, "api_error"),
         };
@@ -228,8 +239,19 @@ public sealed class LocalUpstream(
         catch (JsonException)
         {
         }
+        if (status is 400 or 413 or 422 && message is not null && ContextOverflow.IsMatch(message))
+        {
+            logger.LogWarning("Local model {model} rejected the request as too long for its context", model.Id);
+            return UpstreamResult.NotServed(new ModelFault(FaultKind.ContextOverflow));
+        }
         await AnthropicError.WriteAsync(context, clientStatus, type, message ?? $"Local model {model.Id} returned HTTP {status}.");
+        return UpstreamResult.Served;
     }
+
+    // The token estimate is approximate, so an OpenAI-compatible server's own context-length rejection still moves the request.
+    private static readonly Regex ContextOverflow = new(
+        @"context[ _-]?(length|window|size)|maximum context|too many tokens|prompt is too long|exceeds? the (model'?s )?(max|context)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static string? ErrorMessage(JsonNode? error) =>
         error is JsonObject obj ? ChatRequestTranslator.Str(obj["message"]) : ChatRequestTranslator.Str(error);
