@@ -145,6 +145,48 @@ public class EffortRoutingTests
         Assert.StartsWith("gpt-", rows.Single(r => r.ClientSessionId == "codex-budget").ModelId);
     }
 
+    private static async Task<Dictionary<string, string?>> RecordedEffortsAsync(RouterHost host, int count)
+    {
+        await using var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
+        List<RequestUsage> rows = [];
+        // Recorded once each response completes, so the last one may still be writing.
+        for (var i = 0; i < 100 && (rows = await db.RequestUsages.AsNoTracking().ToListAsync()).Count < count; i++)
+        {
+            await Task.Delay(20);
+        }
+        return rows.ToDictionary(r => r.ClientSessionId!, r => r.Effort);
+    }
+
+    [Fact]
+    public async Task The_recorded_effort_is_the_level_each_target_was_sent()
+    {
+        await using var host = await StartAsync();
+
+        await SendAsync(host, Message("claude-max", "high", "max"));
+        await SendAsync(host, Message("sol-max", "high", "max"));
+        await SendAsync(host, Message("qwen-high", "low", "high"));
+
+        Assert.Equal("xhigh", JsonNode.Parse(Assert.Single(host.Codex.Requests).Body)!["reasoning"]!["effort"]!.GetValue<string>());
+        Assert.Equal(
+            new Dictionary<string, string?> { ["claude-max"] = "max", ["sol-max"] = "xhigh", ["qwen-high"] = "medium" },
+            await RecordedEffortsAsync(host, 3));
+    }
+
+    [Fact]
+    public async Task A_local_model_told_no_effort_records_none()
+    {
+        await using var host = await StartAsync(overrides: """
+            { "models": [ { "id": "qwen-3.8-37b", "enabled": true, "baseUrl": "http://qwen.test/v1", "effort": { "mode": "none", "levels": [ "low" ] } } ] }
+            """);
+
+        await SendAsync(host, Message("qwen-high", "low", "high"));
+
+        var chat = JsonNode.Parse(host.Local.Requests.Single(r => r.Uri.AbsolutePath.EndsWith("/chat/completions")).Body)!;
+        Assert.Null(chat["reasoning_effort"]);
+        Assert.Null(chat["chat_template_kwargs"]);
+        Assert.Equal(new Dictionary<string, string?> { ["qwen-high"] = null }, await RecordedEffortsAsync(host, 1));
+    }
+
     private static async Task EditAsync(RouterHost host, Func<RouterDbContext, Task> edit)
     {
         await using var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();

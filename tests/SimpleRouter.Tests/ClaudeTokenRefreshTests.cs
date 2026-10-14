@@ -216,6 +216,74 @@ public class ClaudeTokenRefreshTests
         Assert.DoesNotContain(statuses, m => m.Status == ModelStatus.AuthRejected);
     }
 
+    private static HttpResponseMessage Rejected(HttpStatusCode status = HttpStatusCode.Unauthorized) => new(status)
+    {
+        Content = new StringContent("""{"type":"error","error":{"type":"authentication_error","message":"invalid bearer token"}}""", Encoding.UTF8, "application/json"),
+    };
+
+    [Fact]
+    public async Task A_401_on_an_unexpired_token_is_retried_once_after_a_forced_refresh()
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginAsync();
+        host.OAuth.Respond = _ => RotatedTokens();
+        host.Upstream.Respond = request => request.Headers.Authorization!.Parameter == "access-new"
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") }
+            : Rejected();
+        var client = await host.AuthorizedClientAsync();
+
+        using var response = await client.SendAsync(MessagesRequest());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(["Bearer access-current", "Bearer access-new"], host.Upstream.Requests.Select(r => r.Headers["authorization"]));
+        using (var refresh = JsonDocument.Parse(Assert.Single(host.OAuth.Requests).Body))
+        {
+            Assert.Equal("refresh-current", refresh.RootElement.GetProperty("refresh_token").GetString());
+        }
+        Assert.Equal("access-new", (await host.Services.GetRequiredService<ClaudeCredentialStore>().GetAsync())!.AccessToken);
+    }
+
+    [Fact]
+    public async Task A_401_still_rejected_after_the_forced_refresh_benches_claude_as_an_account_rejection()
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginAsync();
+        host.OAuth.Respond = _ => RotatedTokens();
+        host.Upstream.Respond = _ => Rejected();
+        var client = await host.AuthorizedClientAsync();
+
+        using var response = await client.SendAsync(MessagesRequest());
+
+        var body = await AssertExhaustedAsync(response, 295, 300);
+        Assert.Contains("'simple-router login claude'", body);
+        Assert.Equal(["Bearer access-current", "Bearer access-new"], host.Upstream.Requests.Select(r => r.Headers["authorization"]));
+        Assert.Single(host.OAuth.Requests);
+        await AssertClaudeStatusesAsync(host, ModelStatus.AuthRejected);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task A_token_count_the_subscription_rejects_answers_the_local_estimate(HttpStatusCode status)
+    {
+        await using var host = await RouterHost.StartAsync();
+        await host.LoginAsync();
+        host.OAuth.Respond = _ => RotatedTokens();
+        host.Upstream.Respond = _ => Rejected(status);
+        var client = await host.AuthorizedClientAsync();
+        const string body = """{"model":"claude-opus-5-5","messages":[{"role":"user","content":"count these words please"}]}""";
+
+        using var response = await client.SendAsync(new HttpRequestMessage(HttpMethod.Post, "/v1/messages/count_tokens")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var expected = TokenEstimator.Estimate(System.Text.Json.Nodes.JsonNode.Parse(body)!.AsObject());
+        Assert.Equal($$"""{"input_tokens":{{expected}}}""", await response.Content.ReadAsStringAsync());
+        Assert.NotEmpty(host.Upstream.Requests);
+    }
+
     private static HttpResponseMessage RotatedTokens() => new(HttpStatusCode.OK)
     {
         Content = new StringContent("""{"access_token":"access-new","refresh_token":"refresh-new","expires_in":3600}""", Encoding.UTF8, "application/json"),

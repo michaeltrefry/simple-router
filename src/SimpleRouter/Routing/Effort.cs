@@ -82,6 +82,24 @@ public static class Effort
         };
     }
 
+    /// <summary>
+    /// The level <paramref name="model"/> is sent for <paramref name="request"/>: the client's own for Claude (the request
+    /// passes through), the nearest listed level for Codex and for a local model whose mapping sends one, else null.
+    /// </summary>
+    public static EffortLevel? Sent(JsonObject request, Data.CatalogModel model)
+    {
+        if (Read(request) is not { } requested)
+        {
+            return null;
+        }
+        return model.Provider switch
+        {
+            ProviderKind.Claude => requested,
+            ProviderKind.Codex => Nearest(requested, model.Effort?.Levels is { Length: > 0 } levels ? levels : CodexDefaultLevels),
+            _ => model.Effort is { Mode: not EffortMode.None } mapping ? Nearest(requested, mapping.Levels ?? []) : null,
+        };
+    }
+
     /// <summary>The supported level closest to <paramref name="requested"/>; on a tie the lower one. Null when nothing is supported.</summary>
     public static EffortLevel? Nearest(EffortLevel requested, IReadOnlyCollection<EffortLevel> supported) =>
         supported.Count == 0

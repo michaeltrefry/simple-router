@@ -42,7 +42,7 @@ public sealed class RouterHost : IAsyncDisposable
     public FakeHandler CodexAuth { get; }
     public IServiceProvider Services => _app.Services;
 
-    public static string[] Args(string dataDirectory, params string[] models)
+    public static string[] Args(string dataDirectory)
     {
         var args = new List<string>
         {
@@ -58,7 +58,6 @@ public sealed class RouterHost : IAsyncDisposable
             // Model lists are fetched only where a test asks, so no upstream sees an unexpected request.
             "--SimpleRouter:ModelListRefreshInterval=00:00:00",
         };
-        args.AddRange(models.Select((m, i) => $"--SimpleRouter:Models:{i}={m}"));
         return args.ToArray();
     }
 
@@ -79,12 +78,12 @@ public sealed class RouterHost : IAsyncDisposable
     public static string NewDataDirectory() =>
         Path.Combine(Path.GetTempPath(), "simple-router-tests", Guid.NewGuid().ToString("N"));
 
-    public static Task<RouterHost> StartAsync(params string[] models) => StartAsync(_ => { }, models);
+    public static Task<RouterHost> StartAsync() => StartAsync(_ => { });
 
-    public static Task<RouterHost> StartAsync(Action<IServiceCollection> configureServices, params string[] models)
+    public static Task<RouterHost> StartAsync(Action<IServiceCollection> configureServices)
     {
         var dataDirectory = NewDataDirectory();
-        return StartInAsync(dataDirectory, configureServices, Args(dataDirectory, models));
+        return StartInAsync(dataDirectory, configureServices, Args(dataDirectory));
     }
 
     /// <summary>Starts on <paramref name="dataDirectory"/> (which may hold a previous host's state) with extra config args.</summary>

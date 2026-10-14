@@ -1,4 +1,6 @@
-using Microsoft.Extensions.Options;
+using Microsoft.EntityFrameworkCore;
+using SimpleRouter.Data;
+using SimpleRouter.Routing;
 
 namespace SimpleRouter.Api;
 
@@ -9,18 +11,19 @@ public static class ModelsEndpoints
 
     public static void MapModelsEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/v1/models", (HttpContext context, IOptions<RouterOptions> options, string? limit) =>
+        app.MapGet("/v1/models", async (HttpContext context, IDbContextFactory<RouterDbContext> dbFactory, ModelSelector selector, string? limit) =>
         {
             var take = DefaultLimit;
             if ((limit is not null && !int.TryParse(limit, out take)) || take is < 1 or > MaxLimit)
             {
-                return AnthropicError.WriteAsync(context, StatusCodes.Status400BadRequest, "invalid_request_error",
+                await AnthropicError.WriteAsync(context, StatusCodes.Status400BadRequest, "invalid_request_error",
                     $"limit must be between 1 and {MaxLimit}.");
+                return;
             }
 
-            var ids = options.Value.ModelIds;
+            var ids = await AdvertisedAsync(dbFactory, selector, context.RequestAborted);
             var page = ids.Take(take).ToList();
-            return context.Response.WriteAsJsonAsync(new
+            await context.Response.WriteAsJsonAsync(new
             {
                 data = page.Select(id => new
                 {
@@ -34,5 +37,23 @@ public static class ModelsEndpoints
                 last_id = page.LastOrDefault(),
             });
         });
+    }
+
+    /// <summary>
+    /// Enabled Claude catalog models an alias maps to a tier, highest tier first, so a client's model picker offers every
+    /// tier and each ID, sent back as <c>model</c>, is served in that tier.
+    /// </summary>
+    private static async Task<List<string>> AdvertisedAsync(IDbContextFactory<RouterDbContext> dbFactory, ModelSelector selector, CancellationToken ct)
+    {
+        var rules = await selector.GetTierRulesAsync(ct);
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var ids = await db.Models.AsNoTracking().Where(m => m.Enabled && m.Provider == ProviderKind.Claude).Select(m => m.Id).ToListAsync(ct);
+        return ids
+            .Select(id => (Id: id, Tier: TierResolver.AliasTier(id, rules)))
+            .Where(m => m.Tier is not null)
+            .OrderBy(m => m.Tier)
+            .ThenBy(m => m.Id, StringComparer.Ordinal)
+            .Select(m => m.Id)
+            .ToList();
     }
 }

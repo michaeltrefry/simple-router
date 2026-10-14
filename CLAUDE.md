@@ -7,7 +7,7 @@ Single-user .NET 10 localhost router exposing the Anthropic Messages API. One pr
 - Build: `dotnet build`
 - Test: `dotnet test` (unit: `tests/SimpleRouter.Tests`, end-to-end: `tests/SimpleRouter.AcceptanceTests`)
 - Run server: `dotnet run --project src/SimpleRouter`
-- CLI: `dotnet run --project src/SimpleRouter -- login claude` / `-- login codex` / `-- key show`
+- CLI: `dotnet run --project src/SimpleRouter -- login claude` / `-- login codex` / `-- key show` / `-- models refresh`
 - New migration: `dotnet tool restore && dotnet ef migrations add <Name> --project src/SimpleRouter -o Data/Migrations`
 
 Any setting can be overridden with `--SimpleRouter:<Name>=<value>` or `SimpleRouter__<Name>` env vars (see `RouterOptions.cs`).

@@ -184,7 +184,7 @@ public class MessagesPassthroughTests
     {
         await using var host = await RouterHost.StartAsync();
         await host.LoginAsync();
-        const string error = """{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}""";
+        const string error = """{"type":"error","error":{"type":"invalid_request_error","message":"messages.0.content: Field required"}}""";
         host.Upstream.Respond = _ =>
         {
             var response = new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(error) };

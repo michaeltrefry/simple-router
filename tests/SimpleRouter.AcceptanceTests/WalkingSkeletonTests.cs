@@ -33,7 +33,7 @@ public class WalkingSkeletonTests
             using var response = await client.PostAsync("/v1/messages",
                 new StringContent("""{"model":"claude-sonnet-4-5","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"hi"}]}""", Encoding.UTF8, "application/json"));
 
-            Assert.Contains("\"claude-sonnet-4-5\"", models);
+            Assert.Contains("\"claude-sonnet-5-5\"", models);
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             Assert.Equal(FakeAnthropic.Sse, await response.Content.ReadAsStringAsync());
             Assert.Equal(1, anthropic.TokenRequests);

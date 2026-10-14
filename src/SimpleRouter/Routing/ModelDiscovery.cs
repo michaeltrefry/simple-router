@@ -107,6 +107,27 @@ public sealed class ModelDiscovery(
             : $"Could not fetch the {provider} model list ({list.LastError}); the running router retries it.");
     }
 
+    /// <summary>Fetches every logged-in subscription's list now and tells the user each outcome; false when none is logged in.</summary>
+    public async Task<bool> ReportRefreshLoggedInAsync(TextWriter output, CancellationToken ct = default)
+    {
+        Func<ProviderKind, bool> loggedIn;
+        await using (var db = await dbFactory.CreateDbContextAsync(ct))
+        {
+            loggedIn = await ModelSelector.LoggedInAsync(db, ct);
+        }
+        var providers = sources.Select(s => s.Provider).Where(loggedIn).ToList();
+        if (providers.Count == 0)
+        {
+            await output.WriteLineAsync("No subscription is logged in; run 'simple-router login claude' or 'simple-router login codex' first.");
+            return false;
+        }
+        foreach (var provider in providers)
+        {
+            await ReportRefreshAsync(provider, output, ct);
+        }
+        return true;
+    }
+
     /// <summary>Refreshes every logged-in subscription, skipping those fetched successfully within <paramref name="olderThan"/>.</summary>
     public async Task RefreshAllAsync(CancellationToken ct = default, TimeSpan? olderThan = null)
     {

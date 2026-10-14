@@ -247,7 +247,9 @@ public class DarkFactoryEndpointsTests
             (rows[0].InputTokens, rows[0].OutputTokens, rows[0].CacheReadTokens, rows[0].CacheWriteTokens, rows[0].CacheWrite1hTokens));
         Assert.Equal((20, 45, 100, 0), (rows[2].InputTokens, rows[2].OutputTokens, rows[2].CacheReadTokens, rows[2].CacheWriteTokens));
         Assert.Equal((50, 7, 0L), (rows[3].InputTokens, rows[3].OutputTokens, rows[3].CostUsdMicros));
-        Assert.All(rows, r => Assert.Equal((200, "high"), (r.Status, r.Effort)));
+        Assert.All(rows, r => Assert.Equal(200, r.Status));
+        // The local model has no effort mapping, so it was sent none.
+        Assert.Equal(["high", "high", "high", null], rows.Select(r => r.Effort));
         Assert.Equal([ModelTier.High, ModelTier.High, ModelTier.Low, ModelTier.Mid], rows.Select(r => r.Tier));
     }
 

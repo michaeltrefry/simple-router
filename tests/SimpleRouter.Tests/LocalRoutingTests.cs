@@ -302,7 +302,7 @@ public class LocalRoutingTests
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, """{"error":{"message":"unknown field","type":"invalid_request_error"}}""", 400, "invalid_request_error", "unknown field")]
     [InlineData(HttpStatusCode.Unauthorized, """{"error":{"message":"bad key"}}""", 502, "api_error", "bad key")]
-    [InlineData(HttpStatusCode.InternalServerError, "<html>oops</html>", 502, "api_error", "Local model local-a returned HTTP 500.")]
+    [InlineData(HttpStatusCode.Forbidden, "<html>no</html>", 502, "api_error", "Local model local-a returned HTTP 403.")]
     public async Task Local_upstream_errors_become_anthropic_errors(HttpStatusCode upstreamStatus, string upstreamBody, int status, string type, string message)
     {
         var (host, locals) = await StartAsync();
@@ -548,11 +548,11 @@ public class LocalRoutingTests
     {
         var (host, locals) = await StartAsync();
         await using var _host = host;
-        locals.Chat = _ => new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StreamContent(new EndlessStream()) };
+        locals.Chat = _ => new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StreamContent(new EndlessStream()) };
 
         using var response = await host.Client.SendAsync(Message(sessionId: "s1"));
 
         Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        Assert.Equal("Local model local-a returned HTTP 500.", JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["message"]!.GetValue<string>());
+        Assert.Equal("Local model local-a returned HTTP 401.", JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["message"]!.GetValue<string>());
     }
 }

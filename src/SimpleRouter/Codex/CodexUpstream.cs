@@ -80,24 +80,28 @@ public sealed class CodexUpstream(
             {
                 return await ErrorAsync(context, response, limits, now, ct);
             }
-            var (errorType, written) = call.Request["stream"] is JsonValue s && s.TryGetValue<bool>(out var streaming) && streaming
-                ? (await StreamAsync(context, translator, response, ct), true)
+            var written = call.Request["stream"] is JsonValue s && s.TryGetValue<bool>(out var streaming) && streaming
+                ? await StreamAsync(context, translator, response, ct)
                 : await AggregateAsync(context, translator, response, ct);
+            var fault = StreamFault(translator, limits);
             if (!written)
             {
-                return UpstreamResult.NotServed(errorType == "rate_limit_error"
-                    ? new ModelFault(FaultKind.Limited, limits.ResetAt)
-                    : new ModelFault(FaultKind.Overloaded));
+                return UpstreamResult.NotServed(fault!);
             }
-            return UpstreamResult.ServedWith(errorType switch
-            {
-                "rate_limit_error" => new ModelFault(FaultKind.Limited, limits.ResetAt),
-                "overloaded_error" => new ModelFault(FaultKind.Overloaded),
-                _ when limits.Exhausted => new ModelFault(FaultKind.Limited, limits.ResetAt),
-                _ => null,
-            });
+            return UpstreamResult.ServedWith(fault ?? (limits.Exhausted ? new ModelFault(FaultKind.Limited, limits.ResetAt) : null));
         }
     }
+
+    /// <summary>A stream failure another model may do better on: a limit, an overload or a prompt too long for the context.</summary>
+    private static ModelFault? StreamFault(ResponsesStreamTranslator translator, LimitReading limits) => translator switch
+    {
+        { ErrorCode: "context_length_exceeded" } => new ModelFault(FaultKind.ContextOverflow),
+        { ErrorType: "rate_limit_error" } => new ModelFault(FaultKind.Limited, limits.ResetAt),
+        { ErrorType: "overloaded_error" } => new ModelFault(FaultKind.Overloaded),
+        _ => null,
+    };
+
+    private static bool CanFailOver(ResponsesStreamTranslator translator) => StreamFault(translator, LimitReading.Open) is not null;
 
     /// <summary>
     /// Sends the translated request with the access token used; a null response means an error was already written. A
@@ -133,26 +137,37 @@ public sealed class CodexUpstream(
         return (await httpClientFactory.CreateClient(HttpClientName).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct), access.AccessToken);
     }
 
-    /// <returns>The Anthropic error type the stream ended with, or null when it completed.</returns>
-    private async Task<string?> StreamAsync(HttpContext context, ResponsesStreamTranslator translator, HttpResponseMessage response, CancellationToken ct)
+    /// <summary>
+    /// Streams the translation, withholding <c>message_start</c> until the first content or terminal event so a failure
+    /// another model may serve (<see cref="StreamFault"/>) that arrives first leaves the response untouched.
+    /// </summary>
+    /// <returns>False when nothing was written.</returns>
+    private async Task<bool> StreamAsync(HttpContext context, ResponsesStreamTranslator translator, HttpResponseMessage response, CancellationToken ct)
     {
-        context.Response.StatusCode = StatusCodes.Status200OK;
-        context.Response.ContentType = "text/event-stream";
-        context.Response.Headers.CacheControl = "no-cache";
-        context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
-
-        string? errorType = null;
-        await WriteAsync(context, [translator.Start()], ct);
-        await TranslateAsync(translator, response, events =>
+        var start = translator.Start();
+        var started = false;
+        await TranslateAsync(translator, response, async events =>
         {
-            errorType ??= events.Where(e => Str(e["type"]) == "error").Select(e => Str(e["error"]?["type"])).FirstOrDefault();
-            return WriteAsync(context, events, ct);
+            if (!started)
+            {
+                if (events.Count == 0 || (CanFailOver(translator) && events.All(e => Str(e["type"]) == "error")))
+                {
+                    return;
+                }
+                context.Response.StatusCode = StatusCodes.Status200OK;
+                context.Response.ContentType = "text/event-stream";
+                context.Response.Headers.CacheControl = "no-cache";
+                context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+                events.Insert(0, start);
+                started = true;
+            }
+            await WriteAsync(context, events, ct);
         }, ct);
-        return errorType;
+        return started;
     }
 
-    /// <returns>The error type as <see cref="StreamAsync"/>; not written when a usage limit or overload left nothing to send.</returns>
-    private async Task<(string? ErrorType, bool Written)> AggregateAsync(HttpContext context, ResponsesStreamTranslator translator, HttpResponseMessage response, CancellationToken ct)
+    /// <returns>False when a failure another model may serve left nothing to send.</returns>
+    private async Task<bool> AggregateAsync(HttpContext context, ResponsesStreamTranslator translator, HttpResponseMessage response, CancellationToken ct)
     {
         var builder = new AnthropicMessageBuilder();
         builder.Apply(translator.Start());
@@ -164,17 +179,17 @@ public sealed class CodexUpstream(
 
         if (builder.Error is { } error)
         {
-            var type = ChatRequestTranslator.Str(error["type"]) ?? "api_error";
-            if (type is "rate_limit_error" or "overloaded_error")
+            if (CanFailOver(translator))
             {
-                return (type, false);
+                return false;
             }
+            var type = ChatRequestTranslator.Str(error["type"]) ?? "api_error";
             await AnthropicError.WriteAsync(context, CodexErrors.Status(type), type, ChatRequestTranslator.Str(error["message"]) ?? "Codex response failed.");
-            return (type, true);
+            return true;
         }
         context.Response.ContentType = "application/json";
         await context.Response.Body.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(builder.Message, WireJson.Relaxed), ct);
-        return (null, true);
+        return true;
     }
 
     /// <summary>Feeds every upstream event to the translator until it ends; a stalled, broken or truncated stream ends with an error event.</summary>
@@ -305,7 +320,7 @@ public sealed class CodexUpstream(
     }
 
     /// <summary>
-    /// Codex refusals another model may do better on: usage limits (429, <c>usage_limit_reached</c>), a plan without Codex
+    /// Codex refusals another model may do better on: a prompt too long for the context, usage limits (429, <c>usage_limit_reached</c>), a plan without Codex
     /// or this model (<c>usage_not_included</c>, model-not-available codes or Codex's "not supported when using Codex
     /// with a ChatGPT account"), and overload or server failure.
     /// </summary>
@@ -315,6 +330,10 @@ public sealed class CodexUpstream(
             || (status is 400 or 404 && message?.Contains("not supported when using Codex", StringComparison.OrdinalIgnoreCase) == true))
         {
             return new ModelFault(FaultKind.PlanRejected);
+        }
+        if (code == "context_length_exceeded" || (status is 400 or 413 && ContextOverflow.IsReported(message)))
+        {
+            return new ModelFault(FaultKind.ContextOverflow);
         }
         if (status == 429 || CodexErrors.Type(code) == "rate_limit_error")
         {

@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -14,7 +15,7 @@ namespace SimpleRouter.Claude;
 /// <summary>
 /// Forwards a Messages API body to Claude with the subscription token and streams the response back unchanged. A limit,
 /// plan or account rejection, overload or connection failure on a message is returned unwritten so the router can fail
-/// over; token counting is passed through, or answered with the local estimate when the token cannot be refreshed.
+/// over; token counting is passed through, or answered with the local estimate when the token cannot be refreshed or is rejected.
 /// </summary>
 public sealed class ClaudeUpstream(
     IHttpClientFactory httpClientFactory,
@@ -85,10 +86,22 @@ public sealed class ClaudeUpstream(
     {
         var (context, message) = (call.Context, !call.CountTokens);
         var ct = context.RequestAborted;
-        string accessToken;
+        if (message)
+        {
+            body = ClaudeIdentity.Ensure(body);
+        }
+
+        HttpResponseMessage response;
         try
         {
-            accessToken = await tokens.GetAccessTokenAsync(ct);
+            string accessToken;
+            (response, accessToken) = await SendOnceAsync(context, path, body, rejected: null);
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                // The access token may have been revoked before its expiry; one forced refresh decides.
+                response.Dispose();
+                (response, _) = await SendOnceAsync(context, path, body, rejected: accessToken);
+            }
         }
         catch (ClaudeNotLoggedInException e)
         {
@@ -102,22 +115,7 @@ public sealed class ClaudeUpstream(
             {
                 return UpstreamResult.NotServed(ModelFault.RefreshFailed(e.Status));
             }
-            // A token count is advisory, so the local estimate stands in rather than failing the client.
-            await context.Response.WriteAsJsonAsync(new { input_tokens = call.EstimatedInputTokens }, ct);
-            return UpstreamResult.Served;
-        }
-
-        if (message)
-        {
-            body = ClaudeIdentity.Ensure(body);
-        }
-
-        using var request = BuildRequest(context.Request, path, body, accessToken);
-        HttpResponseMessage response;
-        try
-        {
-            response = await httpClientFactory.CreateClient(HttpClientName)
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            return await EstimateAsync(call);
         }
         catch (HttpRequestException e)
         {
@@ -132,13 +130,20 @@ public sealed class ClaudeUpstream(
 
         using (response)
         {
+            var status = (int)response.StatusCode;
+            if (!message && status is 401 or 403)
+            {
+                // Passed through, a rejected subscription credential would make the client ask for its own login.
+                logger.LogWarning("Claude rejected the token count with HTTP {status}; answering the local estimate", status);
+                return await EstimateAsync(call);
+            }
             var now = time.GetUtcNow();
             var limits = LimitHeaders.Anthropic(response.Headers);
             await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            var head = message && (int)response.StatusCode is 401 or 403 or 404 ? await ReadHeadAsync(stream, ct) : [];
+            var head = message && status is 400 or 401 or 403 or 404 ? await ReadHeadAsync(stream, ct) : [];
             if (message && Fault(response, limits, now, head) is { } fault)
             {
-                logger.LogWarning("Claude answered HTTP {status}; not serving this request from it ({reason})", (int)response.StatusCode, fault.Kind);
+                logger.LogWarning("Claude answered HTTP {status}; not serving this request from it ({reason})", status, fault.Kind);
                 return UpstreamResult.NotServed(fault);
             }
             await CopyResponseAsync(response, head, stream, context, ct);
@@ -146,19 +151,37 @@ public sealed class ClaudeUpstream(
         }
     }
 
+    /// <summary>A token count is advisory, so the local estimate stands in rather than failing the client.</summary>
+    private static async Task<UpstreamResult> EstimateAsync(UpstreamCall call)
+    {
+        await call.Context.Response.WriteAsJsonAsync(new { input_tokens = call.EstimatedInputTokens }, call.Context.RequestAborted);
+        return UpstreamResult.Served;
+    }
+
+    /// <summary>Sends once with a valid access token (refreshed first when <paramref name="rejected"/> is the current one).</summary>
+    private async Task<(HttpResponseMessage Response, string AccessToken)> SendOnceAsync(HttpContext context, string path, byte[] body, string? rejected)
+    {
+        var ct = context.RequestAborted;
+        var accessToken = await tokens.GetAccessTokenAsync(ct, rejected);
+        using var request = BuildRequest(context.Request, path, body, accessToken);
+        var response = await httpClientFactory.CreateClient(HttpClientName).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        return (response, accessToken);
+    }
+
     /// <summary>
-    /// A status another model may do better on: a limit (429), a model the plan does not offer (404
+    /// A status another model may do better on: a prompt too long for this model's context (400), a limit (429), a model the plan does not offer (404
     /// <c>not_found_error</c>, 403 <c>permission_error</c> naming the model or plan), a rejected account or credential
     /// (401, any other 403) or an overloaded or failing service.
     /// </summary>
     private static ModelFault? Fault(HttpResponseMessage response, LimitReading limits, DateTimeOffset now, byte[] errorBody)
     {
         var status = (int)response.StatusCode;
-        if (status is 401 or 403 or 404)
+        if (status is 400 or 401 or 403 or 404)
         {
             var (type, text) = Error(errorBody);
             return status switch
             {
+                400 => ContextOverflow.IsReported(text) ? new ModelFault(FaultKind.ContextOverflow) : null,
                 404 => type == "not_found_error" ? new ModelFault(FaultKind.PlanRejected) : null,
                 403 when type == "permission_error" && text is not null && PlanRefusal.IsMatch(text) => new ModelFault(FaultKind.PlanRejected),
                 _ => new ModelFault(FaultKind.AuthRejected),

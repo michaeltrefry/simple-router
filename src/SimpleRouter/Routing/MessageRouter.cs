@@ -63,7 +63,7 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         var started = time.GetTimestamp();
         Task RecordServedAsync(Data.CatalogModel model, TokenUsage? tokens) =>
             usage.RecordAsync(new ServedRequest(session.ClientSessionId, model, tier, context.Response.StatusCode,
-                tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request)));
+                tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request, model)));
 
         var tried = new HashSet<string>();
         while (await selector.SelectAsync(tier, session, needs, ct, tried) is { } chosen)
@@ -80,7 +80,7 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
             {
                 // Recorded once the response is complete, so the database never holds back the end of the stream.
                 var served = new ServedRequest(session.ClientSessionId, chosen, tier, context.Response.StatusCode,
-                    tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request));
+                    tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request, chosen));
                 context.Response.OnCompleted(() => usage.RecordAsync(served));
                 return;
             }
@@ -124,8 +124,8 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         }
     }
 
-    /// <summary>The normalized level the targets were given (<c>high</c>, say), not the client's raw field.</summary>
-    private static string? RecordedEffort(JsonObject request) => Effort.Read(request) is { } level ? Effort.Name(level) : null;
+    /// <summary>The level the serving model was sent (<see cref="Effort.Sent"/>), not the client's raw field.</summary>
+    private static string? RecordedEffort(JsonObject request, Data.CatalogModel model) => Effort.Sent(request, model) is { } level ? Effort.Name(level) : null;
 
     /// <summary>
     /// Clients pause on a 429 <c>rate_limit_error</c> and retry after <c>Retry-After</c>, so every empty tier answers so:

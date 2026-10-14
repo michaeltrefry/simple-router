@@ -18,20 +18,21 @@ public static class TierResolver
             return ModelTiers.TryParse(header, out tier);
         }
 
-        tier = rules.DefaultTier;
-        if (requestedModel is null)
-        {
-            return true;
-        }
+        tier = (requestedModel is null ? null : AliasTier(requestedModel, rules)) ?? rules.DefaultTier;
+        return true;
+    }
+
+    /// <summary>The tier of the first alias matching <paramref name="model"/>; null when none does.</summary>
+    public static ModelTier? AliasTier(string model, TierRules rules)
+    {
         foreach (var (pattern, aliasTier) in rules.Aliases)
         {
-            if (GlobMatches(pattern, requestedModel))
+            if (GlobMatches(pattern, model))
             {
-                tier = aliasTier;
-                break;
+                return aliasTier;
             }
         }
-        return true;
+        return null;
     }
 
     /// <summary>Bounds a backtracking glob on a client-supplied model name; a timed-out alias does not match.</summary>
