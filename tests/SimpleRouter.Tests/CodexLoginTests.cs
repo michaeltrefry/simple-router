@@ -166,7 +166,7 @@ public class CodexLoginTests
         var command = connection.CreateCommand();
         command.CommandText = "SELECT ProtectedRefreshToken || '|' || ProtectedAccessToken || '|' || ProtectedAccountId FROM CodexCredentials";
         var row = (string)command.ExecuteScalar()!;
-        SqliteConnection.ClearAllPools();
+        SqliteConnection.ClearPool(connection);
         return row;
     }
 }

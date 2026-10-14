@@ -5,17 +5,12 @@ public sealed class RouterOptions
 {
     public const string Section = "SimpleRouter";
 
-    public static readonly string[] DefaultModels = ["claude-sonnet-4-5"];
-
     /// <summary>Loopback port the router listens on. 0 picks a free port.</summary>
     public int Port { get; set; } = 8790;
 
     /// <summary>Holds the SQLite database and the Data Protection key ring.</summary>
     public string DataDirectory { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".simple-router");
-
-    /// <summary>Model IDs advertised by <c>GET /v1/models</c>.</summary>
-    public string[] Models { get; set; } = [];
 
     /// <summary>Catalog, tier membership, aliases and default tier loaded into an empty database on first run.</summary>
     public string SeedFile { get; set; } = Path.Combine(AppContext.BaseDirectory, "seed.json");
@@ -38,8 +33,6 @@ public sealed class RouterOptions
     public LimitOptions Limits { get; set; } = new();
 
     public string SeedOverridePath => string.IsNullOrWhiteSpace(SeedOverrideFile) ? Path.Combine(DataDirectory, "seed.local.json") : SeedOverrideFile;
-
-    public IReadOnlyList<string> ModelIds => Models.Length > 0 ? Models : DefaultModels;
 }
 
 /// <summary>Claude subscription endpoints; overridable so tests can point at fakes.</summary>

@@ -6,13 +6,14 @@ public sealed class ClaudeTokenProvider(ClaudeCredentialStore store, ClaudeOAuth
     private static readonly TimeSpan RefreshSkew = TimeSpan.FromMinutes(5);
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
-    public async Task<string> GetAccessTokenAsync(CancellationToken ct = default)
+    /// <param name="rejected">An access token Claude refused; it is refreshed even if not yet expired.</param>
+    public async Task<string> GetAccessTokenAsync(CancellationToken ct = default, string? rejected = null)
     {
         await _refreshLock.WaitAsync(ct);
         try
         {
             var tokens = await store.GetAsync(ct) ?? throw new ClaudeNotLoggedInException();
-            if (tokens.AccessToken is not null && tokens.AccessTokenExpiresAt > time.GetUtcNow() + RefreshSkew)
+            if (tokens.AccessToken is not null && tokens.AccessToken != rejected && tokens.AccessTokenExpiresAt > time.GetUtcNow() + RefreshSkew)
             {
                 return tokens.AccessToken;
             }

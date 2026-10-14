@@ -1,0 +1,47 @@
+@inject ModelDiscovery Discovery
+@inject DashboardEvents Events
+@inject ILogger<ModelListRefresh> Logger
+
+<section class="card" id="model-lists">
+    <h2>Model lists</h2>
+    <p class="muted">Fetched at login and every few hours; refresh after your plan changes.</p>
+    <button class="refresh" disabled="@_busy" @onclick="RefreshAsync">Refresh model lists</button>
+    <FormStatus Error="@_error" Notice="@_notice" />
+</section>
+
+@code {
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private bool _busy;
+    private string? _error, _notice;
+
+    private async Task RefreshAsync()
+    {
+        (_busy, _error, _notice) = (true, null, null);
+        try
+        {
+            var report = new StringWriter();
+            var refreshed = await Discovery.ReportRefreshLoggedInAsync(report);
+            var text = report.ToString().Trim().ReplaceLineEndings(" ");
+            if (!refreshed)
+            {
+                _error = text;
+            }
+            else
+            {
+                _notice = text;
+                Events.Publish();
+                await OnChanged.InvokeAsync();
+            }
+        }
+        catch (Exception e)
+        {
+            Logger.LogWarning("The dashboard model list refresh failed: {error}", e.GetType().Name);
+            _error = "Model list refresh failed; see the server log.";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

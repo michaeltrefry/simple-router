@@ -75,6 +75,44 @@ public class SettingsAccountsTests
     }
 
     [Fact]
+    public async Task Refresh_model_lists_fetches_the_logged_in_subscriptions_lists_and_shows_them()
+    {
+        var (host, _) = await StartAsync();
+        await using var _host = host;
+        host.Upstream.Respond = request => request.RequestUri!.AbsolutePath == "/v1/models"
+            ? Json("""{"data":[{"id":"upstream-a"},{"id":"upstream-new"}],"has_more":false}""")
+            : new HttpResponseMessage(HttpStatusCode.InternalServerError);
+        using var context = Context(host);
+        var cut = Render(context);
+        Assert.Empty(cut.FindAll("#discovered-claude option"));
+
+        await cut.ClickAsync("#model-lists .refresh");
+
+        cut.WaitForAssertion(() => Assert.Equal("Found 2 Claude models.", cut.Find("#model-lists .form-notice").TextContent), Wait);
+        Assert.Equal("Bearer claude-access-secret", Assert.Single(host.Upstream.Requests).Headers["authorization"]);
+        Assert.Empty(host.Codex.Requests);
+        Assert.Equal(["upstream-a", "upstream-new"], cut.FindAll("#discovered-claude option").Select(o => o.GetAttribute("value")));
+    }
+
+    [Fact]
+    public async Task Refresh_model_lists_without_a_login_asks_for_one()
+    {
+        var (host, _) = await StartAsync();
+        await using var _host = host;
+        await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        {
+            await db.ClaudeCredentials.ExecuteDeleteAsync();
+        }
+        using var context = Context(host);
+        var cut = Render(context);
+
+        await cut.ClickAsync("#model-lists .refresh");
+
+        cut.WaitForAssertion(() => Assert.Contains("No subscription is logged in", cut.Find("#model-lists .form-error").TextContent), Wait);
+        Assert.Empty(host.Upstream.Requests);
+    }
+
+    [Fact]
     public async Task Connect_Codex_shows_the_device_code_polls_until_approved_and_stores_the_login()
     {
         var (host, _) = await StartAsync();

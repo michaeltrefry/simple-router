@@ -51,14 +51,14 @@ public static class ChatRequestTranslator
         {
             AddTools(chat, request);
         }
-        AddEffort(chat, request, model.Effort);
+        AddEffort(chat, request, model);
         return chat;
     }
 
     /// <summary>The client's effort goes as the nearest level the model's mapping lists; without one the server keeps its default.</summary>
-    private static void AddEffort(JsonObject chat, JsonObject request, EffortMapping? mapping)
+    private static void AddEffort(JsonObject chat, JsonObject request, CatalogModel model)
     {
-        if (mapping is null || Effort.Read(request) is not { } requested || Effort.Nearest(requested, mapping.Levels ?? []) is not { } level)
+        if (model.Effort is not { } mapping || Effort.Sent(request, model) is not { } level)
         {
             return;
         }

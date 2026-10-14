@@ -501,6 +501,59 @@ public class ModelDiscoveryTests
     public void A_listed_dated_snapshot_serves_its_undated_alias(string configured, bool listed) =>
         Assert.Equal(listed, ModelDiscovery.Lists(["claude-sonnet-4-5-20250929", "claude-sonnet-4-5-beta", "claude-haiku-4-5"], configured));
 
+    /// <summary>Stores unexpired Claude and Codex logins in <paramref name="dataDirectory"/>, as earlier CLI logins would.</summary>
+    private static async Task StoreLoginsAsync(string dataDirectory)
+    {
+        var app = RouterApp.Build(RouterHost.Args(dataDirectory));
+        try
+        {
+            await RouterApp.InitializeAsync(app);
+            var expires = DateTimeOffset.UtcNow.AddHours(1);
+            await app.Services.GetRequiredService<Claude.ClaudeCredentialStore>().SaveAsync(new Claude.ClaudeTokens("refresh", "access-stored", expires));
+            await app.Services.GetRequiredService<Codex.CodexCredentialStore>().SaveAsync(new Codex.CodexTokens("codex-refresh", "codex-access-stored", expires, "acct"));
+        }
+        finally
+        {
+            await app.DisposeAsync();
+            RouterHost.ClearPool(dataDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task Models_refresh_fetches_every_logged_in_subscriptions_list_now()
+    {
+        var dataDirectory = RouterHost.NewDataDirectory();
+        await StoreLoginsAsync(dataDirectory);
+        var upstream = new FakeHandler { Respond = Claude(() => Json(ClaudeList("upstream-a", "upstream-b"))) };
+        var codex = new FakeHandler { Respond = _ => Json(CodexList("gpt-a")) };
+        var output = new StringWriter();
+
+        var exit = await CommandLine.RunAsync(["models", "refresh", .. RouterHost.Args(dataDirectory)], TextReader.Null, output,
+            RouterHost.FakeHttp(upstream, new FakeHandler(), codex: codex));
+
+        Assert.Equal(0, exit);
+        Assert.Contains("Found 2 Claude models.", output.ToString());
+        Assert.Contains("Found 1 Codex models.", output.ToString());
+        Assert.Equal("Bearer access-stored", Assert.Single(upstream.Requests).Headers["authorization"]);
+        Assert.Equal(["upstream-a", "upstream-b"], (await StoredAsync(dataDirectory, ProviderKind.Claude))!.ModelIds);
+        Assert.Equal(["gpt-a"], (await StoredAsync(dataDirectory, ProviderKind.Codex))!.ModelIds);
+    }
+
+    [Fact]
+    public async Task Models_refresh_without_a_login_says_so_and_fetches_nothing()
+    {
+        var dataDirectory = RouterHost.NewDataDirectory();
+        var upstream = new FakeHandler { Respond = Claude(() => Json(ClaudeList("upstream-a"))) };
+        var output = new StringWriter();
+
+        var exit = await CommandLine.RunAsync(["models", "refresh", .. RouterHost.Args(dataDirectory)], TextReader.Null, output,
+            RouterHost.FakeHttp(upstream, new FakeHandler()));
+
+        Assert.Equal(1, exit);
+        Assert.Contains("No subscription is logged in", output.ToString());
+        Assert.Empty(upstream.Requests);
+    }
+
     private static Task<ProviderModelList?> StoredAsync(RouterHost host, ProviderKind provider) =>
         StoredAsync(Discovery(host), provider);
 
@@ -517,7 +570,7 @@ public class ModelDiscoveryTests
         finally
         {
             await app.DisposeAsync();
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            RouterHost.ClearPool(dataDirectory);
         }
     }
 }

@@ -48,8 +48,7 @@ public static class ResponsesRequestTranslator
     private static JsonObject Reasoning(JsonObject request, CatalogModel model)
     {
         var reasoning = new JsonObject { ["summary"] = "auto" };
-        var supported = model.Effort?.Levels is { Length: > 0 } levels ? levels : Effort.CodexDefaultLevels;
-        if (Effort.Read(request) is { } requested && Effort.Nearest(requested, supported) is { } level)
+        if (Effort.Sent(request, model) is { } level)
         {
             reasoning["effort"] = Effort.Name(level);
         }

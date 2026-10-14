@@ -37,6 +37,12 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
     /// <summary>True once a terminal event (completion, failure or error) has been translated.</summary>
     public bool Ended { get; private set; }
 
+    /// <summary>The Codex error code the stream failed with (<c>context_length_exceeded</c>, say), if it reported one.</summary>
+    public string? ErrorCode { get; private set; }
+
+    /// <summary>The Anthropic error type the stream ended with; null unless it failed.</summary>
+    public string? ErrorType { get; private set; }
+
     public JsonObject Start() => new()
     {
         ["type"] = "message_start",
@@ -113,10 +119,11 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
     {
         var events = new List<JsonObject>();
         CloseLive(events);
+        (ErrorCode, ErrorType) = (code, CodexErrors.Type(code));
         events.Add(new JsonObject
         {
             ["type"] = "error",
-            ["error"] = new JsonObject { ["type"] = CodexErrors.Type(code), ["message"] = message },
+            ["error"] = new JsonObject { ["type"] = ErrorType, ["message"] = message },
         });
         Ended = true;
         return events;

@@ -540,13 +540,15 @@ public class LimitFailoverTests
         var (host, fakes) = await StartAsync();
         await using var _host = host;
         fakes.Claude["upstream-a"] = () => Json("""{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}""", HttpStatusCode.Unauthorized);
+        host.OAuth.Respond = _ => Json("""{"access_token":"access-new","refresh_token":"refresh-new","expires_in":3600}""");
 
         using var response = await host.Client.SendAsync(Message("s1", "high"));
 
         var message = await ExhaustionMessageAsync(response);
         Assert.EndsWith("Run 'simple-router login claude'.", message);
         Assert.InRange(int.Parse(response.Headers.GetValues("Retry-After").Single()), 295, 300);
-        Assert.Equal(["upstream-a"], ClaudeModels(host));
+        // Rejected again after the forced refresh.
+        Assert.Equal(["upstream-a", "upstream-a"], ClaudeModels(host));
     }
 
     [Fact]
@@ -610,5 +612,154 @@ public class LimitFailoverTests
         Assert.InRange(int.Parse(response.Headers.GetValues("Retry-After").Single()), 295, 300);
         Assert.Empty(host.Upstream.Requests);
         Assert.Equal(ModelStatus.AuthRejected, (await StatusAsync(host, "claude-x")).Status);
+    }
+    [Fact]
+    public async Task A_claude_prompt_too_long_rejection_moves_the_request_without_cooling_the_model()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        fakes.Claude["upstream-a"] = () => ClaudeError(HttpStatusCode.BadRequest, "invalid_request_error", "prompt is too long: 250000 tokens > 200000 maximum");
+
+        await SendOkAsync(host, Message("s1", "high", stream: true));
+
+        Assert.Equal(["upstream-a", "upstream-b"], ClaudeModels(host));
+        Assert.Equal("claude-b", await PinAsync(host, "s1"));
+        Assert.Equal(ModelStatus.Eligible, (await StatusAsync(host, "claude-a")).Status);
+    }
+
+    [Fact]
+    public async Task A_claude_400_that_is_not_about_context_is_passed_to_the_client()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        fakes.Claude["upstream-a"] = () => ClaudeError(HttpStatusCode.BadRequest, "invalid_request_error", "messages: field required");
+
+        using var response = await host.Client.SendAsync(Message("s1", "high"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("messages: field required", await response.Content.ReadAsStringAsync());
+        Assert.Equal(["upstream-a"], ClaudeModels(host));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_codex_context_length_rejection_moves_the_request_without_cooling_the_model(bool stream)
+    {
+        var (host, _) = await StartAsync();
+        await using var _host = host;
+        host.Codex.Respond = _ => Json("""{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}""", HttpStatusCode.BadRequest);
+
+        await SendOkAsync(host, Message("s1", "low", stream));
+
+        Assert.Single(host.Codex.Requests);
+        Assert.Equal(["upstream-b"], ClaudeModels(host));
+        Assert.Equal("claude-b", await PinAsync(host, "s1"));
+        Assert.Equal(ModelStatus.Eligible, (await StatusAsync(host, "codex-c")).Status);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_codex_stream_failing_on_context_length_before_any_output_moves_the_request(bool stream)
+    {
+        var (host, _) = await StartAsync();
+        await using var _host = host;
+        host.Codex.Respond = _ => Stream(Sse(Created,
+            """{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}}"""));
+
+        await SendOkAsync(host, Message("s1", "low", stream));
+
+        Assert.Single(host.Codex.Requests);
+        Assert.Equal(["upstream-b"], ClaudeModels(host));
+        Assert.Equal("claude-b", await PinAsync(host, "s1"));
+        Assert.Equal(ModelStatus.Eligible, (await StatusAsync(host, "codex-c")).Status);
+    }
+    [Theory]
+    [InlineData("usage_limit_reached", 60)]
+    [InlineData("server_is_overloaded", 30)]
+    public async Task A_codex_limit_or_overload_before_any_output_moves_a_streaming_request_and_cools_codex(string code, int seconds)
+    {
+        var (host, _) = await StartAsync();
+        await using var _host = host;
+        host.Codex.Respond = _ => Stream(Sse(Created,
+            new JsonObject { ["type"] = "response.failed", ["response"] = new JsonObject { ["error"] = new JsonObject { ["code"] = code, ["message"] = "Refused." } } }.ToJsonString()));
+
+        var before = DateTimeOffset.UtcNow;
+        using var response = await host.Client.SendAsync(Message("s1", "low", stream: true));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("""{"id":"msg","type":"message","model":"upstream-b"}""", await response.Content.ReadAsStringAsync());
+        Assert.Single(host.Codex.Requests);
+        Assert.Equal("claude-b", await PinAsync(host, "s1"));
+        AssertNear(before.AddSeconds(seconds), await CoolingUntilAsync(host, "codex-c"));
+    }
+
+    private static HttpResponseMessage LocalSse(string sse) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(sse, Encoding.UTF8, "text/event-stream") };
+
+    [Fact]
+    public async Task A_local_stream_that_errors_before_any_output_moves_the_request_and_cools_the_local_briefly()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        fakes.LocalChat = _ => LocalSse("data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"error\":{\"message\":\"out of memory\"}}\n\n");
+
+        var before = DateTimeOffset.UtcNow;
+        using var response = await host.Client.SendAsync(Message("s1", "mid", stream: true));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("""{"id":"msg","type":"message","model":"upstream-a"}""", await response.Content.ReadAsStringAsync());
+        Assert.Single(LocalChats(host));
+        Assert.Equal("claude-a", await PinAsync(host, "s1"));
+        AssertNear(before.AddSeconds(30), await CoolingUntilAsync(host, "local-l"));
+    }
+
+    [Fact]
+    public async Task A_local_stream_whose_first_chunk_is_a_context_error_moves_the_request_without_cooling_the_local()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        fakes.LocalChat = _ => LocalSse("data: {\"error\":{\"message\":\"This model's maximum context length is 1000 tokens.\"}}\n\n");
+
+        await SendOkAsync(host, Message("s1", "mid", stream: true));
+
+        Assert.Equal(["upstream-a"], ClaudeModels(host));
+        Assert.Equal("claude-a", await PinAsync(host, "s1"));
+        Assert.Equal(ModelStatus.Eligible, (await StatusAsync(host, "local-l")).Status);
+    }
+
+    [Fact]
+    public async Task A_local_error_after_its_first_output_is_not_failed_over()
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        fakes.LocalChat = _ => LocalSse("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\ndata: {\"error\":{\"message\":\"out of memory\"}}\n\n");
+
+        using var response = await host.Client.SendAsync(Message("s1", "mid", stream: true));
+
+        var message = AnthropicSse.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("out of memory", message.Error);
+        Assert.Equal("partial", Assert.Single(message.Blocks).Text);
+        Assert.Empty(host.Upstream.Requests);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.BadGateway)]
+    [InlineData(HttpStatusCode.GatewayTimeout)]
+    public async Task A_failing_local_server_is_cooled_briefly_and_the_request_served_by_the_next_model(HttpStatusCode status)
+    {
+        var (host, fakes) = await StartAsync();
+        await using var _host = host;
+        fakes.LocalChat = _ => new HttpResponseMessage(status) { Content = new StringContent("<html>oops</html>") };
+
+        var before = DateTimeOffset.UtcNow;
+        await SendOkAsync(host, Message("s1", "mid"));
+
+        Assert.Single(LocalChats(host));
+        Assert.Equal(["upstream-a"], ClaudeModels(host));
+        Assert.Equal("claude-a", await PinAsync(host, "s1"));
+        AssertNear(before.AddSeconds(30), await CoolingUntilAsync(host, "local-l"));
     }
 }
