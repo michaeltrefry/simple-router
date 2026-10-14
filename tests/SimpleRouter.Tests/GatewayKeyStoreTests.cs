@@ -33,6 +33,6 @@ public class GatewayKeyStoreTests
         command.CommandText = "SELECT Value FROM Settings WHERE Key = 'gateway_key'";
         var stored = (string)(await command.ExecuteScalarAsync())!;
         Assert.DoesNotContain(firstKey, stored);
-        SqliteConnection.ClearAllPools();
+        SqliteConnection.ClearPool(connection);
     }
 }

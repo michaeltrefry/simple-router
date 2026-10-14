@@ -118,7 +118,7 @@ public sealed class RouterHost : IAsyncDisposable
         catch
         {
             await app.DisposeAsync();
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ClearPool(dataDirectory);
             TryDelete(dataDirectory);
             throw;
         }
@@ -150,12 +150,22 @@ public sealed class RouterHost : IAsyncDisposable
         Client.Dispose();
         await _app.StopAsync();
         await _app.DisposeAsync();
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        ClearPool(DataDirectory);
         if (KeepData)
         {
             return;
         }
         TryDelete(DataDirectory);
+    }
+
+    /// <summary>
+    /// Releases the pooled connections to one data directory's database. Never <c>ClearAllPools</c>: test classes run in
+    /// parallel, and clearing another host's pool while its requests hold connections fails them.
+    /// </summary>
+    public static void ClearPool(string dataDirectory)
+    {
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(dataDirectory, "simple-router.db")}");
+        Microsoft.Data.Sqlite.SqliteConnection.ClearPool(connection);
     }
 
     private static void TryDelete(string directory)

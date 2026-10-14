@@ -515,7 +515,7 @@ public class ModelDiscoveryTests
         finally
         {
             await app.DisposeAsync();
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            RouterHost.ClearPool(dataDirectory);
         }
     }
 
@@ -570,7 +570,7 @@ public class ModelDiscoveryTests
         finally
         {
             await app.DisposeAsync();
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            RouterHost.ClearPool(dataDirectory);
         }
     }
 }
