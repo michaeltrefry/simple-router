@@ -38,10 +38,10 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         context.Response.Headers[ModelClassHeader] = tier.Name();
 
         var session = SessionKey.Derive(context.Request.Headers[SessionKey.HeaderName], request);
-        var estimate = TokenEstimator.Estimate(request);
+        var needs = RequestNeeds.Of(request);
         var chosen = countTokens
-            ? await selector.PeekAsync(tier, session, estimate, ct)
-            : await selector.SelectAsync(tier, session, estimate, ct);
+            ? await selector.PeekAsync(tier, session, needs, ct)
+            : await selector.SelectAsync(tier, session, needs, ct);
         if (chosen is null)
         {
             await AnthropicError.WriteAsync(context, StatusCodes.Status503ServiceUnavailable, "api_error",
@@ -50,7 +50,7 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         }
 
         var upstream = upstreams.First(u => u.Provider == chosen.Provider);
-        await upstream.SendAsync(new UpstreamCall(context, request, chosen, countTokens, estimate));
+        await upstream.SendAsync(new UpstreamCall(context, request, chosen, countTokens, needs.EstimatedTokens));
     }
 
     /// <summary>

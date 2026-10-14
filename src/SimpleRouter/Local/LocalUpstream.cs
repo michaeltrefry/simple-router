@@ -14,6 +14,7 @@ public sealed class LocalUpstream(
     IHttpClientFactory httpClientFactory,
     SecretProtector secrets,
     LocalHealth health,
+    Microsoft.Extensions.Options.IOptions<RouterOptions> options,
     ILogger<LocalUpstream> logger) : IModelUpstream
 {
     public const string HttpClientName = "local-upstream";
@@ -34,7 +35,7 @@ public sealed class LocalUpstream(
             return;
         }
 
-        var chat = ChatRequestTranslator.Translate(call.Request, model);
+        var chat = ChatRequestTranslator.Translate(call.Request, model, call.EstimatedInputTokens);
         using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(model, "chat/completions"))
         {
             Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(chat, WireJson.Relaxed)),
@@ -117,42 +118,80 @@ public sealed class LocalUpstream(
         await WriteAsync(context, tail, ct);
     }
 
-    /// <returns>The closing events: a normal finish, or an error event when the upstream failed or stopped early.</returns>
-    private static async Task<string> TranslateChunksAsync(HttpContext context, ChatStreamTranslator translator, HttpResponseMessage response, CancellationToken ct)
+    /// <returns>The closing events: a normal finish, or an error event when the upstream failed, stalled or stopped early.</returns>
+    private async Task<string> TranslateChunksAsync(HttpContext context, ChatStreamTranslator translator, HttpResponseMessage response, CancellationToken ct)
     {
         using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct), Encoding.UTF8);
-        while (await reader.ReadLineAsync(ct) is { } line)
+        var idleTimeout = options.Value.Local.StreamIdleTimeout;
+        var data = new List<string>();
+        while (true)
         {
-            if (!line.StartsWith("data:", StringComparison.Ordinal))
+            string? line;
+            using (var idle = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
-                continue;
-            }
-            var data = line["data:".Length..].Trim();
-            if (data == "[DONE]")
-            {
-                return translator.Finish();
+                idle.CancelAfter(idleTimeout);
+                try
+                {
+                    line = await reader.ReadLineAsync(idle.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    return translator.Abort($"Local model sent nothing for {idleTimeout.TotalSeconds:0.#} s.");
+                }
             }
 
-            JsonObject? chunk;
-            try
+            if (line is { Length: > 0 })
             {
-                chunk = JsonNode.Parse(data) as JsonObject;
+                if (line.StartsWith("data:", StringComparison.Ordinal))
+                {
+                    var value = line["data:".Length..];
+                    data.Add(value.StartsWith(' ') ? value[1..] : value);
+                }
+                continue;
             }
-            catch (JsonException)
+            // A blank line, or the end of the body, dispatches the pending event; its data lines join with newlines.
+            if (data.Count > 0)
             {
-                chunk = null;
+                var payload = string.Join("\n", data).Trim();
+                data.Clear();
+                if (await DispatchAsync(context, translator, payload, ct) is { } closing)
+                {
+                    return closing;
+                }
             }
-            if (chunk is null)
+            if (line is null)
             {
-                return translator.Abort("Local model sent a malformed stream chunk.");
+                return translator.Finished ? translator.Finish() : translator.Abort("Local model stream ended before completion.");
             }
-            if (chunk["error"] is { } error)
-            {
-                return translator.Abort(ErrorMessage(error) ?? "Local model reported an error mid-stream.");
-            }
-            await WriteAsync(context, translator.Feed(chunk), ct);
         }
-        return translator.Finished ? translator.Finish() : translator.Abort("Local model stream ended before completion.");
+    }
+
+    /// <returns>The closing events when the event ends the stream, else null after writing its translation.</returns>
+    private static async Task<string?> DispatchAsync(HttpContext context, ChatStreamTranslator translator, string payload, CancellationToken ct)
+    {
+        if (payload == "[DONE]")
+        {
+            return translator.Finish();
+        }
+        JsonObject? chunk;
+        try
+        {
+            chunk = JsonNode.Parse(payload) as JsonObject;
+        }
+        catch (JsonException)
+        {
+            chunk = null;
+        }
+        if (chunk is null)
+        {
+            return translator.Abort("Local model sent a malformed stream chunk.");
+        }
+        if (chunk["error"] is { } error)
+        {
+            return translator.Abort(ErrorMessage(error) ?? "Local model reported an error mid-stream.");
+        }
+        await WriteAsync(context, translator.Feed(chunk), ct);
+        return null;
     }
 
     private static async Task WriteAsync(HttpContext context, string sse, CancellationToken ct)
@@ -177,11 +216,14 @@ public sealed class LocalUpstream(
             _ => (StatusCodes.Status502BadGateway, "api_error"),
         };
 
-        var body = await response.Content.ReadAsStringAsync(ct);
+        // Read at most one character past the limit, so an oversized or endless body is never buffered whole.
+        using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct), Encoding.UTF8);
+        var buffer = new char[MaxErrorBodyChars + 1];
+        var length = await reader.ReadBlockAsync(buffer, ct);
         string? message = null;
         try
         {
-            message = ErrorMessage(JsonNode.Parse(body.Length > MaxErrorBodyChars ? "" : body)?["error"]);
+            message = ErrorMessage(JsonNode.Parse(length > MaxErrorBodyChars ? "" : new string(buffer, 0, length))?["error"]);
         }
         catch (JsonException)
         {

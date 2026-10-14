@@ -6,8 +6,8 @@ namespace SimpleRouter.Routing;
 
 /// <summary>
 /// Picks the model for a (session, tier): its existing pin if still eligible, else the next eligible tier member in
-/// round-robin order. Eligible means enabled, served by a registered upstream, healthy (locals) and large enough for
-/// the request. Mid and Low give new sessions to eligible local models first and use subscriptions only when none is.
+/// round-robin order. Eligible means enabled, served by a registered upstream, healthy (locals) and able to serve the
+/// request (<see cref="RequestNeeds"/>). Mid and Low give new sessions to eligible local models first and use subscriptions only when none is.
 /// Both the pin and the per-tier round-robin cursor are persisted, so assignments survive restarts.
 /// </summary>
 public sealed class ModelSelector(
@@ -32,11 +32,11 @@ public sealed class ModelSelector(
     }
 
     /// <summary>Returns the session's model in <paramref name="tier"/>, assigning and persisting a pin if it has none; null when the tier has no eligible model.</summary>
-    public async Task<CatalogModel?> SelectAsync(ModelTier tier, SessionIdentity session, int estimatedTokens, CancellationToken ct)
+    public async Task<CatalogModel?> SelectAsync(ModelTier tier, SessionIdentity session, RequestNeeds needs, CancellationToken ct)
     {
         await using (var reader = await dbFactory.CreateDbContextAsync(ct))
         {
-            var eligible = await EligibleAsync(reader, tier, estimatedTokens, ct);
+            var eligible = await EligibleAsync(reader, tier, needs, ct);
             if (eligible.Count == 0)
             {
                 return null;
@@ -51,7 +51,7 @@ public sealed class ModelSelector(
         try
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct);
-            var eligible = await EligibleAsync(db, tier, estimatedTokens, ct);
+            var eligible = await EligibleAsync(db, tier, needs, ct);
             if (eligible.Count == 0)
             {
                 return null;
@@ -87,7 +87,7 @@ public sealed class ModelSelector(
             }
             else
             {
-                // The pinned model was disabled, removed from the tier, went unhealthy or is too small for the request.
+                // The pinned model was disabled, removed from the tier, went unhealthy or cannot serve this request.
                 pin.ModelId = model.Id;
             }
             await db.SaveChangesAsync(ct);
@@ -101,10 +101,10 @@ public sealed class ModelSelector(
     }
 
     /// <summary>The session's pinned model if still eligible, else the model its next round-robin turn would get; never assigns.</summary>
-    public async Task<CatalogModel?> PeekAsync(ModelTier tier, SessionIdentity session, int estimatedTokens, CancellationToken ct)
+    public async Task<CatalogModel?> PeekAsync(ModelTier tier, SessionIdentity session, RequestNeeds needs, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var eligible = await EligibleAsync(db, tier, estimatedTokens, ct);
+        var eligible = await EligibleAsync(db, tier, needs, ct);
         if (eligible.Count == 0)
         {
             return null;
@@ -137,7 +137,7 @@ public sealed class ModelSelector(
         return eligible.FirstOrDefault(m => m.Id == pin?.ModelId);
     }
 
-    private async Task<List<CatalogModel>> EligibleAsync(RouterDbContext db, ModelTier tier, int estimatedTokens, CancellationToken ct)
+    private async Task<List<CatalogModel>> EligibleAsync(RouterDbContext db, ModelTier tier, RequestNeeds needs, CancellationToken ct)
     {
         var members = await db.TierMembers
             .Where(t => t.Tier == tier)
@@ -148,7 +148,7 @@ public sealed class ModelSelector(
             .AsNoTracking()
             .ToListAsync(ct);
         return members.Where(m => _wired.Contains(m.Provider)
-                && (m.ContextWindow is null || estimatedTokens <= m.ContextWindow)
+                && needs.CanUse(m)
                 && (m.Provider != ProviderKind.Local || health.IsHealthy(m.Id)))
             .ToList();
     }

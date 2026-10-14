@@ -42,7 +42,7 @@ public sealed class RouterHost : IAsyncDisposable
             $"--SimpleRouter:Claude:ApiBaseUrl={UpstreamBase}",
             $"--SimpleRouter:Claude:TokenUrl={TokenUrl}",
             $"--SimpleRouter:Claude:AuthorizeUrl={AuthorizeUrl}",
-            // Tests run health checks explicitly so results never race the assertions.
+            // Only the startup probe runs; tests re-check explicitly so results never race the assertions.
             "--SimpleRouter:Local:HealthCheckIntervalSeconds=0",
         };
         args.AddRange(models.Select((m, i) => $"--SimpleRouter:Models:{i}={m}"));
@@ -73,13 +73,17 @@ public sealed class RouterHost : IAsyncDisposable
 
     /// <summary>Starts on <paramref name="dataDirectory"/> (which may hold a previous host's state) with extra config args.</summary>
     public static Task<RouterHost> StartInAsync(string dataDirectory, params string[] extraArgs) =>
-        StartInAsync(dataDirectory, _ => { }, [.. Args(dataDirectory), .. extraArgs]);
+        StartInAsync(dataDirectory, new FakeHandler(), extraArgs);
 
-    private static async Task<RouterHost> StartInAsync(string dataDirectory, Action<IServiceCollection> configureServices, string[] args)
+    /// <summary>As above, with <paramref name="local"/> already answering the health probe the router runs before serving.</summary>
+    public static Task<RouterHost> StartInAsync(string dataDirectory, FakeHandler local, params string[] extraArgs) =>
+        StartInAsync(dataDirectory, _ => { }, [.. Args(dataDirectory), .. extraArgs], local);
+
+    private static async Task<RouterHost> StartInAsync(string dataDirectory, Action<IServiceCollection> configureServices, string[] args, FakeHandler? local = null)
     {
         var upstream = new FakeHandler();
         var oauth = new FakeHandler();
-        var local = new FakeHandler();
+        local ??= new FakeHandler();
         var app = RouterApp.Build(args, services =>
         {
             FakeHttp(upstream, oauth, local)(services);

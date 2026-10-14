@@ -58,8 +58,8 @@ public class ChatStreamTranslatorTests
         Assert.Equal(("text", "Hello"), (block.Type, block.Text));
         Assert.Equal("end_turn", message.StopReason);
         Assert.Equal("local-a", message.Model);
-        Assert.Equal(50, message.Usage["input_tokens"]!.GetValue<int>());
-        Assert.Equal(12, message.Usage["output_tokens"]!.GetValue<int>());
+        Assert.Equal(50, message.Usage!["input_tokens"]!.GetValue<int>());
+        Assert.Equal(12, message.Usage!["output_tokens"]!.GetValue<int>());
     }
 
     [Fact]
@@ -98,7 +98,7 @@ public class ChatStreamTranslatorTests
         Assert.Equal("""{"path":"a.txt"}""", message.Blocks[0].Input!.ToJsonString());
         Assert.Equal("""{"pattern":"TODO"}""", message.Blocks[1].Input!.ToJsonString());
         Assert.Equal("tool_use", message.StopReason);
-        Assert.Equal(7, message.Usage["input_tokens"]!.GetValue<int>());
+        Assert.Equal(7, message.Usage!["input_tokens"]!.GetValue<int>());
     }
 
     [Fact]
@@ -150,5 +150,34 @@ public class ChatStreamTranslatorTests
         Assert.Contains("event: content_block_stop", sse);
         Assert.EndsWith("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Local model stream ended unexpectedly.\"}}\n\n", sse);
         Assert.DoesNotContain("message_stop", sse);
+    }
+
+    [Fact]
+    public void An_index_less_chunk_repeating_the_current_call_id_continues_that_call()
+    {
+        static string Call(string? id, string? name, string args)
+        {
+            var call = new JsonObject();
+            if (id is not null)
+            {
+                call["id"] = id;
+            }
+            call["function"] = name is null ? new JsonObject { ["arguments"] = args } : new JsonObject { ["name"] = name, ["arguments"] = args };
+            return new JsonObject
+            {
+                ["choices"] = new JsonArray { new JsonObject { ["index"] = 0, ["delta"] = new JsonObject { ["tool_calls"] = new JsonArray { call } } } },
+            }.ToJsonString();
+        }
+
+        var message = Run(
+            Call("call_a", "Read", "{\"path\":"),
+            Call("call_a", null, "\"a.txt\"}"),
+            Call("call_b", "Grep", "{\"pattern\":"),
+            Call(null, null, "\"TODO\"}"),
+            Finish("tool_calls"));
+
+        Assert.Equal(["call_a", "call_b"], message.Blocks.Select(b => b.Id));
+        Assert.Equal("""{"path":"a.txt"}""", message.Blocks[0].Input!.ToJsonString());
+        Assert.Equal("""{"pattern":"TODO"}""", message.Blocks[1].Input!.ToJsonString());
     }
 }

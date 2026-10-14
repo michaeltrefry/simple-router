@@ -16,7 +16,7 @@ public sealed class CatalogModel
     /// <summary>Optional bearer key for <see cref="BaseUrl"/>, protected with <see cref="SecretProtector"/>.</summary>
     public string? ProtectedApiKey { get; set; }
 
-    /// <summary>Maximum estimated input tokens the model accepts; null means unlimited.</summary>
+    /// <summary>Total tokens (prompt plus output) the model accepts; null means unlimited.</summary>
     public int? ContextWindow { get; set; }
 
     public bool SupportsTools { get; set; } = true;

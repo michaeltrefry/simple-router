@@ -17,8 +17,8 @@ public class ChatRequestTranslatorTests
         SupportsVision = vision,
     };
 
-    private static JsonObject Translate(string anthropic, CatalogModel? model = null) =>
-        ChatRequestTranslator.Translate(JsonNode.Parse(anthropic)!.AsObject(), model ?? Model());
+    private static JsonObject Translate(string anthropic, CatalogModel? model = null, int estimate = 0) =>
+        ChatRequestTranslator.Translate(JsonNode.Parse(anthropic)!.AsObject(), model ?? Model(), estimate);
 
     [Fact]
     public void Text_system_and_sampling_parameters_are_preserved()
@@ -38,7 +38,7 @@ public class ChatRequestTranslatorTests
         Assert.Null(chat["top_k"]);
         Assert.Null(chat["stream"]);
         Assert.Equal("""
-            [{"role":"system","content":"Be brief.\n\nBe kind."},{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}]
+            [{"role":"system","content":"Be brief.\n\nBe kind."},{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"a\nb"}]
             """, chat["messages"]!.ToJsonString(WireJson.Relaxed));
     }
 
@@ -101,7 +101,7 @@ public class ChatRequestTranslatorTests
             """);
 
         Assert.Equal("""
-            [{"role":"user","content":"read both"},{"role":"assistant","content":"Reading.","tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"Read","arguments":"{\"path\":\"a.txt\"}"}},{"id":"toolu_2","type":"function","function":{"name":"Read","arguments":"{\"path\":\"b.txt\"}"}}]},{"role":"tool","tool_call_id":"toolu_2","content":"line 1\nline 2"},{"role":"tool","tool_call_id":"toolu_1","content":"Error: not found"},{"role":"user","content":[{"type":"text","text":"continue"}]}]
+            [{"role":"user","content":"read both"},{"role":"assistant","content":"Reading.","tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"Read","arguments":"{\"path\":\"a.txt\"}"}},{"id":"toolu_2","type":"function","function":{"name":"Read","arguments":"{\"path\":\"b.txt\"}"}}]},{"role":"tool","tool_call_id":"toolu_2","content":"line 1\nline 2"},{"role":"tool","tool_call_id":"toolu_1","content":"Error: not found"},{"role":"user","content":"continue"}]
             """, chat["messages"]!.ToJsonString(WireJson.Relaxed));
     }
 
@@ -144,7 +144,48 @@ public class ChatRequestTranslatorTests
             """, Model(vision: false));
 
         Assert.Equal("""
-            [{"role":"user","content":[{"type":"text","text":"[image omitted: this model does not accept images]"},{"type":"text","text":"describe"}]}]
+            [{"role":"user","content":"[image omitted: this model does not accept images]\ndescribe"}]
+            """, chat["messages"]!.ToJsonString(WireJson.Relaxed));
+    }
+
+    [Fact]
+    public void Assistant_text_blocks_are_joined_by_newlines()
+    {
+        var chat = Translate("""
+            {"model":"m","max_tokens":1,"messages":[{"role":"user","content":"hi"},
+              {"role":"assistant","content":[{"type":"text","text":"First."},{"type":"text","text":"Second."}]}]}
+            """);
+
+        Assert.Equal("First.\nSecond.", chat["messages"]![1]!["content"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData(1000, 600, 500, 400)]
+    [InlineData(1000, 999, 500, 1)]
+    [InlineData(1000, 2000, 500, 1)]
+    [InlineData(1000, 100, 500, 500)]
+    [InlineData(null, 900, 500, 500)]
+    public void Max_tokens_is_clamped_to_what_the_context_window_leaves_after_the_prompt(int? window, int estimate, int maxTokens, int expected)
+    {
+        var model = Model();
+        model.ContextWindow = window;
+
+        var chat = Translate($$"""{"model":"m","max_tokens":{{maxTokens}},"messages":[{"role":"user","content":"hi"}]}""", model, estimate);
+
+        Assert.Equal(expected, chat["max_tokens"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public void Tool_history_is_written_as_text_for_a_model_without_tool_support()
+    {
+        var chat = Translate("""
+            {"model":"m","max_tokens":1,"messages":[{"role":"user","content":"read it"},
+              {"role":"assistant","content":[{"type":"text","text":"Reading."},{"type":"tool_use","id":"call_1","name":"Read","input":{"path":"a.txt"}}]},
+              {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"file body"},{"type":"text","text":"now summarize"}]}]}
+            """, Model(tools: false));
+
+        Assert.Equal("""
+            [{"role":"user","content":"read it"},{"role":"assistant","content":"Reading.\n[called tool Read with {\"path\":\"a.txt\"}]"},{"role":"user","content":"[result of tool call call_1]: file body\nnow summarize"}]
             """, chat["messages"]!.ToJsonString(WireJson.Relaxed));
     }
 }

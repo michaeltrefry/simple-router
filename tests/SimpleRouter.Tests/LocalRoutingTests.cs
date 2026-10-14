@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.IO.Pipelines;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -22,12 +23,13 @@ public class LocalRoutingTests
             { "id": "local-a", "provider": "local", "upstreamModelId": "upstream-local-a", "enabled": true,
               "baseUrl": "http://local-a.test/v1", "apiKey": "local-secret-a", "contextWindow": 1000, "supportsVision": true },
             { "id": "local-b", "provider": "local", "upstreamModelId": "upstream-local-b", "enabled": true, "baseUrl": "http://local-b.test/v1/" },
-            { "id": "local-off", "provider": "local", "upstreamModelId": "upstream-local-off", "enabled": false, "baseUrl": "http://local-off.test/v1" }
+            { "id": "local-off", "provider": "local", "upstreamModelId": "upstream-local-off", "enabled": false, "baseUrl": "http://local-off.test/v1" },
+            { "id": "local-c", "provider": "local", "upstreamModelId": "upstream-local-c", "enabled": true, "baseUrl": "http://local-c.test/v1", "supportsTools": false }
           ],
           "tiers": {
             "high": [ "sub-mid", "local-a" ],
             "mid": [ "sub-mid", "local-off", "local-a", "local-b" ],
-            "low": [ "sub-mid", "local-b" ]
+            "low": [ "sub-mid", "local-b", "local-c" ]
           },
           "aliases": [ { "pattern": "*sonnet*", "tier": "mid" }, { "pattern": "*haiku*", "tier": "low" } ]
         }
@@ -35,7 +37,7 @@ public class LocalRoutingTests
 
     private sealed class Locals
     {
-        public HashSet<string> Healthy { get; } = ["local-a.test", "local-b.test", "local-off.test"];
+        public HashSet<string> Healthy { get; } = ["local-a.test", "local-b.test", "local-c.test", "local-off.test"];
         public Func<HttpRequestMessage, HttpResponseMessage> Chat { get; set; } = _ => Json(TextCompletion("hi from local"));
     }
 
@@ -54,27 +56,30 @@ public class LocalRoutingTests
         var seedPath = Path.Combine(Path.GetTempPath(), "simple-router-tests", $"seed-{Guid.NewGuid():N}.json");
         Directory.CreateDirectory(Path.GetDirectoryName(seedPath)!);
         await File.WriteAllTextAsync(seedPath, Seed);
-        var host = await RouterHost.StartInAsync(dataDirectory ?? RouterHost.NewDataDirectory(), [$"--SimpleRouter:SeedFile={seedPath}", .. extraArgs]);
+        var locals = new Locals();
+        var local = new FakeHandler
+        {
+            Respond = request => request.RequestUri!.AbsolutePath.EndsWith("/models")
+                ? new HttpResponseMessage(locals.Healthy.Contains(request.RequestUri.Host) ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable)
+                : locals.Chat(request),
+        };
+        // No explicit health check: the router probes before it serves.
+        var host = await RouterHost.StartInAsync(dataDirectory ?? RouterHost.NewDataDirectory(), local, [$"--SimpleRouter:SeedFile={seedPath}", .. extraArgs]);
         await host.LoginAsync();
         host.Upstream.Respond = _ => Json("""{"id":"msg_sub","type":"message"}""");
-        var locals = new Locals();
-        host.Local.Respond = request => request.RequestUri!.AbsolutePath.EndsWith("/models")
-            ? new HttpResponseMessage(locals.Healthy.Contains(request.RequestUri.Host) ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable)
-            : locals.Chat(request);
         await host.AuthorizedClientAsync();
-        await CheckHealthAsync(host);
         return (host, locals);
     }
 
     private static Task CheckHealthAsync(RouterHost host) => host.Services.GetRequiredService<LocalHealth>().CheckAsync(CancellationToken.None);
 
     private static HttpRequestMessage Message(string model = "claude-sonnet-5-5", string? sessionId = null, JsonArray? messages = null, bool stream = false,
-        string path = "/v1/messages", JsonArray? tools = null, string? modelClass = null)
+        string path = "/v1/messages", JsonArray? tools = null, string? modelClass = null, int maxTokens = 64)
     {
         var body = new JsonObject
         {
             ["model"] = model,
-            ["max_tokens"] = 64,
+            ["max_tokens"] = maxTokens,
             ["system"] = "Be brief.",
             ["messages"] = messages ?? new JsonArray { new JsonObject { ["role"] = "user", ["content"] = "hello" } },
         };
@@ -173,7 +178,7 @@ public class LocalRoutingTests
         Assert.Equal(["local-b.test", "local-b.test"], whileDown);
         Assert.Contains("local-a.test", recovered);
         var probes = host.Local.Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/models")).Select(r => r.Uri.ToString()).ToHashSet();
-        Assert.Equal(["http://local-a.test/v1/models", "http://local-b.test/v1/models"], probes.Order());
+        Assert.Equal(["http://local-a.test/v1/models", "http://local-b.test/v1/models", "http://local-c.test/v1/models"], probes.Order());
     }
 
     [Fact]
@@ -255,7 +260,7 @@ public class LocalRoutingTests
         Assert.Equal(("tool_use", "call_7", "Read"), (tool.Type, tool.Id, tool.Name));
         Assert.Equal("""{"path":"a.txt"}""", tool.Input!.ToJsonString());
         Assert.Equal("tool_use", message.StopReason);
-        Assert.Equal(9, message.Usage["output_tokens"]!.GetValue<int>());
+        Assert.Equal(9, message.Usage!["output_tokens"]!.GetValue<int>());
         var sent = JsonNode.Parse(ChatRequests(host).Single().Body)!;
         Assert.True(sent["stream_options"]!["include_usage"]!.GetValue<bool>());
     }
@@ -350,5 +355,154 @@ public class LocalRoutingTests
         var sent = ChatRequests(host).Single();
         Assert.Equal("Bearer override-key", sent.Headers["authorization"]);
         Assert.Equal("real-id", JsonNode.Parse(sent.Body)!["model"]!.GetValue<string>());
+    }
+
+    private static HttpResponseMessage Sse(string body) => Sse(new StringContent(body));
+
+    private static HttpResponseMessage Sse(HttpContent content)
+    {
+        content.Headers.ContentType = new MediaTypeHeaderValue("text/event-stream");
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+    }
+
+    private const string PartialChunk = """data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}""";
+
+    [Fact]
+    public async Task A_prompt_that_leaves_too_little_of_a_context_window_for_the_requested_output_skips_that_local()
+    {
+        var (host, _) = await StartAsync();
+        await using var _host = host;
+        // About 800 estimated tokens against local-a's 1000-token window, with 500 tokens of output requested.
+        var prompt = new JsonArray { new JsonObject { ["role"] = "user", ["content"] = new string('x', 3100) } };
+
+        Assert.Equal("local-b.test", await ServedByAsync(host, Message(sessionId: "tight", messages: prompt, maxTokens: 500)));
+        Assert.Equal(500, JsonNode.Parse(ChatRequests(host)[^1].Body)!["max_tokens"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task Requests_with_tools_skip_locals_without_tool_support()
+    {
+        var (host, _) = await StartAsync();
+        await using var _host = host;
+        var tools = JsonNode.Parse("""[{"name":"Read","input_schema":{"type":"object"}}]""")!.AsArray();
+
+        var withTools = new List<string>();
+        foreach (var session in new[] { "t1", "t2", "t3" })
+        {
+            withTools.Add(await ServedByAsync(host, Message("claude-haiku-5-5", sessionId: session, tools: (JsonArray)tools.DeepClone())));
+        }
+        // The low cursor is now 3, so a tool-less request's turn falls on local-c.
+        var withoutTools = await ServedByAsync(host, Message("claude-haiku-5-5", sessionId: "t4"));
+
+        Assert.Equal(["local-b.test", "local-b.test", "local-b.test"], withTools);
+        Assert.Equal("local-c.test", withoutTools);
+    }
+
+    [Fact]
+    public async Task A_pinned_local_session_keeps_its_model_across_a_restart()
+    {
+        var dataDirectory = RouterHost.NewDataDirectory();
+        var (first, _) = await StartAsync(dataDirectory);
+        Assert.Equal("local-a.test", await ServedByAsync(first, Message(sessionId: "kept")));
+        first.KeepData = true;
+        await first.DisposeAsync();
+
+        var (host, _) = await StartAsync(dataDirectory);
+        await using var _host = host;
+
+        Assert.Equal("local-a.test", await ServedByAsync(host, Message(sessionId: "kept")));
+    }
+
+    [Theory]
+    [InlineData("eof without a finish reason", PartialChunk + "\n\n", "Local model stream ended before completion.")]
+    [InlineData("malformed chunk", PartialChunk + "\n\ndata: {\"choices\":[\n\n", "Local model sent a malformed stream chunk.")]
+    [InlineData("mid-stream error", PartialChunk + "\n\ndata: {\"error\":{\"message\":\"out of memory\"}}\n\n", "out of memory")]
+    public async Task A_local_stream_that_fails_ends_in_an_error_event_without_message_stop(string _, string upstream, string error)
+    {
+        var (host, locals) = await StartAsync();
+        await using var _host = host;
+        locals.Chat = _ => Sse(upstream);
+
+        using var response = await host.Client.SendAsync(Message(sessionId: "s1", stream: true));
+
+        var message = AnthropicSse.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(error, message.Error);
+        Assert.Equal("partial", Assert.Single(message.Blocks).Text);
+        Assert.DoesNotContain("message_stop", message.Events);
+    }
+
+    [Theory]
+    [InlineData("crlf and keepalives", ": keepalive\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\r\n\r\n: keepalive\r\n\r\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\r\ndata: [DONE]\r\n\r\n")]
+    [InlineData("finish then eof without done", "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")]
+    [InlineData("multi-line data event", "data: {\"choices\":[{\"index\":0,\ndata: \"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")]
+    public async Task Local_stream_framing_variants_produce_a_complete_anthropic_stream(string _, string upstream)
+    {
+        var (host, locals) = await StartAsync();
+        await using var _host = host;
+        locals.Chat = _ => Sse(upstream);
+
+        using var response = await host.Client.SendAsync(Message(sessionId: "s1", stream: true));
+
+        var message = AnthropicSse.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Null(message.Error);
+        Assert.Equal("hi", Assert.Single(message.Blocks).Text);
+        Assert.Equal("end_turn", message.StopReason);
+    }
+
+    [Fact]
+    public async Task A_local_stream_that_goes_quiet_is_ended_with_an_error_after_the_idle_timeout()
+    {
+        var (host, locals) = await StartAsync(null, "--SimpleRouter:Local:StreamIdleTimeout=00:00:00.300");
+        await using var _host = host;
+        var pipe = new Pipe();
+        await pipe.Writer.WriteAsync(Encoding.UTF8.GetBytes(PartialChunk + "\n\n"));
+        locals.Chat = _ => Sse(new StreamContent(pipe.Reader.AsStream()));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        using var response = await host.Client.SendAsync(Message(sessionId: "s1", stream: true), deadline.Token);
+
+        var message = AnthropicSse.Parse(await response.Content.ReadAsStringAsync(deadline.Token));
+        Assert.Equal("Local model sent nothing for 0.3 s.", message.Error);
+        Assert.Equal("partial", Assert.Single(message.Blocks).Text);
+    }
+
+    private sealed class EndlessStream : Stream
+    {
+        private const long Limit = 1024 * 1024;
+        private long _read;
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_read > Limit)
+            {
+                throw new IOException("read far past the error body limit");
+            }
+            buffer.AsSpan(offset, count).Fill((byte)' ');
+            _read += count;
+            return count;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => _read; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public async Task An_endless_error_body_is_read_only_up_to_the_limit()
+    {
+        var (host, locals) = await StartAsync();
+        await using var _host = host;
+        locals.Chat = _ => new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StreamContent(new EndlessStream()) };
+
+        using var response = await host.Client.SendAsync(Message(sessionId: "s1"));
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal("Local model local-a returned HTTP 500.", JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["message"]!.GetValue<string>());
     }
 }

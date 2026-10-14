@@ -73,10 +73,21 @@ public sealed class LocalHealth(
     }
 }
 
-/// <summary>Runs <see cref="LocalHealth.CheckAsync"/> at start and then every configured interval.</summary>
+/// <summary>
+/// Runs <see cref="LocalHealth.CheckAsync"/> once before the server starts, then every configured interval. Probing
+/// before serving matters: an unprobed local is ineligible, so early requests would otherwise re-pin local sessions.
+/// </summary>
 public sealed class LocalHealthMonitor(LocalHealth health, Microsoft.Extensions.Options.IOptions<RouterOptions> options, ILogger<LocalHealthMonitor> logger)
-    : BackgroundService
+    : BackgroundService, IHostedLifecycleService
 {
+    public Task StartingAsync(CancellationToken cancellationToken) => CheckAsync(cancellationToken);
+
+    public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var seconds = options.Value.Local.HealthCheckIntervalSeconds;
@@ -85,17 +96,21 @@ public sealed class LocalHealthMonitor(LocalHealth health, Microsoft.Extensions.
             return;
         }
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(seconds));
-        do
+        while (await timer.WaitForNextTickAsync(stoppingToken))
         {
-            try
-            {
-                await health.CheckAsync(stoppingToken);
-            }
-            catch (Exception e) when (!stoppingToken.IsCancellationRequested)
-            {
-                logger.LogWarning("Local health check failed: {error}", e.Message);
-            }
+            await CheckAsync(stoppingToken);
         }
-        while (await timer.WaitForNextTickAsync(stoppingToken));
+    }
+
+    private async Task CheckAsync(CancellationToken ct)
+    {
+        try
+        {
+            await health.CheckAsync(ct);
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested)
+        {
+            logger.LogWarning("Local health check failed: {error}", e.Message);
+        }
     }
 }

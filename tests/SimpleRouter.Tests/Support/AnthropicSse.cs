@@ -5,13 +5,14 @@ namespace SimpleRouter.Tests.Support;
 
 /// <summary>
 /// Strict Anthropic Messages SSE parser: enforces event order, sequential block indexes, delta types matching their
-/// block, and that accumulated tool input is a JSON object. Any violation throws.
+/// block, usage on message_start, and that accumulated tool input is a JSON object. A stream ends with message_stop or,
+/// for a failed stream, a terminal <c>error</c> event (then <see cref="Message.Error"/> is set). Any violation throws.
 /// </summary>
 public static class AnthropicSse
 {
     public sealed record Block(string Type, string Text, string? Id, string? Name, JsonObject? Input);
 
-    public sealed record Message(string Model, List<Block> Blocks, string StopReason, JsonObject Usage, List<string> Events);
+    public sealed record Message(string Model, List<Block> Blocks, string? StopReason, JsonObject? Usage, List<string> Events, string? Error);
 
     public static Message Parse(string sse)
     {
@@ -21,7 +22,7 @@ public static class AnthropicSse
         var text = new System.Text.StringBuilder();
         var json = new System.Text.StringBuilder();
         int? open = null;
-        string? model = null, stopReason = null;
+        string? model = null, stopReason = null, error = null;
         JsonObject? usage = null;
         var stopped = false;
 
@@ -36,6 +37,7 @@ public static class AnthropicSse
             var data = JsonNode.Parse(lines[1]["data: ".Length..])!.AsObject();
             Check(data["type"]!.GetValue<string>() == name, $"event {name} has data.type {data["type"]}");
             Check(!stopped, "event after message_stop");
+            Check(error is null, "event after error");
             Check(events.Count > 0 || name == "message_start", "stream must begin with message_start");
             events.Add(name);
 
@@ -47,6 +49,7 @@ public static class AnthropicSse
                     Check(msg["role"]!.GetValue<string>() == "assistant" && msg["type"]!.GetValue<string>() == "message", "bad message_start");
                     Check(msg["content"]!.AsArray().Count == 0, "message_start content must be empty");
                     model = msg["model"]!.GetValue<string>();
+                    Check(msg["usage"]?["input_tokens"] is JsonValue && msg["usage"]?["output_tokens"] is JsonValue, "message_start usage needs input_tokens and output_tokens");
                     break;
                 case "ping":
                     break;
@@ -109,12 +112,16 @@ public static class AnthropicSse
                     Check(stopReason is not null, "message_stop before message_delta");
                     stopped = true;
                     break;
+                case "error":
+                    error = data["error"]!["message"]!.GetValue<string>();
+                    Check(!string.IsNullOrEmpty(data["error"]!["type"]?.GetValue<string>()), "error needs a type");
+                    break;
                 default:
                     throw new FormatException($"unexpected event {name}");
             }
         }
-        Check(stopped, "stream did not end with message_stop");
-        return new Message(model!, blocks, stopReason!, usage!, events);
+        Check(stopped || error is not null, "stream did not end with message_stop or error");
+        return new Message(model!, blocks, stopReason, usage, events, error);
     }
 
     private static void Check(bool condition, string message)

@@ -126,10 +126,10 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
     private void AccumulateToolCall(JsonNode? call)
     {
         var id = ChatRequestTranslator.Str(call?["id"]);
-        // Some servers omit the index for a single call; a new id then starts a new call.
+        // Some servers omit the index; a different id then starts a new call, while a repeated or missing one continues it.
         var index = call?["index"] is JsonValue i && i.TryGetValue<int>(out var n)
             ? n
-            : !string.IsNullOrEmpty(id) || _lastToolIndex is null ? _tools.Count : _lastToolIndex.Value;
+            : _lastToolIndex is { } last && (string.IsNullOrEmpty(id) || id == _tools[last].Id) ? last : _tools.Count;
         _lastToolIndex = index;
         if (!_tools.TryGetValue(index, out var tool))
         {

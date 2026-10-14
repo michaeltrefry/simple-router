@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json.Nodes;
 using SimpleRouter.Api;
 using SimpleRouter.Data;
@@ -10,7 +9,8 @@ public static class ChatRequestTranslator
 {
     public const string ImageOmitted = "[image omitted: this model does not accept images]";
 
-    public static JsonObject Translate(JsonObject request, CatalogModel model)
+    /// <param name="estimatedInputTokens">Used to keep <c>max_tokens</c> within what the model's context window leaves after the prompt.</param>
+    public static JsonObject Translate(JsonObject request, CatalogModel model, int estimatedInputTokens)
     {
         var messages = new JsonArray();
         if (Text(request["system"], "\n\n") is { Length: > 0 } system)
@@ -21,11 +21,11 @@ public static class ChatRequestTranslator
         {
             if (Str(message?["role"]) == "assistant")
             {
-                messages.Add(Assistant(message!["content"]));
+                messages.Add(Assistant(message!["content"], model.SupportsTools));
             }
             else
             {
-                AddUser(messages, message?["content"], model.SupportsVision);
+                AddUser(messages, message?["content"], model.SupportsVision, model.SupportsTools);
             }
         }
 
@@ -36,6 +36,10 @@ public static class ChatRequestTranslator
             {
                 chat[to] = value.DeepClone();
             }
+        }
+        if (model.ContextWindow is { } window && chat["max_tokens"] is JsonValue max && max.TryGetValue<int>(out var maxTokens))
+        {
+            chat["max_tokens"] = Math.Max(1, Math.Min(maxTokens, window - estimatedInputTokens));
         }
         if (request["stream"] is JsonValue stream && stream.TryGetValue<bool>(out var streaming) && streaming)
         {
@@ -49,21 +53,25 @@ public static class ChatRequestTranslator
         return chat;
     }
 
-    private static JsonObject Assistant(JsonNode? content)
+    /// <param name="tools">False for a model without tool support: tool calls are written into the text instead.</param>
+    private static JsonObject Assistant(JsonNode? content, bool tools)
     {
         if (content is not JsonArray blocks)
         {
             return new JsonObject { ["role"] = "assistant", ["content"] = Str(content) ?? "" };
         }
 
-        var text = new StringBuilder();
+        var text = new List<string>();
         var calls = new JsonArray();
         foreach (var block in blocks)
         {
             switch (Str(block?["type"]))
             {
                 case "text":
-                    text.Append(Str(block!["text"]));
+                    text.Add(Str(block!["text"]) ?? "");
+                    break;
+                case "tool_use" when !tools:
+                    text.Add($"[called tool {Str(block!["name"])} with {block["input"]?.ToJsonString(WireJson.Relaxed) ?? "{}"}]");
                     break;
                 case "tool_use":
                     calls.Add(new JsonObject
@@ -81,7 +89,7 @@ public static class ChatRequestTranslator
             }
         }
 
-        var message = new JsonObject { ["role"] = "assistant", ["content"] = text.Length > 0 || calls.Count == 0 ? text.ToString() : null };
+        var message = new JsonObject { ["role"] = "assistant", ["content"] = text.Count > 0 || calls.Count == 0 ? string.Join("\n", text) : null };
         if (calls.Count > 0)
         {
             message["tool_calls"] = calls;
@@ -90,7 +98,8 @@ public static class ChatRequestTranslator
     }
 
     /// <summary>Tool results become <c>tool</c> messages, which must directly follow the assistant's calls; the rest of the turn follows them.</summary>
-    private static void AddUser(JsonArray messages, JsonNode? content, bool vision)
+    /// <remarks>For a model without tool support, results are written into the user's text instead.</remarks>
+    private static void AddUser(JsonArray messages, JsonNode? content, bool vision, bool tools)
     {
         if (content is not JsonArray blocks)
         {
@@ -110,16 +119,25 @@ public static class ChatRequestTranslator
                 case "image":
                     parts.Add(ImagePart(block!, vision));
                     break;
+                case "tool_result" when !tools:
+                    var result = ToolMessage(block!, vision, resultImages);
+                    parts.Add(TextPart($"[result of tool call {Str(result["tool_call_id"])}]: {Str(result["content"])}"));
+                    break;
                 case "tool_result":
                     messages.Add(ToolMessage(block!, vision, resultImages));
                     break;
             }
         }
         parts.InsertRange(0, resultImages);
-        if (parts.Count > 0)
+        if (parts.Count == 0)
         {
-            messages.Add(new JsonObject { ["role"] = "user", ["content"] = new JsonArray([.. parts]) });
+            return;
         }
+        // Text-only content goes as a plain string: some servers and non-vision chat templates reject part arrays.
+        JsonNode userContent = parts.All(p => Str(p["type"]) == "text")
+            ? string.Join("\n", parts.Select(p => Str(p["text"])))
+            : new JsonArray([.. parts]);
+        messages.Add(new JsonObject { ["role"] = "user", ["content"] = userContent });
     }
 
     private static JsonObject ToolMessage(JsonNode block, bool vision, List<JsonNode> images)

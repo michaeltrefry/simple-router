@@ -49,6 +49,9 @@ public sealed class ClaudeOptions
 /// <summary>Local OpenAI-compatible endpoint settings.</summary>
 public sealed class LocalOptions
 {
-    /// <summary>Seconds between endpoint health checks; 0 disables the periodic check.</summary>
+    /// <summary>Seconds between endpoint health checks after the one at startup; 0 disables the periodic check.</summary>
     public int HealthCheckIntervalSeconds { get; set; } = 30;
+
+    /// <summary>A streaming response that sends nothing for this long is ended with an error event.</summary>
+    public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromSeconds(120);
 }
