@@ -1,7 +1,9 @@
+using SimpleRouter.Routing;
+
 namespace SimpleRouter.Claude;
 
 /// <summary>Interactive <c>login claude</c>: open the authorize URL, accept the pasted <c>code#state</c>, store tokens.</summary>
-public sealed class ClaudeLoginCommand(ClaudeOAuthClient oauth, ClaudeCredentialStore store)
+public sealed class ClaudeLoginCommand(ClaudeOAuthClient oauth, ClaudeCredentialStore store, ModelDiscovery discovery)
 {
     public async Task<int> RunAsync(TextReader input, TextWriter output, CancellationToken ct = default)
     {
@@ -22,6 +24,7 @@ public sealed class ClaudeLoginCommand(ClaudeOAuthClient oauth, ClaudeCredential
             return 1;
         }
         await output.WriteLineAsync("Claude subscription saved.");
+        await discovery.ReportRefreshAsync(ProviderKind.Claude, output, ct);
         return 0;
     }
 

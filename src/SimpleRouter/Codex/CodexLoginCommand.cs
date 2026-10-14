@@ -1,9 +1,10 @@
 using Microsoft.Extensions.Options;
+using SimpleRouter.Routing;
 
 namespace SimpleRouter.Codex;
 
 /// <summary>Interactive <c>login codex</c>: show the device code, poll until it is approved, store the tokens.</summary>
-public sealed class CodexLoginCommand(CodexOAuthClient oauth, CodexCredentialStore store, IOptions<RouterOptions> options, TimeProvider time)
+public sealed class CodexLoginCommand(CodexOAuthClient oauth, CodexCredentialStore store, ModelDiscovery discovery, IOptions<RouterOptions> options, TimeProvider time)
 {
     public async Task<int> RunAsync(TextWriter output, CancellationToken ct = default)
     {
@@ -28,6 +29,7 @@ public sealed class CodexLoginCommand(CodexOAuthClient oauth, CodexCredentialSto
             return 1;
         }
         await output.WriteLineAsync("Codex subscription saved.");
+        await discovery.ReportRefreshAsync(ProviderKind.Codex, output, ct);
         return 0;
     }
 

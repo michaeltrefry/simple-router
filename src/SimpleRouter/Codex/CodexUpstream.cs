@@ -25,7 +25,7 @@ public sealed class CodexUpstream(
     private const int MaxErrorBodyChars = 64 * 1024;
 
     // The Codex backend only serves clients that identify as the Codex CLI.
-    private const string Originator = "codex_cli_rs";
+    internal const string Originator = "codex_cli_rs";
 
     public ProviderKind Provider => ProviderKind.Codex;
 

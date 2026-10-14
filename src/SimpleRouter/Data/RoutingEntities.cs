@@ -55,3 +55,19 @@ public sealed class SessionPin
     public string? ClientSessionId { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 }
+
+/// <summary>A subscription's discovered model list; <see cref="ModelIds"/> stays null until a fetch has succeeded.</summary>
+public sealed class ProviderModelList
+{
+    public ProviderKind Provider { get; set; }
+    public List<string>? ModelIds { get; set; }
+
+    /// <summary>When <see cref="ModelIds"/> was last fetched successfully.</summary>
+    public DateTimeOffset? FetchedAt { get; set; }
+
+    /// <summary>When a fetch was last attempted, successful or not.</summary>
+    public DateTimeOffset CheckedAt { get; set; }
+
+    /// <summary>Why the last attempt failed; null when it succeeded.</summary>
+    public string? LastError { get; set; }
+}

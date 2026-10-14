@@ -19,7 +19,7 @@ public sealed class ClaudeUpstream(
 {
     public const string HttpClientName = "claude-upstream";
     public const string OAuthBeta = "oauth-2025-04-20";
-    private const string DefaultAnthropicVersion = "2023-06-01";
+    internal const string DefaultAnthropicVersion = "2023-06-01";
     private const int CopyBufferBytes = 16 * 1024;
 
     private static readonly HashSet<string> HopByHopHeaders = new(StringComparer.OrdinalIgnoreCase)
