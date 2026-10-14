@@ -32,7 +32,8 @@ public sealed class CatalogSeeder(
 
     private sealed record SeedAlias(string Pattern, string Tier);
 
-    private sealed record SeedPrice(decimal Input, decimal Output, decimal CacheRead, decimal CacheWrite);
+    /// <summary><c>cacheWrite1h</c> defaults to <c>cacheWrite</c>, for providers whose cache has one lifetime.</summary>
+    private sealed record SeedPrice(decimal Input, decimal Output, decimal CacheRead, decimal CacheWrite, decimal? CacheWrite1h = null);
 
     private sealed record Seed(string DefaultTier, SeedModel[] Models, Dictionary<string, string[]> Tiers, SeedAlias[] Aliases,
         Dictionary<string, SeedPrice>? Prices = null);
@@ -72,6 +73,7 @@ public sealed class CatalogSeeder(
             OutputPerMTok = p.Value.Output,
             CacheReadPerMTok = p.Value.CacheRead,
             CacheWritePerMTok = p.Value.CacheWrite,
+            CacheWrite1hPerMTok = p.Value.CacheWrite1h ?? p.Value.CacheWrite,
         }));
         await db.SaveChangesAsync(ct);
     }

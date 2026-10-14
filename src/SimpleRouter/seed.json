@@ -19,12 +19,12 @@
     "mid": [ "claude-sonnet-5-5", "gpt-5.6-terra", "mimo-2.6", "qwen-3.8-flash-next" ],
     "low": [ "claude-haiku-5-5", "gpt-6-luna", "qwen-3.8-37b", "mimo-2.6", "qwen-3.8-flash-next" ]
   },
-  "pricesNote": "USD per million tokens (input, output, cacheRead, cacheWrite). ESTIMATES of public list prices, used only to report spend; edit the ModelPrices table to change them. Codex prices are guesses (subscription models have no published per-token price). Local models cost $0.",
+  "pricesNote": "USD per million tokens (input, output, cacheRead, cacheWrite, and cacheWrite1h for one-hour cache writes, defaulting to cacheWrite). ESTIMATES of public list prices, used only to report spend; edit the ModelPrices table to change them. Codex prices are guesses (subscription models have no published per-token price). Local models cost $0.",
   "prices": {
-    "claude-fable-5-1": { "input": 10.00, "output": 50.00, "cacheRead": 0.25, "cacheWrite": 12.50 },
-    "claude-opus-5-5": { "input": 4.00, "output": 20.00, "cacheRead": 0.20, "cacheWrite": 5.00 },
-    "claude-sonnet-5-5": { "input": 2.00, "output": 10.00, "cacheRead": 0.20, "cacheWrite": 2.50 },
-    "claude-haiku-5-5": { "input": 0.10, "output": 0.50, "cacheRead": 0.01, "cacheWrite": 0.125 },
+    "claude-fable-5-1": { "input": 10.00, "output": 50.00, "cacheRead": 0.25, "cacheWrite": 12.50, "cacheWrite1h": 20.00 },
+    "claude-opus-5-5": { "input": 4.00, "output": 20.00, "cacheRead": 0.20, "cacheWrite": 5.00, "cacheWrite1h": 8.00 },
+    "claude-sonnet-5-5": { "input": 2.00, "output": 10.00, "cacheRead": 0.20, "cacheWrite": 2.50, "cacheWrite1h": 4.00 },
+    "claude-haiku-5-5": { "input": 0.10, "output": 0.50, "cacheRead": 0.01, "cacheWrite": 0.125, "cacheWrite1h": 0.20 },
     "gpt-6-astra": { "input": 10.00, "output": 40.00, "cacheRead": 1.00, "cacheWrite": 10.00 },
     "gpt-6.1-sol": { "input": 5.00, "output": 20.00, "cacheRead": 0.50, "cacheWrite": 5.00 },
     "gpt-5.6-terra": { "input": 1.25, "output": 10.00, "cacheRead": 0.125, "cacheWrite": 1.25 },

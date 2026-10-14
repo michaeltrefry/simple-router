@@ -122,6 +122,9 @@ namespace SimpleRouter.Data.Migrations
                     b.Property<decimal>("CacheReadPerMTok")
                         .HasColumnType("TEXT");
 
+                    b.Property<decimal>("CacheWrite1hPerMTok")
+                        .HasColumnType("TEXT");
+
                     b.Property<decimal>("CacheWritePerMTok")
                         .HasColumnType("TEXT");
 
@@ -168,6 +171,9 @@ namespace SimpleRouter.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<long>("CacheReadTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CacheWrite1hTokens")
                         .HasColumnType("INTEGER");
 
                     b.Property<long>("CacheWriteTokens")

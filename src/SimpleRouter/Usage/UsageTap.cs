@@ -9,7 +9,7 @@ namespace SimpleRouter.Usage;
 /// from the top-level <c>usage</c> of a JSON body (copied up to a cap). Every upstream writes Anthropic's shape, so one
 /// tap covers passthrough and translated responses alike.
 /// </summary>
-public sealed class UsageTap(Stream inner, HttpResponse response) : Stream
+public sealed class UsageTap(Stream inner, HttpResponse response, string modelId, ILogger logger) : Stream
 {
     private const int MaxLineBytes = 256 * 1024;
     private const int MaxBodyBytes = 8 * 1024 * 1024;
@@ -64,6 +64,7 @@ public sealed class UsageTap(Stream inner, HttpResponse response) : Stream
             {
                 _overflow = true;
                 _pending.SetLength(0);
+                logger.LogWarning("The response of {model} is over {limit} bytes; its usage is not read and it is recorded at $0", modelId, MaxBodyBytes);
             }
             if (!_overflow)
             {

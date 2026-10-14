@@ -13,7 +13,12 @@ public sealed record SubscriptionUsageReport(
     [property: JsonPropertyName("known_credentials")] int KnownCredentials,
     [property: JsonPropertyName("credentials")] IReadOnlyList<SubscriptionCredential> Credentials);
 
-/// <summary>One stored subscription login. <c>managed</c> marks the router's own login, which the orchestrator counts as enrolled.</summary>
+/// <summary>
+/// One stored subscription login. <c>managed</c> marks the router's own login, which the orchestrator counts as enrolled.
+/// <c>routable</c> is false only for a login that needs a human to log in again (<c>auth_rejected</c>): a <c>cooling</c>
+/// login is spent until its reset, not broken, and an <c>unknown</c> one (no enabled, tiered model of its provider) has
+/// nothing a fresh login would fix.
+/// </summary>
 public sealed record SubscriptionCredential(
     [property: JsonPropertyName("provider")] string Provider,
     [property: JsonPropertyName("source")] string Source,
@@ -60,7 +65,7 @@ public sealed class SubscriptionUsage(IDbContextFactory<RouterDbContext> dbFacto
                 : models.Any(s => s.Status == ModelStatus.AuthRejected) ? "auth_rejected"
                 : models.Count > 0 ? "cooling"
                 : "unknown";
-            return new SubscriptionCredential(p.ToString().ToLowerInvariant(), ManagedSource, true, state == "ok", state);
+            return new SubscriptionCredential(p.ToString().ToLowerInvariant(), ManagedSource, true, state != "auth_rejected", state);
         }).ToList();
 
         return new SubscriptionUsageReport(time.GetUtcNow(), allExhausted, resumesAt, loggedIn.Count, credentials);

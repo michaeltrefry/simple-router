@@ -78,7 +78,10 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
             }
             if (result.Written)
             {
-                await RecordServedAsync(chosen, tokens);
+                // Recorded once the response is complete, so the database never holds back the end of the stream.
+                var served = new ServedRequest(session.ClientSessionId, chosen, tier, context.Response.StatusCode,
+                    tokens ?? TokenUsage.None, time.GetElapsedTime(started), Effort(request));
+                context.Response.OnCompleted(() => usage.RecordAsync(served));
                 return;
             }
             logger.LogWarning("Model {model} could not serve the request ({reason}); trying the next model in tier {tier}",
@@ -98,7 +101,7 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
     {
         var response = call.Context.Response;
         var body = response.Body;
-        var tap = new UsageTap(body, response);
+        var tap = new UsageTap(body, response, model.Id, logger);
         response.Body = tap;
         try
         {

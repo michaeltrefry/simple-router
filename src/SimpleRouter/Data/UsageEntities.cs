@@ -10,6 +10,7 @@ public sealed class ModelPrice
     public decimal OutputPerMTok { get; set; }
     public decimal CacheReadPerMTok { get; set; }
     public decimal CacheWritePerMTok { get; set; }
+    public decimal CacheWrite1hPerMTok { get; set; }
 }
 
 /// <summary>One served Messages request: who asked, which model answered, its tokens and their priced cost.</summary>
@@ -26,6 +27,8 @@ public sealed class RequestUsage
     public long OutputTokens { get; set; }
     public long CacheReadTokens { get; set; }
     public long CacheWriteTokens { get; set; }
+    /// <summary>The part of <see cref="CacheWriteTokens"/> written with a one-hour lifetime.</summary>
+    public long CacheWrite1hTokens { get; set; }
     public long CostUsdMicros { get; set; }
     public long LatencyMs { get; set; }
     public string? Effort { get; set; }

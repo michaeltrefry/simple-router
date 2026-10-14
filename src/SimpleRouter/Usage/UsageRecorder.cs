@@ -30,14 +30,16 @@ public sealed class UsageRecorder(IDbContextFactory<RouterDbContext> dbFactory, 
                 OutputTokens = served.Usage.OutputTokens,
                 CacheReadTokens = served.Usage.CacheReadTokens,
                 CacheWriteTokens = served.Usage.CacheWriteTokens,
+                CacheWrite1hTokens = served.Usage.CacheWrite1hTokens,
                 CostUsdMicros = served.Usage.CostUsdMicros(price),
                 LatencyMs = (long)served.Latency.TotalMilliseconds,
                 Effort = served.Effort,
             });
             await db.SaveChangesAsync();
         }
-        catch (DbUpdateException e)
+        catch (Exception e)
         {
+            // Recording runs after the response is sent (or while a cut-off one unwinds); it must never fail the request.
             logger.LogWarning("Could not record the usage of a request served by {model}: {error}", served.Model.Id, e.GetType().Name);
         }
     }
@@ -46,8 +48,10 @@ public sealed class UsageRecorder(IDbContextFactory<RouterDbContext> dbFactory, 
     public async Task<(long Count, long CostUsdMicros)?> SessionCostAsync(string clientSessionId, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var rows = db.RequestUsages.Where(u => u.ClientSessionId == clientSessionId);
-        var count = await rows.LongCountAsync(ct);
-        return count == 0 ? null : (count, await rows.SumAsync(u => u.CostUsdMicros, ct));
+        var totals = await db.RequestUsages.Where(u => u.ClientSessionId == clientSessionId)
+            .GroupBy(u => u.ClientSessionId)
+            .Select(g => new { Count = g.LongCount(), Cost = g.Sum(u => u.CostUsdMicros) })
+            .FirstOrDefaultAsync(ct);
+        return totals is null ? null : (totals.Count, totals.Cost);
     }
 }

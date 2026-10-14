@@ -19,7 +19,8 @@ namespace SimpleRouter.Data.Migrations
                     InputPerMTok = table.Column<decimal>(type: "TEXT", nullable: false),
                     OutputPerMTok = table.Column<decimal>(type: "TEXT", nullable: false),
                     CacheReadPerMTok = table.Column<decimal>(type: "TEXT", nullable: false),
-                    CacheWritePerMTok = table.Column<decimal>(type: "TEXT", nullable: false)
+                    CacheWritePerMTok = table.Column<decimal>(type: "TEXT", nullable: false),
+                    CacheWrite1hPerMTok = table.Column<decimal>(type: "TEXT", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -42,6 +43,7 @@ namespace SimpleRouter.Data.Migrations
                     OutputTokens = table.Column<long>(type: "INTEGER", nullable: false),
                     CacheReadTokens = table.Column<long>(type: "INTEGER", nullable: false),
                     CacheWriteTokens = table.Column<long>(type: "INTEGER", nullable: false),
+                    CacheWrite1hTokens = table.Column<long>(type: "INTEGER", nullable: false),
                     CostUsdMicros = table.Column<long>(type: "INTEGER", nullable: false),
                     LatencyMs = table.Column<long>(type: "INTEGER", nullable: false),
                     Effort = table.Column<string>(type: "TEXT", nullable: true)
