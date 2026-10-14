@@ -66,7 +66,7 @@ public class MessagesPassthroughTests
         using var body = JsonDocument.Parse(sent.Body);
         var system = body.RootElement.GetProperty("system").EnumerateArray().Select(b => b.GetProperty("text").GetString());
         Assert.Equal([ClaudeIdentity.Text, "Be brief."], system);
-        Assert.Equal("claude-sonnet-4-5", body.RootElement.GetProperty("model").GetString());
+        Assert.Equal("claude-sonnet-5-5", body.RootElement.GetProperty("model").GetString());
         Assert.Equal("hi", body.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
     }
 
@@ -125,7 +125,7 @@ public class MessagesPassthroughTests
     }
 
     [Fact]
-    public async Task Count_tokens_is_proxied_without_rewriting_the_body()
+    public async Task Count_tokens_is_proxied_with_only_the_model_rewritten()
     {
         await using var host = await RouterHost.StartAsync();
         await host.LoginAsync(accessToken: "access-current");
@@ -139,7 +139,7 @@ public class MessagesPassthroughTests
         Assert.Equal(upstreamBody, await response.Content.ReadAsStringAsync());
         var sent = Assert.Single(host.Upstream.Requests);
         Assert.Equal($"{RouterHost.UpstreamBase}/v1/messages/count_tokens?beta=true", sent.Uri.ToString());
-        Assert.Equal(RequestBody, Encoding.UTF8.GetString(sent.Body));
+        Assert.Equal(RequestBody.Replace("claude-sonnet-4-5", "claude-sonnet-5-5"), Encoding.UTF8.GetString(sent.Body));
         Assert.Equal("Bearer access-current", sent.Headers["authorization"]);
         Assert.Contains(ClaudeUpstream.OAuthBeta, sent.Headers["anthropic-beta"]);
     }

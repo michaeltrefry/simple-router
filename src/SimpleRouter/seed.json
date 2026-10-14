@@ -1,0 +1,28 @@
+{
+  "defaultTier": "high",
+  "models": [
+    { "id": "claude-fable-5-1", "provider": "claude", "upstreamModelId": "claude-fable-5-1", "enabled": true },
+    { "id": "claude-opus-5-5", "provider": "claude", "upstreamModelId": "claude-opus-5-5", "enabled": true },
+    { "id": "claude-sonnet-5-5", "provider": "claude", "upstreamModelId": "claude-sonnet-5-5", "enabled": true },
+    { "id": "claude-haiku-5-5", "provider": "claude", "upstreamModelId": "claude-haiku-5-5", "enabled": true },
+    { "id": "gpt-6-astra", "provider": "codex", "upstreamModelId": "gpt-6-astra", "enabled": false },
+    { "id": "gpt-6.1-sol", "provider": "codex", "upstreamModelId": "gpt-6.1-sol", "enabled": false },
+    { "id": "gpt-5.6-terra", "provider": "codex", "upstreamModelId": "gpt-5.6-terra", "enabled": false },
+    { "id": "gpt-6-luna", "provider": "codex", "upstreamModelId": "gpt-6-luna", "enabled": false },
+    { "id": "mimo-2.6", "provider": "local", "upstreamModelId": "mimo-2.6", "enabled": false },
+    { "id": "qwen-3.8-flash-next", "provider": "local", "upstreamModelId": "qwen-3.8-flash-next", "enabled": false },
+    { "id": "qwen-3.8-37b", "provider": "local", "upstreamModelId": "qwen-3.8-37b", "enabled": false }
+  ],
+  "tiers": {
+    "max": [ "claude-fable-5-1", "gpt-6-astra" ],
+    "high": [ "claude-opus-5-5", "gpt-6.1-sol" ],
+    "mid": [ "claude-sonnet-5-5", "gpt-5.6-terra", "mimo-2.6", "qwen-3.8-flash-next" ],
+    "low": [ "claude-haiku-5-5", "gpt-6-luna", "qwen-3.8-37b", "mimo-2.6", "qwen-3.8-flash-next" ]
+  },
+  "aliases": [
+    { "pattern": "*fable*", "tier": "max" },
+    { "pattern": "*opus*", "tier": "high" },
+    { "pattern": "*sonnet*", "tier": "mid" },
+    { "pattern": "*haiku*", "tier": "low" }
+  ]
+}

@@ -17,6 +17,27 @@ namespace SimpleRouter.Data.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.12");
 
+            modelBuilder.Entity("SimpleRouter.Data.CatalogModel", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("UpstreamModelId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Models");
+                });
+
             modelBuilder.Entity("SimpleRouter.Data.ClaudeCredential", b =>
                 {
                     b.Property<int>("Id")
@@ -37,6 +58,31 @@ namespace SimpleRouter.Data.Migrations
                     b.ToTable("ClaudeCredentials");
                 });
 
+            modelBuilder.Entity("SimpleRouter.Data.SessionPin", b =>
+                {
+                    b.Property<string>("SessionKey")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Tier")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ClientSessionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ModelId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("SessionKey", "Tier");
+
+                    b.HasIndex("ClientSessionId");
+
+                    b.ToTable("SessionPins");
+                });
+
             modelBuilder.Entity("SimpleRouter.Data.Setting", b =>
                 {
                     b.Property<string>("Key")
@@ -49,6 +95,63 @@ namespace SimpleRouter.Data.Migrations
                     b.HasKey("Key");
 
                     b.ToTable("Settings");
+                });
+
+            modelBuilder.Entity("SimpleRouter.Data.TierAlias", b =>
+                {
+                    b.Property<string>("Pattern")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Tier")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Pattern");
+
+                    b.ToTable("TierAliases");
+                });
+
+            modelBuilder.Entity("SimpleRouter.Data.TierCursor", b =>
+                {
+                    b.Property<string>("Tier")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Next")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Tier");
+
+                    b.ToTable("TierCursors");
+                });
+
+            modelBuilder.Entity("SimpleRouter.Data.TierMember", b =>
+                {
+                    b.Property<string>("Tier")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ModelId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Tier", "ModelId");
+
+                    b.HasIndex("ModelId");
+
+                    b.ToTable("TierMembers");
+                });
+
+            modelBuilder.Entity("SimpleRouter.Data.TierMember", b =>
+                {
+                    b.HasOne("SimpleRouter.Data.CatalogModel", null)
+                        .WithMany()
+                        .HasForeignKey("ModelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 #pragma warning restore 612, 618
         }

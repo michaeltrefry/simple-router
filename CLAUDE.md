@@ -18,6 +18,7 @@ Any setting can be overridden with `--SimpleRouter:<Name>=<value>` or `SimpleRou
 - `Gateway/` — router-generated gateway key and `/v1` auth middleware.
 - `Claude/` — subscription OAuth (PKCE login, refresh), encrypted credential store, upstream forwarder.
 - `Api/` — endpoint mappings and Anthropic-shaped errors.
+- `Routing/` — tier resolution, session-key derivation, round-robin selection with persisted pins, catalog seeding (`seed.json`).
 - `Data/` — `RouterDbContext` and migrations.
 
 ## Conventions
