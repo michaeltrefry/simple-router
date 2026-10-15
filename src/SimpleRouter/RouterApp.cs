@@ -1,4 +1,3 @@
-using System.Net;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using SimpleRouter.Api;
@@ -33,6 +32,7 @@ public static class RouterApp
 
         var section = builder.Configuration.GetSection(RouterOptions.Section);
         var options = section.Get<RouterOptions>() ?? new RouterOptions();
+        var listenAddress = options.ResolveListenAddress();
         builder.Services.Configure<RouterOptions>(section);
         // The directory holds the key ring and encrypted tokens, so keep it owner-only.
         if (OperatingSystem.IsWindows())
@@ -48,7 +48,7 @@ public static class RouterApp
 
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
-            kestrel.Listen(IPAddress.Loopback, options.Port);
+            kestrel.Listen(listenAddress, options.Port);
             kestrel.Limits.MaxRequestBodySize = MaxRequestBodyBytes;
         });
 
@@ -100,6 +100,8 @@ public static class RouterApp
         configureServices?.Invoke(builder.Services);
 
         var app = builder.Build();
+        app.Lifetime.ApplicationStarted.Register(() => app.Logger.LogInformation(
+            "Listening on {Addresses}; the dashboard answers only this machine.", string.Join(", ", app.Urls)));
         app.UseMiddleware<DashboardHostFilter>();
         app.UseMiddleware<GatewayAuthMiddleware>();
         app.MapModelsEndpoints();
