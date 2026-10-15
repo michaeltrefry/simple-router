@@ -7,7 +7,8 @@ namespace SimpleRouter.Routing;
 
 /// <summary>
 /// Picks the model for a (session, tier): its existing pin if still eligible, else the next eligible tier member in
-/// round-robin order. Eligible means enabled, served by a registered upstream, logged in and present in the provider's
+/// round-robin order, unless another pin of the same client session in the tier holds an eligible model, which the new
+/// pin then shares without taking a turn. Eligible means enabled, served by a registered upstream, logged in and present in the provider's
 /// discovered model list (subscriptions), not cooling after a fault (<see cref="ModelCooldowns"/>), healthy (locals) and
 /// able to serve the request (<see cref="RequestNeeds"/>). Mid and Low give new sessions to eligible local models first and use subscriptions only when none is.
 /// Both the pin and the per-tier round-robin cursor are persisted, so assignments survive restarts.
@@ -73,15 +74,23 @@ public sealed class ModelSelector(
                 return pinned;
             }
 
-            var cursor = await db.TierCursors.FindAsync([tier], ct);
-            if (cursor is null)
+            var sibling = pin is null ? await SiblingAsync(db, tier, session, eligible, ct) : null;
+            if (sibling is not null)
             {
-                cursor = new TierCursor { Tier = tier };
-                db.TierCursors.Add(cursor);
+                model = sibling;
             }
-            var pool = NewSessionPool(tier, eligible);
-            model = pool[(int)(cursor.Next % pool.Count)];
-            cursor.Next++;
+            else
+            {
+                var cursor = await db.TierCursors.FindAsync([tier], ct);
+                if (cursor is null)
+                {
+                    cursor = new TierCursor { Tier = tier };
+                    db.TierCursors.Add(cursor);
+                }
+                var pool = NewSessionPool(tier, eligible);
+                model = pool[(int)(cursor.Next % pool.Count)];
+                cursor.Next++;
+            }
 
             if (pin is null)
             {
@@ -123,6 +132,10 @@ public sealed class ModelSelector(
         {
             return pinned;
         }
+        if (await SiblingAsync(db, tier, session, eligible, ct) is { } sibling)
+        {
+            return sibling;
+        }
         var cursor = await db.TierCursors.AsNoTracking().FirstOrDefaultAsync(c => c.Tier == tier, ct);
         var pool = NewSessionPool(tier, eligible);
         return pool[(int)((cursor?.Next ?? 0) % pool.Count)];
@@ -145,6 +158,25 @@ public sealed class ModelSelector(
     {
         var pin = await db.SessionPins.AsNoTracking().FirstOrDefaultAsync(p => p.SessionKey == session.Key && p.Tier == tier, ct);
         return eligible.FirstOrDefault(m => m.Id == pin?.ModelId);
+    }
+
+    /// <summary>
+    /// The eligible model of the client session's earliest other pin in <paramref name="tier"/>, so a session's side
+    /// requests and sub-agents start where it started and only its first pin takes a round-robin turn.
+    /// </summary>
+    private static async Task<CatalogModel?> SiblingAsync(RouterDbContext db, ModelTier tier, SessionIdentity session, List<CatalogModel> eligible, CancellationToken ct)
+    {
+        if (session.ClientSessionId is null)
+        {
+            return null;
+        }
+        // SQLite cannot order by DateTimeOffset, so the few sibling pins are ordered in memory.
+        var siblings = await db.SessionPins.AsNoTracking()
+            .Where(p => p.ClientSessionId == session.ClientSessionId && p.Tier == tier)
+            .ToListAsync(ct);
+        return siblings.OrderBy(p => p.CreatedAt)
+            .Select(p => eligible.FirstOrDefault(m => m.Id == p.ModelId))
+            .FirstOrDefault(m => m is not null);
     }
 
     /// <summary>

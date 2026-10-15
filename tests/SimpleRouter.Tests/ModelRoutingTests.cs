@@ -158,7 +158,7 @@ public class ModelRoutingTests
     }
 
     [Fact]
-    public async Task Same_session_id_with_different_first_user_messages_gets_separate_pins()
+    public async Task Same_session_id_with_different_first_user_messages_gets_separate_pins_on_one_model()
     {
         await using var host = await StartLoggedInAsync(RouterHost.NewDataDirectory(), TwoModelMidSeed);
 
@@ -166,9 +166,75 @@ public class ModelRoutingTests
         var subAgent = (await SendAsync(host, Message("claude-sonnet-5-5", firstUser: "sub-agent task", sessionId: "shared"))).Model;
         var mainAgain = (await SendAsync(host, Message("claude-sonnet-5-5", firstUser: "main task", sessionId: "shared"))).Model;
 
-        Assert.Equal("upstream-a", main);
-        Assert.Equal("upstream-b", subAgent);
-        Assert.Equal(main, mainAgain);
+        Assert.Equal(["upstream-a", "upstream-a", "upstream-a"], new[] { main, subAgent, mainAgain });
+        await using var db = await Db(host);
+        Assert.Equal(2, await db.SessionPins.CountAsync(p => p.ClientSessionId == "shared"));
+    }
+
+    [Fact]
+    public async Task Each_client_session_takes_one_round_robin_turn_and_its_side_request_shares_the_main_model()
+    {
+        await using var host = await StartLoggedInAsync(RouterHost.NewDataDirectory(), TwoModelMidSeed);
+        var sides = new List<string>();
+        var mains = new List<string>();
+
+        for (var i = 0; i < 3; i++)
+        {
+            sides.Add((await SendAsync(host, Message("claude-sonnet-5-5", firstUser: "generate a title", sessionId: $"cc{i}"))).Model);
+            mains.Add((await SendAsync(host, Message("claude-sonnet-5-5", firstUser: $"main task {i}", sessionId: $"cc{i}"))).Model);
+        }
+
+        Assert.Equal(["upstream-a", "upstream-b", "upstream-a"], mains);
+        Assert.Equal(mains, sides);
+        await using var db = await Db(host);
+        Assert.Equal(3, (await db.TierCursors.SingleAsync(c => c.Tier == ModelTier.Mid)).Next);
+    }
+
+    [Fact]
+    public async Task Concurrent_first_requests_of_one_client_session_with_different_first_messages_share_one_model_and_one_turn()
+    {
+        await using var host = await StartLoggedInAsync(RouterHost.NewDataDirectory(), TwoModelMidSeed);
+
+        var responses = await Task.WhenAll(Enumerable.Range(0, 8)
+            .Select(i => host.Client.SendAsync(Message("claude-sonnet-5-5", firstUser: $"first message {i}", sessionId: "burst"))));
+
+        Assert.All(responses, r => Assert.Equal(HttpStatusCode.OK, r.StatusCode));
+        var models = host.Upstream.Requests.Select(r => JsonDocument.Parse(r.Body).RootElement.GetProperty("model").GetString()).Distinct();
+        Assert.Equal(["upstream-a"], models);
+        await using var db = await Db(host);
+        Assert.Equal(8, await db.SessionPins.CountAsync(p => p.ClientSessionId == "burst"));
+        Assert.Equal(1, (await db.TierCursors.SingleAsync(c => c.Tier == ModelTier.Mid)).Next);
+    }
+
+    [Fact]
+    public async Task A_new_key_whose_sibling_model_is_cooling_takes_a_round_robin_turn()
+    {
+        await using var host = await StartLoggedInAsync(RouterHost.NewDataDirectory(), TwoModelMidSeed);
+        Assert.Equal("upstream-a", (await SendAsync(host, Message("claude-sonnet-5-5", firstUser: "main task", sessionId: "cooled"))).Model);
+        await using (var db = await Db(host))
+        {
+            db.ModelCooldowns.Add(new ModelCooldown { ModelId = "model-a", Until = DateTimeOffset.UtcNow.AddHours(1), Reason = FaultKind.Limited });
+            await db.SaveChangesAsync();
+        }
+
+        var side = (await SendAsync(host, Message("claude-sonnet-5-5", firstUser: "generate a title", sessionId: "cooled"))).Model;
+
+        Assert.Equal("upstream-b", side);
+        await using var check = await Db(host);
+        Assert.Equal(2, (await check.TierCursors.SingleAsync(c => c.Tier == ModelTier.Mid)).Next);
+    }
+
+    [Fact]
+    public async Task Without_a_client_session_id_each_new_key_takes_its_own_round_robin_turn()
+    {
+        await using var host = await StartLoggedInAsync(RouterHost.NewDataDirectory(), TwoModelMidSeed);
+
+        var first = (await SendAsync(host, Message("claude-sonnet-5-5", firstUser: "one"))).Model;
+        var second = (await SendAsync(host, Message("claude-sonnet-5-5", firstUser: "two"))).Model;
+
+        Assert.Equal(["upstream-a", "upstream-b"], new[] { first, second });
+        await using var db = await Db(host);
+        Assert.Equal(2, (await db.TierCursors.SingleAsync(c => c.Tier == ModelTier.Mid)).Next);
     }
 
     [Fact]
@@ -195,6 +261,17 @@ public class ModelRoutingTests
         Assert.Equal("upstream-a", first);
         Assert.Equal(("upstream-b", "mid"), counted);
         Assert.Equal("upstream-b", next);
+    }
+
+    [Fact]
+    public async Task Count_tokens_for_a_new_key_of_a_pinned_client_session_uses_its_model()
+    {
+        await using var host = await StartLoggedInAsync(RouterHost.NewDataDirectory(), TwoModelMidSeed);
+        Assert.Equal("upstream-a", (await SendAsync(host, Message("claude-sonnet-5-5", firstUser: "main task", sessionId: "s1"))).Model);
+
+        var counted = await SendAsync(host, Message("claude-sonnet-5-5", firstUser: "another task", sessionId: "s1", path: "/v1/messages/count_tokens"));
+
+        Assert.Equal(("upstream-a", "mid"), counted);
     }
 
     [Fact]

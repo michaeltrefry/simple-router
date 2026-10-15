@@ -56,6 +56,7 @@ public sealed class ModelDiscovery(
             if (error is null)
             {
                 logger.LogInformation("Fetched the {provider} model list: {count} models", provider, row.ModelIds!.Count);
+                await WarnUnlistedAsync(provider, row.ModelIds!, ct);
             }
             else
             {
@@ -67,6 +68,25 @@ public sealed class ModelDiscovery(
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>One warning naming the enabled models the fetched list leaves out; they stay ineligible until it lists them.</summary>
+    private async Task WarnUnlistedAsync(ProviderKind provider, List<string> listed, CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var missing = (await db.Models.AsNoTracking().Where(m => m.Provider == provider && m.Enabled).OrderBy(m => m.Id).ToListAsync(ct))
+            .Where(m => !Lists(listed, m.UpstreamModelId))
+            .Select(m => m.Id)
+            .ToList();
+        if (missing.Count == 0)
+        {
+            return;
+        }
+        var hint = provider == ProviderKind.Codex
+            ? " The Codex backend hides models that need a newer client; raise --SimpleRouter:Codex:ClientVersion if they should be listed."
+            : "";
+        logger.LogWarning("The {provider} model list does not include these configured models, so they are not selected: {models}.{hint}",
+            provider, string.Join(", ", missing), hint);
     }
 
     private async Task<ProviderModelList> SaveAsync(ProviderKind provider, IReadOnlyList<string>? ids, string? error, CancellationToken ct)

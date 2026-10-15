@@ -58,8 +58,11 @@ public sealed class CodexOptions
     /// <summary>Responses API base; requests go to <c>{ApiBaseUrl}/responses</c>.</summary>
     public string ApiBaseUrl { get; set; } = "https://chatgpt.com/backend-api/codex";
 
-    /// <summary>Sent as <c>client_version</c> on the models request; the backend hides models newer clients require.</summary>
-    public string ClientVersion { get; set; } = "0.147.0";
+    /// <summary>
+    /// Sent as <c>client_version</c> on the models request. The backend hides models that need a newer client, so the
+    /// default sits far ahead of real releases instead of pinning one that new models soon outgrow.
+    /// </summary>
+    public string ClientVersion { get; set; } = "99.0.0";
 
     /// <summary>How long <c>login codex</c> waits for the code to be entered.</summary>
     public TimeSpan DeviceCodeTimeout { get; set; } = TimeSpan.FromMinutes(15);
