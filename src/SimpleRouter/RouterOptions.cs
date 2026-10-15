@@ -17,6 +17,14 @@ public sealed class RouterOptions
     /// </summary>
     public string ListenAddress { get; set; } = "127.0.0.1";
 
+    /// <summary>
+    /// Port for HTTPS on <see cref="ListenAddress"/>, served only when a certificate exists (<c>cert create</c> or
+    /// <see cref="HttpsOptions.CertificatePath"/>); plain HTTP then stays on loopback. 0 picks a free port.
+    /// </summary>
+    public int HttpsPort { get; set; } = 8791;
+
+    public HttpsOptions Https { get; set; } = new();
+
     /// <summary>Holds the SQLite database and the Data Protection key ring.</summary>
     public string DataDirectory { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".simple-router");
@@ -55,6 +63,16 @@ public sealed class RouterOptions
     }
 
     public string SeedOverridePath => string.IsNullOrWhiteSpace(SeedOverrideFile) ? Path.Combine(DataDirectory, "seed.local.json") : SeedOverrideFile;
+}
+
+/// <summary>A certificate the user supplies instead of the one <c>cert create</c> generates.</summary>
+public sealed class HttpsOptions
+{
+    /// <summary>A PKCS#12 (<c>.pfx</c>/<c>.p12</c>) file holding the certificate and its private key.</summary>
+    public string? CertificatePath { get; set; }
+
+    /// <summary>The PKCS#12 file's password, if it has one.</summary>
+    public string? Password { get; set; }
 }
 
 /// <summary>Claude subscription endpoints; overridable so tests can point at fakes.</summary>

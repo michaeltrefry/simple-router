@@ -55,6 +55,7 @@ public sealed class RouterHost : IAsyncDisposable
         var args = new List<string>
         {
             "--SimpleRouter:Port=0",
+            "--SimpleRouter:HttpsPort=0",
             $"--SimpleRouter:DataDirectory={dataDirectory}",
             $"--SimpleRouter:Claude:ApiBaseUrl={UpstreamBase}",
             $"--SimpleRouter:Claude:TokenUrl={TokenUrl}",

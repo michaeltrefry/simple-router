@@ -1,3 +1,4 @@
+using System.Net;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
@@ -8,6 +9,7 @@ using SimpleRouter.Dashboard;
 using SimpleRouter.Dashboard.Components;
 using SimpleRouter.Data;
 using SimpleRouter.Gateway;
+using SimpleRouter.Https;
 using SimpleRouter.Local;
 using SimpleRouter.Routing;
 using SimpleRouter.Usage;
@@ -49,8 +51,16 @@ public static class RouterApp
 
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
-            kestrel.Listen(listenAddress, options.Port);
             kestrel.Limits.MaxRequestBodySize = MaxRequestBodyBytes;
+            var certificate = kestrel.ApplicationServices.GetRequiredService<ServerCertificate>().Current;
+            if (certificate is null)
+            {
+                kestrel.Listen(listenAddress, options.Port);
+                return;
+            }
+            // With HTTPS available, the gateway key never crosses the LAN in plain text: HTTP stays on this machine.
+            kestrel.Listen(IPAddress.IsLoopback(listenAddress) ? listenAddress : IPAddress.Loopback, options.Port);
+            kestrel.Listen(listenAddress, options.HttpsPort, listen => listen.UseHttps(certificate));
         });
 
         var databasePath = Path.Combine(options.DataDirectory, "simple-router.db");
@@ -61,6 +71,9 @@ public static class RouterApp
 
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<SecretProtector>();
+        builder.Services.AddSingleton(LanIdentity.System);
+        builder.Services.AddSingleton<ServerCertificate>();
+        builder.Services.AddSingleton<CertCreateCommand>();
         builder.Services.AddSingleton<GatewayKeyStore>();
         builder.Services.AddSingleton<ClaudeCredentialStore>();
         builder.Services.AddSingleton<ClaudeOAuthClient>();
@@ -105,8 +118,15 @@ public static class RouterApp
         configureServices?.Invoke(builder.Services);
 
         var app = builder.Build();
-        app.Lifetime.ApplicationStarted.Register(() => app.Logger.LogInformation(
-            "Listening on {Addresses}; the dashboard answers only this machine.", string.Join(", ", app.Urls)));
+        app.Lifetime.ApplicationStarted.Register(() =>
+        {
+            app.Logger.LogInformation("Listening on {Addresses}; the dashboard answers only this machine.", string.Join(", ", app.Urls));
+            var https = app.Urls.Select(u => new Uri(u)).FirstOrDefault(u => u.Scheme == Uri.UriSchemeHttps);
+            if (https is not null)
+            {
+                app.Services.GetRequiredService<ServerCertificate>().LogStatus(app.Logger, listenAddress, https.Port);
+            }
+        });
         app.UseMiddleware<DashboardHostFilter>();
         app.UseMiddleware<GatewayAuthMiddleware>();
         app.MapModelsEndpoints();

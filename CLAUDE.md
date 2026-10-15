@@ -7,7 +7,7 @@ Single-user .NET 10 localhost router exposing the Anthropic Messages API. One pr
 - Build: `dotnet build`
 - Test: `dotnet test` (unit: `tests/SimpleRouter.Tests`, end-to-end: `tests/SimpleRouter.AcceptanceTests`)
 - Run server: `dotnet run --project src/SimpleRouter`
-- CLI: `dotnet run --project src/SimpleRouter -- login claude` / `-- login codex` / `-- key show` / `-- models refresh`
+- CLI: `dotnet run --project src/SimpleRouter -- login claude` / `-- login codex` / `-- key show` / `-- models refresh` / `-- cert create`
 - New migration: `dotnet tool restore && dotnet ef migrations add <Name> --project src/SimpleRouter -o Data/Migrations`
 
 Any setting can be overridden with `--SimpleRouter:<Name>=<value>` or `SimpleRouter__<Name>` env vars (see `RouterOptions.cs`).
@@ -23,11 +23,12 @@ Any setting can be overridden with `--SimpleRouter:<Name>=<value>` or `SimpleRou
 - `Local/` — OpenAI-compatible local endpoints: Anthropic ⇄ Chat Completions translation (request, response, SSE stream), health checks.
 - `Usage/` — per-request usage recording (`UsageTap` reads token usage off the Anthropic-shaped response body, `UsageRecorder` prices it from `ModelPrices`) and the subscription usage report.
 - `Dashboard/` — Blazor Server monitoring UI at `/ui` (outside the `/v1` key check; `DashboardHostFilter` is the boundary: a loopback remote address taken from the TCP connection, plus a loopback `Host` and same-port `Origin`; forwarded headers are forced off in `RouterApp.Build` so `X-Forwarded-For` can never rewrite that address; a local reverse proxy would make every request look local, so do not add one or re-enable forwarded headers). Panels derive from `LivePanel` and reload when `DashboardEvents` fires (usage recorded, pin assigned, cooldown written) or on a slow timer. `/ui/settings` (`SettingsPage`, `Components/Settings/`) edits the catalog through `CatalogSettings` over the Blazor circuit (no mutation HTTP endpoints); routing reads the catalog, tier rules and prices from the database per request, and local edits re-probe `LocalHealth`. Renaming a local model (`CatalogSettings.RenameAsync`) moves every row keyed by its model ID in one transaction; a new model-keyed table must be added there. Never render tokens, keys or bodies.
+- `Https/` — `cert create` (`CertCreateCommand`) and `ServerCertificate`: a self-signed RSA server leaf (`RouterCertificateFactory`, critical `CA:false`, never a CA) naming `LanIdentity`'s host names and addresses, its PKCS#12 encrypted with `SecretProtector` in an owner-only file under `<data>/certs`, public `router.crt` beside it; or the configured `Https:CertificatePath`. With a certificate `RouterApp` serves HTTPS on `ListenAddress:HttpsPort` and keeps plain HTTP on loopback.
 - `Data/` — `RouterDbContext` and migrations.
 
 ## Conventions
 
-- Bind loopback by default; `ListenAddress` opts into the LAN for `/v1` only, so never let a non-`/v1` path skip the dashboard filter. Secrets at rest go through `SecretProtector` (ASP.NET Data Protection).
+- Bind loopback by default; `ListenAddress` opts into the LAN for `/v1` only, so never let a non-`/v1` path skip the dashboard filter; when a certificate exists, plain HTTP stays on loopback. Secrets at rest go through `SecretProtector` (ASP.NET Data Protection).
 - Never log secrets, tokens, keys or request/response bodies.
 - Real local endpoint hosts and keys belong in `seed.local.json` (gitignored), never in `seed.json`.
 - This repo is public: no private identifiers (emails, org names, account IDs, personal paths) in code, commits, fixtures or PR text.
