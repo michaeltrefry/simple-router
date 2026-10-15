@@ -39,7 +39,7 @@ By default the router listens only on this machine (`127.0.0.1`). To let another
 3. On the other machine use `http://<LAN IP>:8790` as the base URL, with the same gateway key.
 4. The first time the router listens beyond loopback, macOS may ask whether to allow `dotnet` (or `SimpleRouter`) to accept incoming network connections: choose **Allow**, or the other machine's requests time out. To change the answer later: System Settings → Network → Firewall → Options.
 
-The traffic is plain HTTP: the gateway key and every prompt and response cross the network unencrypted, so use this only on a network you trust, and regenerate the key on the [settings page](#dashboard) if it may have been seen. Only `/v1` is reachable from other machines; the dashboard answers only connections that come from this machine (`403` otherwise), whatever `Host` or `Origin` a request claims.
+The traffic is plain HTTP: the gateway key and every prompt and response cross the network unencrypted, so use this only on a network you trust, and regenerate the key on the [settings page](#dashboard) if it may have been seen. Only `/v1` is reachable from other machines; the dashboard answers only connections that come from this machine (`403` otherwise), whatever `Host`, `Origin` or `X-Forwarded-For` a request claims. The address is taken from the TCP connection itself: forwarded headers are deliberately disabled (even with `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true`). Do not put a reverse proxy in front of the router: a proxy on this machine would make every request it relays look local.
 
 ## Routing
 
@@ -118,7 +118,7 @@ A database seeded before effort mappings existed takes them from `seed.json` onc
 - Refresh model lists: fetches every logged-in subscription's model list now, as `models refresh` does.
 - The price table, and regenerating the gateway key (the old key is rejected immediately; copy the new one from the page or run `key show`).
 
-The dashboard needs no key: it answers only connections from this machine (by their remote address, even when the router [listens on the LAN](#from-other-machines-on-the-local-network)) that name a loopback `Host`, so treat access to this machine as access to the router.
+The dashboard needs no key: it answers only connections from this machine (by the TCP connection's remote address, never a forwarded header, even when the router [listens on the LAN](#from-other-machines-on-the-local-network)) that name a loopback `Host`, so treat access to this machine as access to the router.
 
 ## Usage and cost
 

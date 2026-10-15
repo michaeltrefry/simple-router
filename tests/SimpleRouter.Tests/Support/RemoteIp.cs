@@ -15,7 +15,8 @@ public sealed class RemoteIp : IStartupFilter
 {
     public const string Header = "X-Test-Remote-Ip";
 
-    public static void Register(IServiceCollection services) => services.AddSingleton<IStartupFilter, RemoteIp>();
+    /// <summary>Registers first, so the address is set outermost, ahead of any framework startup filter such as forwarded headers.</summary>
+    public static void Register(IServiceCollection services) => services.Insert(0, ServiceDescriptor.Singleton<IStartupFilter, RemoteIp>());
 
     public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
     {

@@ -80,7 +80,8 @@ public class LanAccessTests
     [Fact]
     public async Task A_lan_client_is_served_on_v1_with_the_gateway_key_and_refused_without_it()
     {
-        await using var host = await StartAsync();
+        await using var host = await StartAsync("--SimpleRouter:ListenAddress=0.0.0.0");
+        Assert.Equal("0.0.0.0", Assert.Single(Addresses(host)).Host);
         await host.LoginAsync();
         host.Upstream.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -130,5 +131,18 @@ public class LanAccessTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains($"Listening on {host.Client.BaseAddress!.ToString().TrimEnd('/')}", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task A_lan_client_cannot_claim_loopback_through_x_forwarded_for_even_with_the_framework_switch_on()
+    {
+        await using var host = await StartAsync("--FORWARDEDHEADERS_ENABLED=true");
+
+        using var request = FromLan(HttpMethod.Get, "/ui");
+        request.Headers.Host = $"localhost:{host.Client.BaseAddress!.Port}";
+        request.Headers.Add("X-Forwarded-For", "127.0.0.1");
+        using var response = await host.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 }

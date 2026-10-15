@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using SimpleRouter.Api;
 using SimpleRouter.Claude;
@@ -96,6 +97,10 @@ public static class RouterApp
         builder.Services.AddHttpClient(CodexUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
         builder.Services.AddHttpClient(LocalUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
         builder.Services.AddHttpClient(LocalHealth.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(5));
+
+        // The dashboard trusts only a loopback remote address, so the framework's FORWARDEDHEADERS_ENABLED switch must
+        // not let any client rewrite that address with X-Forwarded-For.
+        builder.Services.PostConfigure<ForwardedHeadersOptions>(o => o.ForwardedHeaders = ForwardedHeaders.None);
 
         configureServices?.Invoke(builder.Services);
 
