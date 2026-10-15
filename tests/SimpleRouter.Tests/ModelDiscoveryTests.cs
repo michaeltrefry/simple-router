@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -137,10 +138,60 @@ public class ModelDiscoveryTests
         Assert.Equal(["gpt-a", "gpt-b"], stored.ModelIds);
         var sent = Assert.Single(host.Codex.Requests);
         Assert.Equal(HttpMethod.Get, sent.Method);
-        Assert.Equal($"{RouterHost.CodexApiBase}/models?client_version=0.147.0", sent.Uri.ToString());
+        Assert.Equal($"{RouterHost.CodexApiBase}/models?client_version=99.0.0", sent.Uri.ToString());
         Assert.Equal("Bearer codex-access-current", sent.Headers["authorization"]);
         Assert.Equal("acct-test", sent.Headers["chatgpt-account-id"]);
         Assert.Equal("codex_cli_rs", sent.Headers["originator"]);
+    }
+
+    [Fact]
+    public async Task The_codex_client_version_is_configurable()
+    {
+        var host = await RouterHost.StartInAsync(RouterHost.NewDataDirectory(), "--SimpleRouter:Codex:ClientVersion=1.2.3");
+        await using (host)
+        {
+            await host.LoginCodexAsync();
+            host.Codex.Respond = _ => Json(CodexList("gpt-a"));
+
+            await Discovery(host).RefreshAsync(ProviderKind.Codex);
+
+            Assert.Equal($"{RouterHost.CodexApiBase}/models?client_version=1.2.3", Assert.Single(host.Codex.Requests).Uri.ToString());
+        }
+    }
+
+    [Fact]
+    public async Task A_fetched_list_missing_configured_models_names_them_in_one_warning()
+    {
+        await using var host = await StartAsync();
+        await host.LoginCodexAsync();
+        var logs = new CapturingLogger();
+        var discovery = new ModelDiscovery(host.Services.GetServices<IModelListSource>(), host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>(),
+            TimeProvider.System, logs);
+
+        host.Codex.Respond = _ => Json(CodexList("codex-a"));
+        await discovery.RefreshAsync(ProviderKind.Codex);
+        Assert.Empty(logs.Warnings);
+
+        host.Codex.Respond = _ => Json(CodexList("gpt-newer"));
+        await discovery.RefreshAsync(ProviderKind.Codex);
+
+        var warning = Assert.Single(logs.Warnings);
+        Assert.Contains("codex-a", warning);
+        Assert.Contains("SimpleRouter:Codex:ClientVersion", warning);
+    }
+
+    private sealed class CapturingLogger : ILogger<ModelDiscovery>
+    {
+        public List<string> Warnings { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning)
+            {
+                Warnings.Add(formatter(state, exception));
+            }
+        }
     }
 
     [Fact]
