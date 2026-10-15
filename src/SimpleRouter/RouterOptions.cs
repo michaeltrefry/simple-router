@@ -114,6 +114,12 @@ public sealed class LimitOptions
     /// </summary>
     public TimeSpan StreamStartGrace { get; set; } = TimeSpan.FromSeconds(15);
 
+    /// <summary>
+    /// After <c>message_start</c>, a translated stream that has written nothing to the client for this long sends an
+    /// Anthropic <c>ping</c>, so a client that drops silent streams keeps waiting; zero disables pings.
+    /// </summary>
+    public TimeSpan KeepAliveInterval { get; set; } = TimeSpan.FromSeconds(15);
+
     /// <summary>A usage limit or rate limit (429) without a reported reset.</summary>
     public TimeSpan LimitCooldown { get; set; } = TimeSpan.FromSeconds(60);
 
