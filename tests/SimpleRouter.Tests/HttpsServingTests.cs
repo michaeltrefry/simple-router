@@ -58,6 +58,31 @@ public class HttpsServingTests
         Assert.Equal(Uri.UriSchemeHttp, host.Client.BaseAddress!.Scheme);
     }
 
+    [Fact]
+    public async Task A_self_signed_certificate_from_an_older_cert_create_is_still_served_and_startup_says_to_recreate_it()
+    {
+        var dataDirectory = RouterHost.NewDataDirectory();
+        await using (var first = await StartAsync(dataDirectory, null, []))
+        {
+            first.KeepData = true;
+            using var old = HttpsSupport.SelfSignedLeaf("localhost", TimeSpan.FromDays(90));
+            var certs = Path.Combine(dataDirectory, "certs");
+            Directory.CreateDirectory(certs);
+            await File.WriteAllTextAsync(Path.Combine(certs, "router.pfx.protected"),
+                first.Services.GetRequiredService<SecretProtector>().Protect(Convert.ToBase64String(old.Export(X509ContentType.Pkcs12))));
+            await File.WriteAllTextAsync(Path.Combine(certs, "router.crt"), old.ExportCertificatePem());
+        }
+        var logs = new CapturingLogs();
+        await using var host = await StartAsync(dataDirectory, s => s.AddLogging(b => b.AddProvider(logs)), []);
+        using var trusted = HttpsSupport.PublicCertificate(dataDirectory);
+        using var https = HttpsSupport.PinnedClient(trusted, HttpsSupport.HttpsPort(host), "localhost");
+
+        using var response = await GetAsync(https, "/v1/models", LanClient, await host.GatewayKeyAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(logs.Warnings, w => w.Contains("self-signed") && w.Contains("cert create") && w.Contains("router.crt"));
+    }
+
     [Theory]
     [InlineData("192.168.1.20")]
     [InlineData("[fd00::20]")]

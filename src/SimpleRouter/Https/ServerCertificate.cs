@@ -8,9 +8,10 @@ namespace SimpleRouter.Https;
 
 /// <summary>
 /// The certificate HTTPS is served with: the configured PKCS#12 file when <c>Https:CertificatePath</c> is set, else the
-/// one <c>cert create</c> stored in the data directory, else none (HTTPS off). The generated private key is stored as a
-/// PKCS#12 blob encrypted with <see cref="SecretProtector"/> in an owner-only file; only the public certificate is
-/// exported as <c>router.crt</c>. Disposing releases the loaded key (on macOS, a temporary keychain).
+/// leaf <c>cert create</c> stored in the data directory, else none (HTTPS off). The generated leaf, its private key and
+/// the public CA certificate are stored as a PKCS#12 blob encrypted with <see cref="SecretProtector"/> in an owner-only
+/// file; the CA's private key is never stored. The CA certificate, which clients trust, is exported as <c>router.crt</c>
+/// and the leaf as <c>router-leaf.crt</c>. Disposing releases the loaded key (on macOS, a temporary keychain).
 /// </summary>
 public sealed class ServerCertificate : IDisposable
 {
@@ -20,7 +21,7 @@ public sealed class ServerCertificate : IDisposable
     private readonly SecretProtector _protector;
     private readonly LanIdentity _lan;
     private readonly TimeProvider _time;
-    private readonly Lazy<X509Certificate2?> _current;
+    private readonly Lazy<(X509Certificate2 Leaf, X509Certificate2? Authority)?> _current;
 
     public ServerCertificate(IOptions<RouterOptions> options, SecretProtector protector, LanIdentity lan, TimeProvider time)
     {
@@ -28,49 +29,66 @@ public sealed class ServerCertificate : IDisposable
         _protector = protector;
         _lan = lan;
         _time = time;
-        _current = new Lazy<X509Certificate2?>(Load);
+        _current = new Lazy<(X509Certificate2 Leaf, X509Certificate2? Authority)?>(Load);
     }
 
     public string Folder => Path.Combine(_options.DataDirectory, "certs");
     public string PublicPath => Path.Combine(Folder, "router.crt");
+    public string LeafPath => Path.Combine(Folder, "router-leaf.crt");
     public string KeyPath => Path.Combine(Folder, "router.pfx.protected");
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_options.Https.CertificatePath);
 
     /// <summary>The certificate to serve HTTPS with, or null when there is none.</summary>
-    public X509Certificate2? Current => _current.Value;
+    public X509Certificate2? Current => _current.Value?.Leaf;
+
+    /// <summary>The generated CA that signed <see cref="Current"/> (exported as <c>router.crt</c>), or null.</summary>
+    public X509Certificate2? Authority => _current.Value?.Authority;
+
+    /// <summary>
+    /// A generated certificate from before the router made its own CA: a self-signed end-entity, which Claude Code
+    /// rejects whatever the client trusts.
+    /// </summary>
+    public bool IsSelfSignedLeaf => !IsConfigured && Current is not null && Authority is null;
 
     /// <summary>Where <see cref="Current"/> came from, for display; never the key.</summary>
     public string Source => IsConfigured ? _options.Https.CertificatePath! : PublicPath;
 
-    /// <summary>Generates a certificate for this machine's current names and addresses, replacing any earlier one.</summary>
-    public (X509Certificate2 Certificate, bool Replaced) Create()
+    /// <summary>
+    /// Generates a CA and a leaf for this machine's current names and addresses, replacing any earlier pair. Returns
+    /// public copies of both.
+    /// </summary>
+    public (X509Certificate2 Leaf, X509Certificate2 Authority, bool Replaced) Create()
     {
         var replaced = File.Exists(KeyPath);
-        using var certificate = RouterCertificateFactory.Create(
+        var (leaf, authority) = RouterCertificateFactory.Create(
             $"Simple Router ({_lan.BonjourName})",
             [.. _lan.DnsNames(), "localhost"],
             [.. _lan.LanAddresses(), IPAddress.Loopback, IPAddress.IPv6Loopback],
             _time.GetUtcNow());
-
-        CreateOwnerOnlyFolder(Folder);
-        var pfx = certificate.Export(X509ContentType.Pkcs12);
-        try
+        using (leaf)
         {
-            WriteOwnerOnly(KeyPath, _protector.Protect(Convert.ToBase64String(pfx)));
+            CreateOwnerOnlyFolder(Folder);
+            var pfx = new X509Certificate2Collection { leaf, authority }.Export(X509ContentType.Pkcs12)!;
+            try
+            {
+                WriteOwnerOnly(KeyPath, _protector.Protect(Convert.ToBase64String(pfx)));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(pfx);
+            }
+            File.WriteAllText(PublicPath, authority.ExportCertificatePem() + "\n");
+            File.WriteAllText(LeafPath, leaf.ExportCertificatePem() + "\n");
+            return (X509CertificateLoader.LoadCertificate(leaf.RawData), authority, replaced);
         }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(pfx);
-        }
-        File.WriteAllText(PublicPath, certificate.ExportCertificatePem() + "\n");
-        return (X509CertificateLoader.LoadCertificate(certificate.RawData), replaced);
     }
 
     public void Dispose()
     {
-        if (_current.IsValueCreated)
+        if (_current.IsValueCreated && _current.Value is { } loaded)
         {
-            _current.Value?.Dispose();
+            loaded.Leaf.Dispose();
+            loaded.Authority?.Dispose();
         }
     }
 
@@ -104,7 +122,11 @@ public sealed class ServerCertificate : IDisposable
             return;
         }
         logger.LogInformation("HTTPS certificate {Source} (SHA-256 {Fingerprint}) expires {Expiry:yyyy-MM-dd}.",
-            Source, Fingerprint(certificate), certificate.NotAfter);
+            Source, Fingerprint(Authority ?? certificate), certificate.NotAfter);
+        if (IsSelfSignedLeaf)
+        {
+            logger.LogWarning("The HTTPS certificate is a self-signed server certificate from an older 'cert create', which Claude Code and Claude Desktop reject; run 'simple-router cert create' and import the new router.crt (now a CA) on the other machines.");
+        }
         if (ExpiresSoon(certificate))
         {
             logger.LogWarning("The HTTPS certificate expires {Expiry:yyyy-MM-dd}; run 'simple-router cert create' and re-import router.crt on the other machines.",
@@ -126,11 +148,11 @@ public sealed class ServerCertificate : IDisposable
     public static string Fingerprint(X509Certificate2 certificate) =>
         string.Join(':', Convert.ToHexString(certificate.GetCertHash(HashAlgorithmName.SHA256)).Chunk(2).Select(c => new string(c)));
 
-    private X509Certificate2? Load()
+    private (X509Certificate2 Leaf, X509Certificate2? Authority)? Load()
     {
         if (IsConfigured)
         {
-            return LoadConfigured(_options.Https.CertificatePath!, _options.Https.Password);
+            return (LoadConfigured(_options.Https.CertificatePath!, _options.Https.Password), null);
         }
         if (!File.Exists(KeyPath))
         {
@@ -140,7 +162,8 @@ public sealed class ServerCertificate : IDisposable
         try
         {
             pfx = Convert.FromBase64String(_protector.Unprotect(File.ReadAllText(KeyPath)));
-            return X509CertificateLoader.LoadPkcs12(pfx, null);
+            var stored = X509CertificateLoader.LoadPkcs12Collection(pfx, null);
+            return (stored.Single(c => c.HasPrivateKey), stored.SingleOrDefault(c => !c.HasPrivateKey));
         }
         catch (Exception e) when (e is CryptographicException or FormatException)
         {

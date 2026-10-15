@@ -1,11 +1,13 @@
+using System.Formats.Asn1;
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Microsoft.Extensions.DependencyInjection;
 using SimpleRouter.Tests.Support;
 
 namespace SimpleRouter.Tests;
 
-/// <summary><c>cert create</c>: a self-signed server certificate other machines can trust for the router's LAN names.</summary>
+/// <summary><c>cert create</c>: a single-use CA other machines trust and the server certificate it signed for the router's LAN names.</summary>
 public class CertificateCreationTests
 {
     private const string ServerAuth = "1.3.6.1.5.5.7.3.1";
@@ -22,7 +24,7 @@ public class CertificateCreationTests
     public async Task The_certificate_names_this_machine_and_its_lan_and_loopback_addresses()
     {
         var (dataDirectory, _) = await CreateAsync();
-        using var certificate = HttpsSupport.PublicCertificate(dataDirectory);
+        using var certificate = HttpsSupport.LeafCertificate(dataDirectory);
 
         var names = certificate.Extensions.OfType<X509SubjectAlternativeNameExtension>().Single();
 
@@ -34,10 +36,11 @@ public class CertificateCreationTests
     }
 
     [Fact]
-    public async Task The_certificate_is_a_self_signed_rsa_server_leaf_within_the_platform_lifetime_cap()
+    public async Task The_server_certificate_is_an_rsa_leaf_signed_by_the_exported_ca_within_the_platform_lifetime_cap()
     {
         var (dataDirectory, _) = await CreateAsync();
-        using var certificate = HttpsSupport.PublicCertificate(dataDirectory);
+        using var authority = HttpsSupport.PublicCertificate(dataDirectory);
+        using var certificate = HttpsSupport.LeafCertificate(dataDirectory);
 
         var usage = certificate.Extensions.OfType<X509KeyUsageExtension>().Single();
         Assert.True(usage.Critical);
@@ -46,11 +49,69 @@ public class CertificateCreationTests
         var constraints = certificate.Extensions.OfType<X509BasicConstraintsExtension>().Single();
         Assert.True(constraints.Critical);
         Assert.False(constraints.CertificateAuthority);
-        Assert.Equal(certificate.SubjectName.RawData, certificate.IssuerName.RawData);
+        Assert.Equal(authority.SubjectName.RawData, certificate.IssuerName.RawData);
+        Assert.NotEqual(certificate.SubjectName.RawData, certificate.IssuerName.RawData);
+        Assert.Equal(
+            authority.Extensions.OfType<X509SubjectKeyIdentifierExtension>().Single().SubjectKeyIdentifierBytes.ToArray(),
+            certificate.Extensions.OfType<X509AuthorityKeyIdentifierExtension>().Single().KeyIdentifier!.Value.ToArray());
+        Assert.True(BuildsTo(authority, certificate));
         Assert.Equal(2048, certificate.GetRSAPublicKey()!.KeySize);
         Assert.InRange((certificate.NotAfter - certificate.NotBefore).TotalDays, 390, 398);
         Assert.Equal("1.2.840.113549.1.1.11", certificate.SignatureAlgorithm.Value); // sha256WithRSAEncryption
         Directory.Delete(dataDirectory, recursive: true);
+    }
+
+    [Fact]
+    public async Task The_ca_may_sign_only_end_entities_for_dns_names_it_permits_and_permits_every_name_the_leaf_carries()
+    {
+        var (dataDirectory, _) = await CreateAsync();
+        using var authority = HttpsSupport.PublicCertificate(dataDirectory);
+        using var leaf = HttpsSupport.LeafCertificate(dataDirectory);
+
+        var constraints = authority.Extensions.OfType<X509BasicConstraintsExtension>().Single();
+        Assert.True(constraints.Critical);
+        Assert.True(constraints.CertificateAuthority);
+        Assert.True(constraints.HasPathLengthConstraint);
+        Assert.Equal(0, constraints.PathLengthConstraint);
+        var usage = authority.Extensions.OfType<X509KeyUsageExtension>().Single();
+        Assert.True(usage.Critical);
+        Assert.Equal(X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, usage.KeyUsages);
+        Assert.Equal(authority.SubjectName.RawData, authority.IssuerName.RawData);
+        Assert.InRange((authority.NotAfter - authority.NotBefore).TotalDays, 390, 398);
+        var nameConstraints = authority.Extensions.Single(e => e.Oid!.Value == NameConstraintsOid);
+        Assert.True(nameConstraints.Critical);
+        var permitted = PermittedDnsSubtrees(nameConstraints);
+        Assert.Equal(["localhost", ".local", "testhost"], permitted);
+        Assert.All(leaf.Extensions.OfType<X509SubjectAlternativeNameExtension>().Single().EnumerateDnsNames(),
+            name => Assert.Contains(permitted, subtree => Permits(subtree, name)));
+        Directory.Delete(dataDirectory, recursive: true);
+    }
+
+    [Fact]
+    public async Task The_ca_private_key_is_never_stored_and_the_encrypted_file_holds_only_the_server_key()
+    {
+        var (dataDirectory, _) = await CreateAsync();
+        using var authority = HttpsSupport.PublicCertificate(dataDirectory);
+        using var leaf = HttpsSupport.LeafCertificate(dataDirectory);
+        using var authorityKey = authority.GetRSAPublicKey()!;
+        var modulus = authorityKey.ExportParameters(false).Modulus!;
+        await using var host = await RouterHost.StartInAsync(dataDirectory);
+        var protector = host.Services.GetRequiredService<SecretProtector>();
+
+        var keyBearing = new List<X509Certificate2>();
+        foreach (var file in Directory.EnumerateFiles(dataDirectory, "*", SearchOption.AllDirectories).Where(f => !f.EndsWith("-shm") && !f.EndsWith("-wal")))
+        {
+            var bytes = await File.ReadAllBytesAsync(file);
+            Assert.False(bytes.AsSpan().IndexOf(modulus) >= 0, $"{file} holds the CA key material");
+            Assert.DoesNotContain("PRIVATE KEY", System.Text.Encoding.Latin1.GetString(bytes));
+            if (TryUnprotectPkcs12(protector, bytes) is { } stored)
+            {
+                keyBearing.AddRange(stored.Where(c => c.HasPrivateKey));
+                Assert.Contains(stored, c => c.Thumbprint == authority.Thumbprint && !c.HasPrivateKey);
+            }
+        }
+
+        Assert.Equal([leaf.Thumbprint], keyBearing.Select(c => c.Thumbprint));
     }
 
     [Fact]
@@ -78,12 +139,15 @@ public class CertificateCreationTests
     {
         var dataDirectory = RouterHost.NewDataDirectory();
         var (exitCode, output) = await HttpsSupport.CreateCertificateAsync(dataDirectory, HttpsSupport.Lan("dhcp-name.lan", "Studio"));
-        using var certificate = HttpsSupport.PublicCertificate(dataDirectory);
+        using var certificate = HttpsSupport.LeafCertificate(dataDirectory);
 
         Assert.Equal(0, exitCode);
         Assert.Equal(["studio.local", "dhcp-name", "dhcp-name.lan", "localhost"],
             certificate.Extensions.OfType<X509SubjectAlternativeNameExtension>().Single().EnumerateDnsNames());
         Assert.Contains("https://studio.local:8791", output);
+        using var authority = HttpsSupport.PublicCertificate(dataDirectory);
+        Assert.Equal(["localhost", ".local", "dhcp-name", "dhcp-name.lan"],
+            PermittedDnsSubtrees(authority.Extensions.Single(e => e.Oid!.Value == NameConstraintsOid)));
         Directory.Delete(dataDirectory, recursive: true);
     }
 
@@ -137,5 +201,52 @@ public class CertificateCreationTests
         Assert.Contains("Replaced", output);
         Assert.Contains("re-import", output);
         Directory.Delete(dataDirectory, recursive: true);
+    }
+
+    private const string NameConstraintsOid = "2.5.29.30";
+
+    /// <summary>The permitted dNSName subtrees, failing on any other kind of name or on excluded subtrees.</summary>
+    private static List<string> PermittedDnsSubtrees(X509Extension nameConstraints)
+    {
+        var reader = new AsnReader(nameConstraints.RawData, AsnEncodingRules.DER);
+        var sequence = reader.ReadSequence();
+        reader.ThrowIfNotEmpty();
+        var subtrees = sequence.ReadSequence(new Asn1Tag(TagClass.ContextSpecific, 0));
+        sequence.ThrowIfNotEmpty();
+        var names = new List<string>();
+        while (subtrees.HasData)
+        {
+            var subtree = subtrees.ReadSequence();
+            Assert.Equal(new Asn1Tag(TagClass.ContextSpecific, 2), subtree.PeekTag());
+            names.Add(subtree.ReadCharacterString(UniversalTagNumber.IA5String, new Asn1Tag(TagClass.ContextSpecific, 2)));
+            subtree.ThrowIfNotEmpty();
+        }
+        return names;
+    }
+
+    /// <summary>RFC 5280 dNSName matching: the name itself or any name under it; a leading dot permits only names under it.</summary>
+    private static bool Permits(string subtree, string name) => subtree.StartsWith('.')
+        ? name.EndsWith(subtree, StringComparison.OrdinalIgnoreCase)
+        : name.Equals(subtree, StringComparison.OrdinalIgnoreCase) || name.EndsWith("." + subtree, StringComparison.OrdinalIgnoreCase);
+
+    private static bool BuildsTo(X509Certificate2 anchor, X509Certificate2 leaf)
+    {
+        using var chain = new X509Chain();
+        chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+        chain.ChainPolicy.CustomTrustStore.Add(anchor);
+        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        return chain.Build(leaf) && chain.ChainElements.Count == 2;
+    }
+
+    private static X509Certificate2Collection? TryUnprotectPkcs12(SecretProtector protector, byte[] bytes)
+    {
+        try
+        {
+            return X509CertificateLoader.LoadPkcs12Collection(Convert.FromBase64String(protector.Unprotect(System.Text.Encoding.UTF8.GetString(bytes))), null);
+        }
+        catch (Exception e) when (e is System.Security.Cryptography.CryptographicException or FormatException)
+        {
+            return null;
+        }
     }
 }

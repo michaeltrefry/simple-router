@@ -33,8 +33,12 @@ public static class HttpsSupport
         return (exitCode, output.ToString());
     }
 
+    /// <summary>The exported CA certificate other machines trust.</summary>
     public static X509Certificate2 PublicCertificate(string dataDirectory) =>
         X509CertificateLoader.LoadCertificateFromFile(Path.Combine(dataDirectory, "certs", "router.crt"));
+
+    public static X509Certificate2 LeafCertificate(string dataDirectory) =>
+        X509CertificateLoader.LoadCertificateFromFile(Path.Combine(dataDirectory, "certs", "router-leaf.crt"));
 
     public static IReadOnlyList<Uri> Addresses(RouterHost host) =>
         host.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Select(a => new Uri(a)).ToList();
@@ -93,17 +97,24 @@ public static class HttpsSupport
     /// <summary>A password-protected PKCS#12 file for <c>localhost</c>, standing in for a certificate the user brings.</summary>
     public static (string Path, X509Certificate2 Public) UserCertificate(string directory, string password, TimeSpan lifetime)
     {
-        using var key = RSA.Create(2048);
-        var request = new CertificateRequest("CN=user-supplied", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        var names = new SubjectAlternativeNameBuilder();
-        names.AddDnsName("localhost");
-        names.AddIpAddress(IPAddress.Loopback);
-        request.CertificateExtensions.Add(names.Build());
-        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], false));
-        using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.Add(lifetime));
+        using var certificate = SelfSignedLeaf("user-supplied", lifetime);
         Directory.CreateDirectory(directory);
         var path = System.IO.Path.Combine(directory, $"user-{Guid.NewGuid():N}.pfx");
         File.WriteAllBytes(path, certificate.Export(X509ContentType.Pkcs12, password));
         return (path, X509CertificateLoader.LoadCertificate(certificate.RawData));
+    }
+
+    /// <summary>A self-signed end-entity certificate with its key for <c>localhost</c> and <c>127.0.0.1</c>.</summary>
+    public static X509Certificate2 SelfSignedLeaf(string commonName, TimeSpan lifetime)
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest($"CN={commonName}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var names = new SubjectAlternativeNameBuilder();
+        names.AddDnsName("localhost");
+        names.AddIpAddress(IPAddress.Loopback);
+        request.CertificateExtensions.Add(names.Build());
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], false));
+        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.Add(lifetime));
     }
 }
