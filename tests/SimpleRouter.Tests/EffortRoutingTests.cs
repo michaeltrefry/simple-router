@@ -40,12 +40,12 @@ public class EffortRoutingTests
     }
 
     private const string QwenOverride = """
-        { "models": [ { "id": "qwen-3.8-37b", "enabled": true, "baseUrl": "http://qwen.test/v1",
+        { "models": [ { "id": "qwen3.8-27b", "enabled": true, "baseUrl": "http://qwen.test/v1",
             "effort": { "mode": "chat_template_kwargs", "levels": [ "low", "medium" ],
                         "kwargs": { "low": { "enable_thinking": false }, "medium": { "enable_thinking": true, "depth": 2 } } } } ] }
         """;
 
-    /// <summary>The seeded catalog with qwen-3.8-37b enabled by the local override file and given a kwargs mapping.</summary>
+    /// <summary>The seeded catalog with qwen3.8-27b enabled by the local override file and given a kwargs mapping.</summary>
     private static async Task<RouterHost> StartAsync(string? dataDirectory = null, string overrides = QwenOverride, ILoggerProvider? logs = null)
     {
         dataDirectory ??= RouterHost.NewDataDirectory();
@@ -100,7 +100,7 @@ public class EffortRoutingTests
         Assert.Equal("""{"summary":"auto","effort":"high"}""", codex["reasoning"]!.ToJsonString());
 
         var chat = JsonNode.Parse(host.Local.Requests.Single(r => r.Uri.AbsolutePath.EndsWith("/chat/completions")).Body)!;
-        Assert.Equal("qwen-3.8-37b", chat["model"]!.GetValue<string>());
+        Assert.Equal("qwen3.8-27b", chat["model"]!.GetValue<string>());
         // high is not listed for this model; medium is the nearest level it accepts.
         Assert.Equal("""{"enable_thinking":true,"depth":2}""", chat["chat_template_kwargs"]!.ToJsonString());
         Assert.Null(chat["reasoning_effort"]);
@@ -176,7 +176,7 @@ public class EffortRoutingTests
     public async Task A_local_model_told_no_effort_records_none()
     {
         await using var host = await StartAsync(overrides: """
-            { "models": [ { "id": "qwen-3.8-37b", "enabled": true, "baseUrl": "http://qwen.test/v1", "effort": { "mode": "none", "levels": [ "low" ] } } ] }
+            { "models": [ { "id": "qwen3.8-27b", "enabled": true, "baseUrl": "http://qwen.test/v1", "effort": { "mode": "none", "levels": [ "low" ] } } ] }
             """);
 
         await SendAsync(host, Message("qwen-high", "low", "high"));
@@ -232,10 +232,10 @@ public class EffortRoutingTests
     public async Task An_override_with_a_kwargs_level_missing_fails_startup()
     {
         var e = await FailsStartupAsync(dataDirectory => StartAsync(dataDirectory, overrides: """
-            { "models": [ { "id": "qwen-3.8-37b", "effort": { "mode": "chat_template_kwargs", "levels": [ "none", "high" ],
+            { "models": [ { "id": "qwen3.8-27b", "effort": { "mode": "chat_template_kwargs", "levels": [ "none", "high" ],
                 "kwargs": { "none": { "enable_thinking": false } } } } ] }
             """));
-        Assert.Contains("qwen-3.8-37b", e.Message);
+        Assert.Contains("qwen3.8-27b", e.Message);
     }
 
     [Fact]
@@ -304,5 +304,20 @@ public class EffortRoutingTests
             }
         }
         public void Dispose() { }
+    }
+
+    [Fact]
+    public async Task The_seed_serves_qwen3_8_27b_in_the_low_tier_and_no_longer_lists_qwen_3_8_37b()
+    {
+        await using var host = await StartAsync();
+        await using var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
+
+        var model = await db.Models.AsNoTracking().SingleAsync(m => m.Id == "qwen3.8-27b");
+        Assert.Equal(ProviderKind.Local, model.Provider);
+        Assert.Equal("qwen3.8-27b", model.UpstreamModelId);
+        Assert.Equal([ModelTier.Low], await db.TierMembers.Where(m => m.ModelId == "qwen3.8-27b").Select(m => m.Tier).ToListAsync());
+        Assert.NotNull(await db.ModelPrices.FindAsync("qwen3.8-27b"));
+        Assert.False(await db.Models.AnyAsync(m => m.Id == "qwen-3.8-37b"));
+        Assert.False(await db.ModelPrices.AnyAsync(p => p.ModelId == "qwen-3.8-37b"));
     }
 }

@@ -2,6 +2,7 @@ using System.Net;
 using Bunit;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using SimpleRouter.Dashboard;
 using SimpleRouter.Data;
 using SimpleRouter.Routing;
 using SimpleRouter.Tests.Support;
@@ -253,5 +254,109 @@ public class SettingsFormsTests
         Assert.Contains("cannot be negative", cut.Find("#price-settings .form-error").TextContent);
         await using var check = await DbAsync(host);
         Assert.Null(await check.ModelPrices.FindAsync("codex-c"));
+    }
+
+    private static async Task<long> CursorAsync(RouterHost host, ModelTier tier)
+    {
+        await using var db = await DbAsync(host);
+        return (await db.TierCursors.AsNoTracking().SingleAsync(c => c.Tier == tier)).Next;
+    }
+
+    [Fact]
+    public async Task Renaming_a_local_model_moves_its_tiers_price_cooldown_usage_and_pins_so_its_session_stays_on_it()
+    {
+        var (host, healthy) = await StartAsync();
+        await using var _host = host;
+        healthy.Add("seeded.test");
+        using var context = Context(host);
+        var cut = Render(context);
+        await cut.Row("model-settings", "local-seeded").QuerySelector(".edit")!.ClickAsync(new());
+        await cut.ChangeAsync("#local-model-form .tier-mid", true);
+        await cut.ClickAsync("#local-model-form .save");
+        var settings = host.Services.GetRequiredService<CatalogSettings>();
+        await settings.AddToTierAsync(ModelTier.Mid, "claude-b");
+        await settings.SavePriceAsync(new PriceRow("local-seeded", 1, 2, 0.1m, 0.2m, 0.3m));
+        Assert.Equal("seeded.test", await ServedByAsync(host, Message("pinned-local", "mid")));
+        var deadline = DateTime.UtcNow + Wait;
+        while (DateTime.UtcNow < deadline)
+        {
+            await using var db = await DbAsync(host);
+            if (await db.RequestUsages.AnyAsync(u => u.ModelId == "local-seeded"))
+            {
+                db.ModelCooldowns.Add(new ModelCooldown { ModelId = "local-seeded", Until = DateTimeOffset.UtcNow.AddHours(-1), Reason = FaultKind.Limited });
+                // Left over for an ID that is not in the catalog; the moved rows replace them.
+                db.ModelCooldowns.Add(new ModelCooldown { ModelId = "local-renamed", Until = DateTimeOffset.UtcNow.AddHours(-2), Reason = FaultKind.Overloaded });
+                db.ModelPrices.Add(new ModelPrice { ModelId = "local-renamed", InputPerMTok = 9 });
+                await db.SaveChangesAsync();
+                break;
+            }
+            await Task.Delay(50);
+        }
+        var cursor = await CursorAsync(host, ModelTier.Mid);
+
+        await cut.Row("model-settings", "local-seeded").QuerySelector(".edit")!.ClickAsync(new());
+        Assert.False(cut.Find("#local-model-form .id").HasAttribute("disabled"));
+        await cut.ChangeAsync("#local-model-form .id", "  local-renamed  ");
+        await cut.ClickAsync("#local-model-form .save");
+
+        Assert.Empty(cut.FindAll("#local-model-form"));
+        Assert.Empty(cut.FindAll("#model-settings [data-model='local-seeded']"));
+        Assert.Contains("mid", cut.Row("model-settings", "local-renamed").TextContent);
+        await using (var db = await DbAsync(host))
+        {
+            Assert.Null(await db.Models.FindAsync("local-seeded"));
+            Assert.Equal(["claude-a", "local-renamed", "claude-b"],
+                await db.TierMembers.Where(m => m.Tier == ModelTier.Mid).OrderBy(m => m.Position).Select(m => m.ModelId).ToListAsync());
+            var price = await db.ModelPrices.AsNoTracking().SingleAsync(p => p.ModelId == "local-renamed");
+            Assert.Equal((1m, 2m, 0.3m), (price.InputPerMTok, price.OutputPerMTok, price.CacheWrite1hPerMTok));
+            Assert.False(await db.ModelPrices.AnyAsync(p => p.ModelId == "local-seeded"));
+            var cooldown = await db.ModelCooldowns.AsNoTracking().SingleAsync();
+            Assert.Equal(("local-renamed", FaultKind.Limited), (cooldown.ModelId, cooldown.Reason));
+            Assert.Equal(["local-renamed"], await db.SessionPins.Where(p => p.Tier == ModelTier.Mid).Select(p => p.ModelId).ToListAsync());
+            Assert.NotEmpty(await db.RequestUsages.Where(u => u.ModelId == "local-renamed").ToListAsync());
+            Assert.False(await db.RequestUsages.AnyAsync(u => u.ModelId == "local-seeded"));
+        }
+
+        Assert.Equal("seeded.test", await ServedByAsync(host, Message("pinned-local", "mid")));
+        Assert.Equal("Bearer seeded-secret-key", host.Local.Requests[^1].Headers["authorization"]);
+        Assert.Equal(cursor, await CursorAsync(host, ModelTier.Mid));
+    }
+
+    [Fact]
+    public async Task A_rename_to_a_taken_invalid_or_subscription_id_is_refused_and_subscription_ids_cannot_be_renamed()
+    {
+        var (host, healthy) = await StartAsync();
+        await using var _host = host;
+        healthy.Add("seeded.test");
+        await using (var db = await DbAsync(host))
+        {
+            db.ProviderModelLists.Add(new ProviderModelList { Provider = ProviderKind.Claude, ModelIds = ["listed-sub"], CheckedAt = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
+        using var context = Context(host);
+        var cut = Render(context);
+        await cut.Row("model-settings", "local-seeded").QuerySelector(".edit")!.ClickAsync(new());
+
+        foreach (var (id, error) in new[]
+        {
+            ("CLAUDE-B", "already exists"),
+            ("bad id!", "must be 1-200"),
+            ("   ", "must be 1-200"),
+            ("Listed-Sub", "subscription model ID"),
+        })
+        {
+            await cut.ChangeAsync("#local-model-form .id", id);
+            await cut.ClickAsync("#local-model-form .save");
+            Assert.Contains(error, cut.Find("#local-model-form [role=alert]").TextContent);
+        }
+
+        var settings = host.Services.GetRequiredService<CatalogSettings>();
+        var sub = new LocalModelInput("renamed-sub", "upstream-a", "http://seeded.test/v1", null, true, false, true, null, [ModelTier.High]);
+        var refused = await Assert.ThrowsAsync<SettingsException>(() => settings.SaveLocalModelAsync(sub, existingId: "claude-a"));
+        Assert.Contains("not a local model", refused.Message);
+
+        await using var check = await DbAsync(host);
+        Assert.Equal(["claude-a", "claude-b", "codex-c", "local-seeded"], await check.Models.OrderBy(m => m.Id).Select(m => m.Id).ToListAsync());
+        Assert.Equal(["claude-a", "claude-b"], await check.TierMembers.Where(m => m.Tier == ModelTier.High).OrderBy(m => m.Position).Select(m => m.ModelId).ToListAsync());
     }
 }

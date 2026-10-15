@@ -13,14 +13,14 @@
       "effort": { "mode": "reasoning_effort", "levels": [ "low", "medium", "high" ] } },
     { "id": "qwen-3.8-flash-next", "provider": "local", "upstreamModelId": "qwen-3.8-flash-next", "enabled": false, "baseUrl": "http://localhost:8002/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false,
       "effort": { "mode": "chat_template_kwargs", "levels": [ "none", "high" ], "kwargs": { "none": { "enable_thinking": false }, "high": { "enable_thinking": true } } } },
-    { "id": "qwen-3.8-37b", "provider": "local", "upstreamModelId": "qwen-3.8-37b", "enabled": false, "baseUrl": "http://localhost:8003/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false,
+    { "id": "qwen3.8-27b", "provider": "local", "upstreamModelId": "qwen3.8-27b", "enabled": false, "baseUrl": "http://localhost:8003/v1", "contextWindow": 131072, "supportsTools": true, "supportsVision": false,
       "effort": { "mode": "chat_template_kwargs", "levels": [ "none", "high" ], "kwargs": { "none": { "enable_thinking": false }, "high": { "enable_thinking": true } } } }
   ],
   "tiers": {
     "max": [ "claude-fable-5-1", "gpt-6-astra" ],
     "high": [ "claude-opus-5-5", "gpt-6.1-sol" ],
     "mid": [ "claude-sonnet-5-5", "gpt-5.6-terra", "mimo-2.6", "qwen-3.8-flash-next" ],
-    "low": [ "claude-haiku-5-5", "gpt-6-luna", "qwen-3.8-37b", "mimo-2.6", "qwen-3.8-flash-next" ]
+    "low": [ "claude-haiku-5-5", "gpt-6-luna", "qwen3.8-27b", "mimo-2.6", "qwen-3.8-flash-next" ]
   },
   "pricesNote": "USD per million tokens (input, output, cacheRead, cacheWrite, and cacheWrite1h for one-hour cache writes, defaulting to cacheWrite). ESTIMATES of public list prices, used only to report spend; edit the ModelPrices table to change them. Codex prices are guesses (subscription models have no published per-token price). Local models cost $0.",
   "prices": {
@@ -34,7 +34,7 @@
     "gpt-6-luna": { "input": 0.25, "output": 2.00, "cacheRead": 0.025, "cacheWrite": 0.25 },
     "mimo-2.6": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
     "qwen-3.8-flash-next": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-    "qwen-3.8-37b": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+    "qwen3.8-27b": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
   },
   "aliases": [
     { "pattern": "*fable*", "tier": "max" },
