@@ -1,4 +1,7 @@
 @inherits LayoutComponentBase
+@using Microsoft.AspNetCore.Hosting.Server
+@using Microsoft.AspNetCore.Hosting.Server.Features
+@inject IServer Server
 
 <div class="shell">
     <aside class="sidebar">
@@ -7,6 +10,7 @@
             <NavLink class="nav-item" href="ui" Match="NavLinkMatch.All">Monitoring</NavLink>
             <NavLink class="nav-item" href="ui/settings">Settings</NavLink>
         </nav>
+        <p class="listen" id="listen-address">Listening on @string.Join(", ", Server.Features.Get<IServerAddressesFeature>()?.Addresses ?? [])</p>
     </aside>
     <main class="content">
         @Body

@@ -27,8 +27,16 @@ public sealed class RouterHost : IAsyncDisposable
         Upstream = upstream;
         OAuth = oauth;
         Local = local;
-        Client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+        Client = new HttpClient { BaseAddress = Reachable(new Uri(app.Urls.First())) };
     }
+
+    /// <summary>A wildcard bind (0.0.0.0, ::) cannot be dialled; reach it through loopback.</summary>
+    private static Uri Reachable(Uri bound) => bound.Host switch
+    {
+        "0.0.0.0" => new UriBuilder(bound) { Host = "127.0.0.1" }.Uri,
+        "[::]" => new UriBuilder(bound) { Host = "[::1]" }.Uri,
+        _ => bound,
+    };
 
     public string DataDirectory { get; }
     public FakeHandler Upstream { get; }

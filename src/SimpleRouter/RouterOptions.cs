@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Sockets;
+
 namespace SimpleRouter;
 
 /// <summary>Configuration bound from the <c>SimpleRouter</c> section.</summary>
@@ -5,8 +8,14 @@ public sealed class RouterOptions
 {
     public const string Section = "SimpleRouter";
 
-    /// <summary>Loopback port the router listens on. 0 picks a free port.</summary>
+    /// <summary>Port the router listens on. 0 picks a free port.</summary>
     public int Port { get; set; } = 8790;
+
+    /// <summary>
+    /// IP address the router listens on: loopback by default; <c>0.0.0.0</c>, <c>::</c> or a LAN IP lets other machines
+    /// reach <c>/v1</c>. The dashboard answers only connections from this machine whatever the bind.
+    /// </summary>
+    public string ListenAddress { get; set; } = "127.0.0.1";
 
     /// <summary>Holds the SQLite database and the Data Protection key ring.</summary>
     public string DataDirectory { get; set; } =
@@ -31,6 +40,19 @@ public sealed class RouterOptions
     public LocalOptions Local { get; set; } = new();
 
     public LimitOptions Limits { get; set; } = new();
+
+    /// <summary>Parses <see cref="ListenAddress"/>; throws when it is not an IP address.</summary>
+    public IPAddress ResolveListenAddress()
+    {
+        var text = ListenAddress?.Trim() ?? "";
+        // TryParse also accepts shorthand IPv4 ("192.168.1" is 192.168.0.1), which is almost always a typo here.
+        if (IPAddress.TryParse(text, out var address) && (address.AddressFamily != AddressFamily.InterNetwork || text.Count(c => c == '.') == 3))
+        {
+            return address;
+        }
+        throw new InvalidOperationException(
+            $"{Section}:ListenAddress '{ListenAddress}' is not an IP address; use 127.0.0.1 (this machine only), 0.0.0.0, :: or one of this machine's LAN IPs.");
+    }
 
     public string SeedOverridePath => string.IsNullOrWhiteSpace(SeedOverrideFile) ? Path.Combine(DataDirectory, "seed.local.json") : SeedOverrideFile;
 }
