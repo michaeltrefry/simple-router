@@ -3,28 +3,35 @@ using Microsoft.Extensions.Options;
 
 namespace SimpleRouter.Https;
 
-/// <summary><c>cert create</c>: generates the router's HTTPS certificate and prints how to trust it on other machines.</summary>
+/// <summary><c>cert create</c>: generates the router's CA and HTTPS certificate and prints how to trust the CA on other machines.</summary>
 public sealed class CertCreateCommand(ServerCertificate certificates, LanIdentity lan, IOptions<RouterOptions> options)
 {
     public async Task<int> RunAsync(TextWriter output)
     {
-        var (certificate, replaced) = certificates.Create();
-        using (certificate)
+        var (leaf, authority, replaced) = certificates.Create();
+        using (leaf)
+        using (authority)
         {
-            var names = certificate.Extensions.OfType<X509SubjectAlternativeNameExtension>().Single();
+            var names = leaf.Extensions.OfType<X509SubjectAlternativeNameExtension>().Single();
             var lanUrl = lan.LanUrl(options.Value.HttpsPort);
             await output.WriteLineAsync($"""
-                {(replaced ? "Replaced the router's HTTPS certificate. Machines that trusted the old one must re-import router.crt." : "Created the router's HTTPS certificate.")}
-                  Certificate (copy to other machines): {certificates.PublicPath}
-                  Private key (encrypted, stays here):  {certificates.KeyPath}
+                {(replaced ? "Replaced the router's HTTPS certificate. Machines that trusted the old router.crt must re-import the new one." : "Created the router's HTTPS certificate.")}
+                  CA certificate (copy to other machines and trust): {certificates.PublicPath}
+                  Server certificate (for diagnostics):              {certificates.LeafPath}
+                  Server private key (encrypted, stays here):        {certificates.KeyPath}
                   Names: {string.Join(", ", names.EnumerateDnsNames().Concat(names.EnumerateIPAddresses().Select(a => a.ToString())))}
-                  SHA-256 fingerprint: {ServerCertificate.Fingerprint(certificate)}
-                  Expires: {certificate.NotAfter:yyyy-MM-dd}
+                  router.crt SHA-256 fingerprint: {ServerCertificate.Fingerprint(authority)}
+                  Expires: {leaf.NotAfter:yyyy-MM-dd}
+
+                router.crt is a CA made for this router alone: it signed only this server certificate and its private key
+                was discarded, so it can never sign anything else, and it is limited to the names
+                {string.Join(", ", RouterCertificateFactory.PermittedDnsSubtrees(names.EnumerateDnsNames()))} (plus IP addresses).
 
                 Trust it on each machine that connects (compare the fingerprint after copying router.crt):
                   macOS:   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain router.crt
                            (or Keychain Access: drag router.crt into the System keychain, open it, Trust > Always Trust)
                   Windows: certutil -addstore Root router.crt   (in an administrator prompt; for this user only: certutil -user -addstore Root router.crt)
+                  Claude Code / Claude Desktop also read NODE_EXTRA_CA_CERTS=/path/to/router.crt
 
                 Restart the router with --SimpleRouter:ListenAddress=0.0.0.0 and point LAN clients at {lanUrl}.
                 Run 'cert create' again after this machine's name or IP changes.
