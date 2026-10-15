@@ -41,7 +41,7 @@ public sealed partial class CatalogSettings(
         return new SettingsSnapshot(
             models.Select(m => new ModelRow(m.Id, m.Provider, m.UpstreamModelId, m.Enabled, m.BaseUrl, m.ProtectedApiKey is not null,
                 m.ContextWindow, m.SupportsTools, m.SupportsVision, m.Effort,
-                tiers.Where(t => t.Value.Contains(m.Id)).Select(t => t.Key).ToList())).ToList(),
+                tiers.Where(t => t.Value.Contains(m.Id)).Select(t => t.Key).ToList(), m.MaxPromptTokens)).ToList(),
             tiers,
             aliases.Select(a => new AliasRow(a.Pattern, a.Tier)).ToList(),
             ModelTiers.TryParse(setting?.Value, out var defaultTier) ? defaultTier : ModelTier.High,
@@ -212,6 +212,10 @@ public sealed partial class CatalogSettings(
         {
             throw new SettingsException("Context window must be a positive number of tokens, or empty for unlimited.");
         }
+        if (input.MaxPromptTokens is <= 0)
+        {
+            throw new SettingsException("Max prompt must be a positive number of tokens, or empty for no cap.");
+        }
         ValidEffort(input.Effort, id);
 
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
@@ -244,6 +248,7 @@ public sealed partial class CatalogSettings(
             model.UpstreamModelId = upstreamId;
             model.BaseUrl = baseUrl;
             model.ContextWindow = input.ContextWindow;
+            model.MaxPromptTokens = input.MaxPromptTokens;
             model.SupportsTools = input.SupportsTools;
             model.SupportsVision = input.SupportsVision;
             model.Enabled = input.Enabled;

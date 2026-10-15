@@ -114,7 +114,8 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
 
     /// <summary>
     /// Sends <paramref name="call"/> with the response body tapped for the token usage it reports. A response cut off
-    /// after it started (the client went away mid-stream) still spent tokens, so it is passed to <paramref name="recordCutOff"/>.
+    /// after it started (the client went away mid-stream) still spent tokens, so it is passed to <paramref name="recordCutOff"/>,
+    /// as is a request the client abandoned before anything was written, with status 499.
     /// </summary>
     private async Task<(UpstreamResult Result, TokenUsage? Usage)> SendTappedAsync(Data.CatalogModel model, UpstreamCall call,
         Func<TokenUsage?, Task> recordCutOff)
@@ -136,6 +137,13 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         catch (Exception) when (response.HasStarted)
         {
             await recordCutOff(tap.Usage());
+            throw;
+        }
+        catch (Exception) when (call.Context.RequestAborted.IsCancellationRequested)
+        {
+            // The client gave up before the first byte (a timeout on a slow model); recorded so it is not invisible.
+            response.StatusCode = StatusCodes.Status499ClientClosedRequest;
+            await recordCutOff(null);
             throw;
         }
         finally

@@ -35,6 +35,7 @@ public sealed class CatalogSeeder(
         string? BaseUrl = null,
         string? ApiKey = null,
         int? ContextWindow = null,
+        int? MaxPromptTokens = null,
         bool SupportsTools = true,
         bool SupportsVision = false,
         EffortMapping? Effort = null);
@@ -54,6 +55,7 @@ public sealed class CatalogSeeder(
         string? UpstreamModelId,
         string? ApiKey,
         int? ContextWindow,
+        int? MaxPromptTokens,
         bool? SupportsTools,
         bool? SupportsVision,
         EffortMapping? Effort);
@@ -111,6 +113,7 @@ public sealed class CatalogSeeder(
             BaseUrl = m.BaseUrl,
             ProtectedApiKey = Protect(m.ApiKey),
             ContextWindow = m.ContextWindow,
+            MaxPromptTokens = m.MaxPromptTokens,
             SupportsTools = m.SupportsTools,
             SupportsVision = m.SupportsVision,
             Effort = m.Effort,
@@ -215,6 +218,7 @@ public sealed class CatalogSeeder(
             model.UpstreamModelId = o.UpstreamModelId ?? model.UpstreamModelId;
             model.ProtectedApiKey = o.ApiKey is null ? model.ProtectedApiKey : Protect(o.ApiKey);
             model.ContextWindow = o.ContextWindow ?? model.ContextWindow;
+            model.MaxPromptTokens = o.MaxPromptTokens ?? model.MaxPromptTokens;
             model.SupportsTools = o.SupportsTools ?? model.SupportsTools;
             model.SupportsVision = o.SupportsVision ?? model.SupportsVision;
             model.Effort = o.Effort ?? model.Effort;

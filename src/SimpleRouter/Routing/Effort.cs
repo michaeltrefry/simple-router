@@ -28,12 +28,14 @@ public enum EffortMode
 
 /// <summary>
 /// A model's supported effort levels and, for a local model, how they are sent. <see cref="Kwargs"/> maps a level name to
-/// the <c>chat_template_kwargs</c> object sent for it.
+/// the <c>chat_template_kwargs</c> object sent for it. <see cref="Default"/> is what a local model is sent when the client
+/// says nothing, for servers whose own default (e.g. thinking) is unwanted.
 /// </summary>
 public sealed record EffortMapping(
     EffortMode Mode = EffortMode.None,
     EffortLevel[]? Levels = null,
-    Dictionary<string, JsonObject>? Kwargs = null);
+    Dictionary<string, JsonObject>? Kwargs = null,
+    EffortLevel? Default = null);
 
 public static class Effort
 {
@@ -84,19 +86,17 @@ public static class Effort
 
     /// <summary>
     /// The level <paramref name="model"/> is sent for <paramref name="request"/>: the client's own for Claude (the request
-    /// passes through), the nearest listed level for Codex and for a local model whose mapping sends one, else null.
+    /// passes through), the nearest listed level for Codex and for a local model whose mapping sends one (a local model
+    /// without the client's level gets its mapping's default), else null.
     /// </summary>
     public static EffortLevel? Sent(JsonObject request, Data.CatalogModel model)
     {
-        if (Read(request) is not { } requested)
-        {
-            return null;
-        }
+        var requested = Read(request);
         return model.Provider switch
         {
             ProviderKind.Claude => requested,
-            ProviderKind.Codex => Nearest(requested, model.Effort?.Levels is { Length: > 0 } levels ? levels : CodexDefaultLevels),
-            _ => model.Effort is { Mode: not EffortMode.None } mapping ? Nearest(requested, mapping.Levels ?? []) : null,
+            ProviderKind.Codex => requested is { } level ? Nearest(level, model.Effort?.Levels is { Length: > 0 } levels ? levels : CodexDefaultLevels) : null,
+            _ => model.Effort is { Mode: not EffortMode.None } mapping && (requested ?? mapping.Default) is { } local ? Nearest(local, mapping.Levels ?? []) : null,
         };
     }
 

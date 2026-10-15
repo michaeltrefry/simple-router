@@ -95,6 +95,8 @@ public class SettingsFormsTests
         await cut.ChangeAsync("#local-model-form .tier-low", true);
         await cut.ChangeAsync("#local-model-form .effort-mode", "reasoning_effort");
         await cut.ChangeAsync("#local-model-form .effort-levels", "high, low");
+        await cut.ChangeAsync("#local-model-form .effort-default", "low");
+        await cut.ChangeAsync("#local-model-form .max-prompt", "20000");
         await cut.ClickAsync("#local-model-form .save");
 
         Assert.Equal("seeded.test", await ServedByAsync(host, Message("kept-key", "low")));
@@ -104,6 +106,8 @@ public class SettingsFormsTests
             var model = await db.Models.AsNoTracking().SingleAsync(m => m.Id == "local-seeded");
             Assert.Equal([EffortLevel.Low, EffortLevel.High], model.Effort!.Levels);
             Assert.Equal(EffortMode.ReasoningEffort, model.Effort.Mode);
+            Assert.Equal(EffortLevel.Low, model.Effort.Default);
+            Assert.Equal(20000, model.MaxPromptTokens);
         }
 
         await cut.Row("model-settings", "local-seeded").QuerySelector(".edit")!.ClickAsync(new());
@@ -113,6 +117,9 @@ public class SettingsFormsTests
         Assert.Equal("(not set)", cut.Find("#local-model-form .api-key-state").TextContent);
         Assert.Equal("seeded.test", await ServedByAsync(host, Message("cleared-key", "low")));
         Assert.False(host.Local.Requests[^1].Headers.ContainsKey("authorization"));
+        // Re-saving through the form keeps what it loaded.
+        Assert.Equal("20000", cut.Find("#local-model-form .max-prompt").GetAttribute("value"));
+        Assert.Equal("low", cut.Find("#local-model-form .effort-default").GetAttribute("value"));
     }
 
     [Fact]

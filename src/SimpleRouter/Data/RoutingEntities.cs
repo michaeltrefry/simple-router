@@ -19,6 +19,12 @@ public sealed class CatalogModel
     /// <summary>Total tokens (prompt plus output) the model accepts; null means unlimited.</summary>
     public int? ContextWindow { get; set; }
 
+    /// <summary>
+    /// The largest estimated prompt this model is given; a larger one goes to the tier's next model. Unlike
+    /// <see cref="ContextWindow"/> it leaves <c>max_tokens</c> alone, so a slow local model can shed long prompts. Null means no cap.
+    /// </summary>
+    public int? MaxPromptTokens { get; set; }
+
     public bool SupportsTools { get; set; } = true;
     public bool SupportsVision { get; set; }
 
