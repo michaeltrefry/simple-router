@@ -264,7 +264,14 @@ public sealed partial class CatalogSettings(
                 await AddMemberAsync(db, tier, id, ct);
             }
             await db.SaveChangesAsync(ct);
-            await transaction.CommitAsync(ct);
+            if (existingId is not null && existingId != id)
+            {
+                await health.RenameAsync(existingId, id, () => transaction.CommitAsync(ct), ct);
+            }
+            else
+            {
+                await transaction.CommitAsync(ct);
+            }
         }
         await ChangedAsync(true, ct);
     }

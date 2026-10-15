@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using SimpleRouter.Dashboard;
 using SimpleRouter.Data;
+using SimpleRouter.Local;
 using SimpleRouter.Routing;
 using SimpleRouter.Tests.Support;
 using static SimpleRouter.Tests.Support.SettingsHarness;
@@ -358,5 +359,46 @@ public class SettingsFormsTests
         await using var check = await DbAsync(host);
         Assert.Equal(["claude-a", "claude-b", "codex-c", "local-seeded"], await check.Models.OrderBy(m => m.Id).Select(m => m.Id).ToListAsync());
         Assert.Equal(["claude-a", "claude-b"], await check.TierMembers.Where(m => m.Tier == ModelTier.High).OrderBy(m => m.Position).Select(m => m.ModelId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task A_renamed_healthy_model_keeps_its_pinned_session_while_the_re_probe_is_still_running()
+    {
+        var (host, healthy) = await StartAsync();
+        await using var _host = host;
+        healthy.Add("seeded.test");
+        var settings = host.Services.GetRequiredService<CatalogSettings>();
+        var row = (await settings.GetAsync()).Models.Single(m => m.Id == "local-seeded");
+        var input = new LocalModelInput("local-seeded", row.UpstreamModelId, row.BaseUrl!, row.ContextWindow, row.SupportsTools,
+            row.SupportsVision, row.Enabled, row.Effort, [ModelTier.Mid]);
+        await settings.SaveLocalModelAsync(input, existingId: "local-seeded");
+        Assert.Equal("seeded.test", await ServedByAsync(host, Message("pinned-local", "mid")));
+        var cursor = await CursorAsync(host, ModelTier.Mid);
+
+        var probing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var respond = host.Local.Respond;
+        host.Local.RespondAsync = async request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/models"))
+            {
+                probing.TrySetResult();
+                await release.Task;
+            }
+            return respond(request);
+        };
+        var save = settings.SaveLocalModelAsync(input with { Id = "local-renamed" }, existingId: "local-seeded");
+        await probing.Task.WaitAsync(Wait);
+
+        Assert.Equal("seeded.test", await ServedByAsync(host, Message("pinned-local", "mid")));
+        Assert.Equal(cursor, await CursorAsync(host, ModelTier.Mid));
+        Assert.False(host.Services.GetRequiredService<LocalHealth>().IsHealthy("local-seeded"));
+        await using (var db = await DbAsync(host))
+        {
+            Assert.Equal(["local-renamed"], await db.SessionPins.Where(p => p.Tier == ModelTier.Mid).Select(p => p.ModelId).ToListAsync());
+        }
+        release.SetResult();
+        await save.WaitAsync(Wait);
+        Assert.Equal("seeded.test", await ServedByAsync(host, Message("pinned-local", "mid")));
     }
 }
