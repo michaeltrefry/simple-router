@@ -9,6 +9,7 @@ dotnet run --project src/SimpleRouter -- login claude   # sign in to your Claude
 dotnet run --project src/SimpleRouter -- login codex    # sign in to your ChatGPT (Codex) subscription
 dotnet run --project src/SimpleRouter -- key show       # print the gateway key for your client
 dotnet run --project src/SimpleRouter -- models refresh # re-fetch the subscriptions' model lists now
+dotnet run --project src/SimpleRouter -- cert create    # HTTPS certificate for other machines (see below)
 dotnet run --project src/SimpleRouter                   # serve on http://127.0.0.1:8790
 ```
 
@@ -32,14 +33,24 @@ The [dashboard](#dashboard) is at `http://127.0.0.1:8790/ui` (monitoring) and `/
 
 ### From other machines on the local network
 
-By default the router listens only on this machine (`127.0.0.1`). To let another machine (Claude Desktop on a second computer, say) reach the API:
+By default the router listens only on this machine (`127.0.0.1`). Claude Desktop accepts only an `https://` gateway URL for a host other than `localhost`, so serving another machine takes a certificate it trusts:
 
-1. Start the router with a listen address other machines can reach: `--SimpleRouter:ListenAddress=0.0.0.0` (every IPv4 interface), `::` (every interface, IPv6 and IPv4) or one of this machine's LAN IPs. The env var form is `SimpleRouter__ListenAddress=0.0.0.0`. A value that is not an IP address (a host name, `192.168.1`) stops startup with an error. The startup log and the dashboard's sidebar show the address in use ("Listening on ...").
-2. Find this machine's LAN IP; on macOS `ipconfig getifaddr en0` (Wi-Fi or the first Ethernet port; try `en1` if it prints nothing).
-3. On the other machine use `http://<LAN IP>:8790` as the base URL, with the same gateway key.
-4. The first time the router listens beyond loopback, macOS may ask whether to allow `dotnet` (or `SimpleRouter`) to accept incoming network connections: choose **Allow**, or the other machine's requests time out. To change the answer later: System Settings → Network → Firewall → Options.
+1. Create the router's certificate: `dotnet run --project src/SimpleRouter -- cert create`. It writes `router.crt` (the public certificate, to copy to other machines) and the private key (encrypted with the data directory's key ring, owner-only) to `~/.simple-router/certs`, and prints the names the certificate covers (`<name>.local`, the host name, this machine's current LAN IPs, `localhost`, `127.0.0.1`, `::1`), its SHA-256 fingerprint and the import commands below. It is a self-signed server certificate (not a CA: it cannot vouch for any other site), valid for 397 days.
+2. Start the router with a listen address other machines can reach: `--SimpleRouter:ListenAddress=0.0.0.0` (every IPv4 interface), `::` (every interface, IPv6 and IPv4) or one of this machine's LAN IPs. The env var form is `SimpleRouter__ListenAddress=0.0.0.0`. A value that is not an IP address (a host name, `192.168.1`) stops startup with an error. With a certificate, the router serves HTTPS on that address at port `8791` (`--SimpleRouter:HttpsPort=...`) and keeps plain HTTP on `http://127.0.0.1:8790` for this machine only, so the gateway key never crosses the network unencrypted. The startup log and the dashboard's sidebar show the addresses in use ("Listening on ..."), the URL for LAN clients and the certificate's expiry.
+3. Copy `router.crt` to the other machine, check that its fingerprint matches the one `cert create` printed, and trust it:
+   - **macOS**: `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain router.crt`, or in Keychain Access drag `router.crt` into the **System** keychain, open it and set **Trust → When using this certificate** to **Always Trust**.
+   - **Windows**: in an administrator prompt `certutil -addstore Root router.crt` (for the current user only: `certutil -user -addstore Root router.crt`).
+   Restart Claude Desktop after importing.
+4. In Claude Desktop on the other machine use `https://<name>.local:8791` as the gateway base URL (the exact URL is printed by `cert create` and shown in the sidebar), with the same gateway key. `https://<LAN IP>:8791` works too while the IP stays the one in the certificate.
+5. The first time the router listens beyond loopback, macOS may ask whether to allow `dotnet` (or `SimpleRouter`) to accept incoming network connections: choose **Allow**, or the other machine's requests time out. To change the answer later: System Settings → Network → Firewall → Options.
 
-The traffic is plain HTTP: the gateway key and every prompt and response cross the network unencrypted, so use this only on a network you trust, and regenerate the key on the [settings page](#dashboard) if it may have been seen. Only `/v1` is reachable from other machines; the dashboard answers only connections that come from this machine (`403` otherwise), whatever `Host`, `Origin` or `X-Forwarded-For` a request claims. The address is taken from the TCP connection itself: forwarded headers are deliberately disabled (even with `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true`). Do not put a reverse proxy in front of the router: a proxy on this machine would make every request it relays look local.
+Run `cert create` again after this machine's name or LAN IP changes (the startup log warns when the certificate no longer names them) and before it expires (the log and sidebar warn 30 days ahead), then restart the router. Each run replaces the certificate, so every other machine must import the new `router.crt` (and may remove the old one).
+
+To use your own certificate instead, point `--SimpleRouter:Https:CertificatePath=` at a PKCS#12 (`.pfx`/`.p12`) file holding the certificate and its private key, with `--SimpleRouter:Https:Password=` if it has one; it takes precedence over the generated certificate.
+
+Without a certificate a non-loopback listen address serves plain HTTP (`http://<LAN IP>:8790`): the gateway key and every prompt and response cross the network unencrypted, so use that only on a network you trust (and with clients that accept HTTP), and regenerate the key on the [settings page](#dashboard) if it may have been seen.
+
+Only `/v1` is reachable from other machines, over HTTP or HTTPS; the dashboard answers only connections that come from this machine (`403` otherwise), whatever `Host`, `Origin` or `X-Forwarded-For` a request claims. The address is taken from the TCP connection itself: forwarded headers are deliberately disabled (even with `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true`). Do not put a reverse proxy (or TLS terminator) in front of the router: a proxy on this machine would make every request it relays look local.
 
 ## Routing
 

@@ -1,7 +1,10 @@
 @inherits LayoutComponentBase
 @using Microsoft.AspNetCore.Hosting.Server
 @using Microsoft.AspNetCore.Hosting.Server.Features
+@using SimpleRouter.Https
 @inject IServer Server
+@inject ServerCertificate Certificates
+@inject LanIdentity Lan
 
 <div class="shell">
     <aside class="sidebar">
@@ -10,9 +13,24 @@
             <NavLink class="nav-item" href="ui" Match="NavLinkMatch.All">Monitoring</NavLink>
             <NavLink class="nav-item" href="ui/settings">Settings</NavLink>
         </nav>
-        <p class="listen" id="listen-address">Listening on @string.Join(", ", Server.Features.Get<IServerAddressesFeature>()?.Addresses ?? [])</p>
+        <p class="listen" id="listen-address">Listening on @string.Join(", ", Addresses)</p>
+        @if (Certificates.Current is { } certificate)
+        {
+            @if (LanHttps is { } https)
+            {
+                <p class="listen" id="lan-url">LAN clients: @Lan.LanUrl(https.Port)</p>
+            }
+            <p class="listen" id="certificate-expiry">HTTPS certificate expires @certificate.NotAfter.ToString("yyyy-MM-dd")@(Certificates.ExpiresSoon(certificate) ? " (soon: run cert create)" : "")</p>
+        }
     </aside>
     <main class="content">
         @Body
     </main>
 </div>
+
+@code {
+    private IEnumerable<string> Addresses => Server.Features.Get<IServerAddressesFeature>()?.Addresses ?? [];
+
+    private Uri? LanHttps => Addresses.Select(a => new Uri(a))
+        .FirstOrDefault(u => u.Scheme == Uri.UriSchemeHttps && !(System.Net.IPAddress.TryParse(u.Host, out var ip) && System.Net.IPAddress.IsLoopback(ip)));
+}
