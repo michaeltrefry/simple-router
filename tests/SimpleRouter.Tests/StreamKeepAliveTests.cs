@@ -37,16 +37,16 @@ public class StreamKeepAliveTests
     public async Task Client_silence_of_one_interval_after_the_start_sends_a_ping_and_keeps_pinging()
     {
         var time = new FakeTimeProvider();
-        var body = new MemoryStream();
+        var body = new StallingStream();
         await using var keepAlive = new StreamKeepAlive(body, Interval, time, CancellationToken.None);
         await keepAlive.WriteAsync(Bytes(Start), final: false);
 
         time.Advance(Interval - TimeSpan.FromMilliseconds(1));
-        Assert.Equal(Start, Text(body));
+        Assert.Equal((Start, 1), (body.Text, body.Flushes));
         time.Advance(TimeSpan.FromMilliseconds(1));
-        Assert.Equal(Start + Ping, Text(body));
+        Assert.Equal((Start + Ping, 2), (body.Text, body.Flushes));
         time.Advance(Interval);
-        Assert.Equal(Start + Ping + Ping, Text(body));
+        Assert.Equal((Start + Ping + Ping, 3), (body.Text, body.Flushes));
     }
 
     [Fact]
@@ -144,6 +144,23 @@ public class StreamKeepAliveTests
         Assert.Equal(1, body.FailedWrites);
     }
 
+    [Fact]
+    public async Task Any_failed_ping_write_ends_the_pings_even_after_later_writes()
+    {
+        var time = new FakeTimeProvider();
+        var body = new StallingStream();
+        await using var keepAlive = new StreamKeepAlive(body, Interval, time, CancellationToken.None);
+        await keepAlive.WriteAsync(Bytes(Start), final: false);
+        body.Failure = new NotSupportedException("unexpected");
+
+        time.Advance(Interval);
+        body.Failure = null;
+        await keepAlive.WriteAsync(Bytes(Delta), final: false);
+        time.Advance(Interval * 3);
+
+        Assert.Equal(Start + Delta, body.Text);
+    }
+
     private static async Task WaitForAsync(Func<bool> condition)
     {
         var until = DateTime.UtcNow.AddSeconds(10);
@@ -159,7 +176,9 @@ public class StreamKeepAliveTests
         private readonly MemoryStream _inner = new();
         public bool StallNext { get; set; }
         public bool Broken { get; set; }
+        public Exception? Failure { get; set; }
         public int FailedWrites { get; private set; }
+        public int Flushes { get; private set; }
         public TaskCompletionSource Stalled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -180,6 +199,10 @@ public class StreamKeepAliveTests
             {
                 FailedWrites++;
                 throw new IOException("client went away");
+            }
+            if (Failure is { } failure)
+            {
+                throw failure;
             }
             if (!StallNext)
             {
@@ -202,7 +225,11 @@ public class StreamKeepAliveTests
             }
         }
 
-        public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public override Task FlushAsync(CancellationToken cancellationToken)
+        {
+            Flushes++;
+            return Task.CompletedTask;
+        }
         public override void Flush() { }
         public override bool CanRead => false;
         public override bool CanSeek => false;

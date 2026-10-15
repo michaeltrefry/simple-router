@@ -15,7 +15,7 @@ public sealed class StreamKeepAlive(Stream body, TimeSpan interval, TimeProvider
     private readonly SemaphoreSlim _gate = new(1, 1);
     private ITimer? _timer;
     private long _lastWrite;
-    private bool _ended;
+    private volatile bool _ended;
 
     /// <summary>Writes and flushes <paramref name="bytes"/> whole; <paramref name="final"/> marks the stream's last write.</summary>
     public async Task WriteAsync(ReadOnlyMemory<byte> bytes, bool final)
@@ -37,6 +37,8 @@ public sealed class StreamKeepAlive(Stream body, TimeSpan interval, TimeProvider
 
     public async ValueTask DisposeAsync()
     {
+        // Stop the timer first so no new ping starts; the gate then waits out a ping already writing.
+        End();
         await _gate.WaitAsync(CancellationToken.None);
         try
         {
@@ -85,7 +87,7 @@ public sealed class StreamKeepAlive(Stream body, TimeSpan interval, TimeProvider
             }
             await WriteLockedAsync(PingBytes);
         }
-        catch (Exception e) when (e is IOException or OperationCanceledException or ObjectDisposedException or InvalidOperationException)
+        catch (Exception)
         {
             // The client is gone; the translator's next write reports it.
             End();

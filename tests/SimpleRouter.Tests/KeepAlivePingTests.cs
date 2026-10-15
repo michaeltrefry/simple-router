@@ -148,7 +148,7 @@ public class KeepAlivePingTests
     [Fact]
     public async Task A_codex_stream_without_silence_sends_no_ping()
     {
-        await using var host = await StartCodexAsync(_ => Stream(ReasoningTextAndToolCall));
+        await using var host = await StartCodexAsync(_ => Stream(ReasoningTextAndToolCall), ShortInterval);
         using var tee = new Tee();
 
         await (await SdkClientAsync(host, tee)).Messages.CreateStreaming(Params()).Aggregate();
@@ -165,7 +165,7 @@ public class KeepAlivePingTests
             Content = new StringContent(
                 "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
                 Encoding.UTF8, "text/event-stream"),
-        });
+        }, ShortInterval);
         using var tee = new Tee();
 
         await (await SdkClientAsync(host, tee)).Messages.CreateStreaming(Params()).Aggregate();
