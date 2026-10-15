@@ -74,6 +74,40 @@ public class CertificateCreationTests
     }
 
     [Fact]
+    public async Task A_bonjour_name_that_differs_from_the_dhcp_host_name_is_the_local_name_and_the_url()
+    {
+        var dataDirectory = RouterHost.NewDataDirectory();
+        var (exitCode, output) = await HttpsSupport.CreateCertificateAsync(dataDirectory, HttpsSupport.Lan("dhcp-name.lan", "Studio"));
+        using var certificate = HttpsSupport.PublicCertificate(dataDirectory);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(["studio.local", "dhcp-name", "dhcp-name.lan", "localhost"],
+            certificate.Extensions.OfType<X509SubjectAlternativeNameExtension>().Single().EnumerateDnsNames());
+        Assert.Contains("https://studio.local:8791", output);
+        Directory.Delete(dataDirectory, recursive: true);
+    }
+
+    [Fact]
+    public async Task An_existing_world_readable_certs_folder_is_made_owner_only()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var dataDirectory = RouterHost.NewDataDirectory();
+        var certs = Path.Combine(dataDirectory, "certs");
+        Directory.CreateDirectory(certs);
+        File.SetUnixFileMode(certs, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+
+        Assert.Equal(0, (await HttpsSupport.CreateCertificateAsync(dataDirectory)).ExitCode);
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(certs));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(Path.Combine(certs, "router.pfx.protected")));
+        Directory.Delete(dataDirectory, recursive: true);
+    }
+
+    [Fact]
     public async Task The_command_prints_the_file_names_fingerprint_and_import_commands()
     {
         var (dataDirectory, output) = await CreateAsync();

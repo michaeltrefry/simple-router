@@ -10,9 +10,9 @@ namespace SimpleRouter.Https;
 /// The certificate HTTPS is served with: the configured PKCS#12 file when <c>Https:CertificatePath</c> is set, else the
 /// one <c>cert create</c> stored in the data directory, else none (HTTPS off). The generated private key is stored as a
 /// PKCS#12 blob encrypted with <see cref="SecretProtector"/> in an owner-only file; only the public certificate is
-/// exported as <c>router.crt</c>.
+/// exported as <c>router.crt</c>. Disposing releases the loaded key (on macOS, a temporary keychain).
 /// </summary>
-public sealed class ServerCertificate
+public sealed class ServerCertificate : IDisposable
 {
     private static readonly TimeSpan ExpiryWarning = TimeSpan.FromDays(30);
 
@@ -47,7 +47,7 @@ public sealed class ServerCertificate
     {
         var replaced = File.Exists(KeyPath);
         using var certificate = RouterCertificateFactory.Create(
-            $"Simple Router ({_lan.ShortName})",
+            $"Simple Router ({_lan.BonjourName})",
             [.. _lan.DnsNames(), "localhost"],
             [.. _lan.LanAddresses(), IPAddress.Loopback, IPAddress.IPv6Loopback],
             _time.GetUtcNow());
@@ -64,6 +64,14 @@ public sealed class ServerCertificate
         }
         File.WriteAllText(PublicPath, certificate.ExportCertificatePem() + "\n");
         return (X509CertificateLoader.LoadCertificate(certificate.RawData), replaced);
+    }
+
+    public void Dispose()
+    {
+        if (_current.IsValueCreated)
+        {
+            _current.Value?.Dispose();
+        }
     }
 
     public bool ExpiresSoon(X509Certificate2 certificate) =>

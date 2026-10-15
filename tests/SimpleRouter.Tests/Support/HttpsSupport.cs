@@ -18,10 +18,12 @@ public static class HttpsSupport
     public static readonly IPAddress LanV4 = IPAddress.Parse("192.168.1.20");
     public static readonly IPAddress LanV6 = IPAddress.Parse("fd00::20");
 
-    /// <summary>A machine named <see cref="HostName"/> with two LAN addresses and a link-local one.</summary>
-    public static Action<IServiceCollection> Lan(params IPAddress[] addresses) => services =>
-        services.AddSingleton(new LanIdentity(() => HostName,
-            () => addresses.Length > 0 ? addresses : [LanV4, LanV6, IPAddress.Parse("fe80::1%4")]));
+    /// <summary>A machine named <see cref="HostName"/> (no separate Bonjour name) with two LAN addresses and a link-local one.</summary>
+    public static Action<IServiceCollection> Lan() => Lan(HostName, null);
+
+    public static Action<IServiceCollection> Lan(string hostName, string? localHostName) => services =>
+        services.AddSingleton(new LanIdentity(() => hostName, () => localHostName,
+            () => [LanV4, LanV6, IPAddress.Parse("fe80::1%4")]));
 
     public static async Task<(int ExitCode, string Output)> CreateCertificateAsync(string dataDirectory, Action<IServiceCollection>? lan = null)
     {
@@ -62,8 +64,16 @@ public static class HttpsSupport
                         return false;
                     }
                     var presented = X509CertificateLoader.LoadCertificate(certificate.GetRawCertData());
-                    served?.Invoke(presented);
-                    return TrustsOnly(trusted, presented);
+                    var trustedChain = TrustsOnly(trusted, presented);
+                    if (served is null)
+                    {
+                        presented.Dispose();
+                    }
+                    else
+                    {
+                        served(presented);
+                    }
+                    return trustedChain;
                 },
             },
         };

@@ -142,6 +142,8 @@ public class HttpsServingTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(configured.Thumbprint, served!.Thumbprint);
+        served.Dispose();
+        configured.Dispose();
         File.Delete(path);
     }
 
@@ -157,13 +159,15 @@ public class HttpsServingTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("127.0.0.1", Assert.Single(HttpsSupport.Addresses(host), a => a.Scheme == Uri.UriSchemeHttp).Host);
+        configured.Dispose();
         File.Delete(path);
     }
 
     [Fact]
     public async Task A_configured_certificate_that_cannot_be_opened_stops_startup_naming_the_setting()
     {
-        var (path, _) = HttpsSupport.UserCertificate(Path.Combine(Path.GetTempPath(), "simple-router-tests"), "user-pass", TimeSpan.FromDays(90));
+        var (path, configured) = HttpsSupport.UserCertificate(Path.Combine(Path.GetTempPath(), "simple-router-tests"), "user-pass", TimeSpan.FromDays(90));
+        configured.Dispose();
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => StartAsync(RouterHost.NewDataDirectory(), null,
             [$"--SimpleRouter:Https:CertificatePath={path}", "--SimpleRouter:Https:Password=wrong"]));
@@ -176,7 +180,8 @@ public class HttpsServingTests
     [Fact]
     public async Task Startup_warns_when_the_certificate_expires_soon_or_misses_a_current_lan_name()
     {
-        var (path, _) = HttpsSupport.UserCertificate(Path.Combine(Path.GetTempPath(), "simple-router-tests"), "user-pass", TimeSpan.FromDays(10));
+        var (path, configured) = HttpsSupport.UserCertificate(Path.Combine(Path.GetTempPath(), "simple-router-tests"), "user-pass", TimeSpan.FromDays(10));
+        configured.Dispose();
         var logs = new CapturingLogs();
         await using var host = await StartAsync(RouterHost.NewDataDirectory(), s => s.AddLogging(b => b.AddProvider(logs)),
             ["--SimpleRouter:ListenAddress=0.0.0.0", $"--SimpleRouter:Https:CertificatePath={path}", "--SimpleRouter:Https:Password=user-pass"]);
@@ -199,6 +204,24 @@ public class HttpsServingTests
         Assert.DoesNotContain(logs.Warnings, w => w.Contains("certificate"));
         Assert.Contains($"https://testhost.local:{HttpsSupport.HttpsPort(host)}", html);
         Assert.Contains(trusted.NotAfter.ToString("yyyy-MM-dd"), html);
+    }
+
+    [Fact]
+    public async Task The_bonjour_name_not_a_dhcp_host_name_is_the_lan_url_and_its_absence_from_the_certificate_is_warned()
+    {
+        var dataDirectory = RouterHost.NewDataDirectory();
+        Assert.Equal(0, (await HttpsSupport.CreateCertificateAsync(dataDirectory)).ExitCode);
+        var logs = new CapturingLogs();
+        await using var host = await StartAsync(dataDirectory, s =>
+        {
+            HttpsSupport.Lan("dhcp-name.lan", "Studio")(s);
+            s.AddLogging(b => b.AddProvider(logs));
+        }, ["--SimpleRouter:ListenAddress=0.0.0.0"]);
+
+        using var page = await GetAsync(host.Client, "/ui", "127.0.0.1");
+
+        Assert.Contains($"https://studio.local:{HttpsSupport.HttpsPort(host)}", await page.Content.ReadAsStringAsync());
+        Assert.Contains(logs.Warnings, w => w.Contains("studio.local"));
     }
 
     private sealed class CapturingLogs : ILoggerProvider, ILogger
