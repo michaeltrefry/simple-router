@@ -40,6 +40,36 @@ public sealed class LocalHealth(
         }
     }
 
+    /// <summary>
+    /// Runs <paramref name="commit"/>, which renames a model in the catalog, with <paramref name="oldId"/>'s state already
+    /// under <paramref name="newId"/> and no check in flight, so the renamed model is never unprobed and its sessions stay pinned.
+    /// </summary>
+    public async Task RenameAsync(string oldId, string newId, Func<Task> commit, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            if (_healthy.TryGetValue(oldId, out var healthy))
+            {
+                _healthy[newId] = healthy;
+            }
+            try
+            {
+                await commit();
+            }
+            catch
+            {
+                _healthy.TryRemove(newId, out _);
+                throw;
+            }
+            _healthy.TryRemove(oldId, out _);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     /// <summary>Probes an endpoint that may not be in the catalog yet; returns why it failed, or null when it answered.</summary>
     public async Task<string?> TestAsync(string baseUrl, string? apiKey, CancellationToken ct)
     {

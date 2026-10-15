@@ -385,7 +385,7 @@ public class LocalRoutingTests
         var settings = first.Services.GetRequiredService<SimpleRouter.Dashboard.CatalogSettings>();
         var row = (await settings.GetAsync()).Models.Single(m => m.Id == "local-off");
         await settings.SaveLocalModelAsync(new SimpleRouter.Dashboard.LocalModelInput(row.Id, row.UpstreamModelId, "http://edited.test/v1",
-            row.ContextWindow, row.SupportsTools, row.SupportsVision, row.Enabled, row.Effort, row.Tiers), isNew: false);
+            row.ContextWindow, row.SupportsTools, row.SupportsVision, row.Enabled, row.Effort, row.Tiers), existingId: row.Id);
         await first.DisposeAsync();
 
         var (second, _) = await StartAsync(dataDirectory, $"--SimpleRouter:SeedOverrideFile={overridePath}");
@@ -560,5 +560,34 @@ public class LocalRoutingTests
 
         Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
         Assert.Equal("Local model local-a returned HTTP 401.", JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["message"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task A_renamed_local_model_is_not_recreated_by_an_override_file_that_still_names_its_old_id()
+    {
+        var dataDirectory = RouterHost.NewDataDirectory();
+        var overridePath = Path.Combine(Path.GetTempPath(), "simple-router-tests", $"override-{Guid.NewGuid():N}.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(overridePath)!);
+        await File.WriteAllTextAsync(overridePath, """
+            { "models": [ { "id": "local-off", "baseUrl": "http://override.test/v1" } ] }
+            """);
+        var (first, _) = await StartAsync(dataDirectory, $"--SimpleRouter:SeedOverrideFile={overridePath}");
+        first.KeepData = true;
+        var settings = first.Services.GetRequiredService<SimpleRouter.Dashboard.CatalogSettings>();
+        var row = (await settings.GetAsync()).Models.Single(m => m.Id == "local-off");
+        await settings.SaveLocalModelAsync(new SimpleRouter.Dashboard.LocalModelInput("local-renamed", row.UpstreamModelId, row.BaseUrl!,
+            row.ContextWindow, row.SupportsTools, row.SupportsVision, row.Enabled, row.Effort, row.Tiers), existingId: "local-off");
+        await first.DisposeAsync();
+
+        await File.WriteAllTextAsync(overridePath, """
+            { "models": [ { "id": "local-off", "enabled": true, "baseUrl": "http://override-2.test/v1" } ] }
+            """);
+        var (second, _) = await StartAsync(dataDirectory, $"--SimpleRouter:SeedOverrideFile={overridePath}");
+        await using var _second = second;
+        await using var db = await second.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
+        Assert.Null(await db.Models.FindAsync("local-off"));
+        var renamed = await db.Models.FindAsync("local-renamed");
+        Assert.Equal("http://override.test/v1", renamed!.BaseUrl);
+        Assert.False(renamed.Enabled);
     }
 }

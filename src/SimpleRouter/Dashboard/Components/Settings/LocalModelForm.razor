@@ -4,7 +4,7 @@
 <div class="form" id="local-model-form">
     <h3>@(Existing is null ? "Add local model" : "Edit " + Existing.Id)</h3>
     <div class="form-grid">
-        <label>Model ID <input class="id" @bind="_id" disabled="@(Existing is not null)" placeholder="my-local-model" /></label>
+        <label>Model ID <input class="id" @bind="_id" placeholder="my-local-model" /></label>
         <label>Upstream model ID <input class="upstream" @bind="_upstream" placeholder="served model id" /></label>
         <label>Base URL <input class="base-url" @bind="_baseUrl" placeholder="http://localhost:8000/v1" /></label>
         <label>
@@ -118,7 +118,7 @@
             }
             var input = new LocalModelInput(_id, _upstream, _baseUrl, window, _tools, _vision, _enabled,
                 EffortInput.Parse(_effortMode, _effortLevels, _effortKwargs), _tiers, _apiKey, _clearApiKey);
-            await Catalog.SaveLocalModelAsync(input, isNew: Existing is null);
+            await Catalog.SaveLocalModelAsync(input, existingId: Existing?.Id);
             _apiKey = "";
             await OnSaved.InvokeAsync($"{_id.Trim()} saved.");
         }

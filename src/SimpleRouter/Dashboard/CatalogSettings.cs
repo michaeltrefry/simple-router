@@ -195,8 +195,11 @@ public sealed partial class CatalogSettings(
         await ChangedAsync(false, ct);
     }
 
-    /// <summary>Adds (<paramref name="isNew"/>) or updates a local model and its tier membership, then probes it.</summary>
-    public async Task SaveLocalModelAsync(LocalModelInput input, bool isNew, CancellationToken ct = default)
+    /// <summary>
+    /// Adds a local model (<paramref name="existingId"/> null) or updates <paramref name="existingId"/>, renaming it when the
+    /// input's ID differs, with its tier membership, then probes it.
+    /// </summary>
+    public async Task SaveLocalModelAsync(LocalModelInput input, string? existingId, CancellationToken ct = default)
     {
         var id = ValidModelId(input.Id, "Model ID");
         var upstreamId = input.UpstreamModelId.Trim();
@@ -213,20 +216,30 @@ public sealed partial class CatalogSettings(
 
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
-            var model = await db.Models.FindAsync([id], ct);
-            if (isNew && model is not null)
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            CatalogModel? model;
+            if (existingId is null)
             {
-                throw new SettingsException($"A model with ID '{id}' already exists.");
-            }
-            if (!isNew && model is not { Provider: ProviderKind.Local })
-            {
-                throw new SettingsException($"'{id}' is not a local model.");
-            }
-            if (model is null)
-            {
+                model = await db.Models.FindAsync([id], ct);
+                if (model is not null)
+                {
+                    throw new SettingsException($"A model with ID '{id}' already exists.");
+                }
                 model = new CatalogModel { Id = id, Provider = ProviderKind.Local, UpstreamModelId = upstreamId };
                 db.Models.Add(model);
                 db.ModelPrices.Add(new ModelPrice { ModelId = id });
+            }
+            else
+            {
+                model = await db.Models.FindAsync([existingId], ct);
+                if (model is not { Provider: ProviderKind.Local })
+                {
+                    throw new SettingsException($"'{existingId}' is not a local model.");
+                }
+                if (existingId != id)
+                {
+                    model = await RenameAsync(db, model, id, ct);
+                }
             }
             model.UpstreamModelId = upstreamId;
             model.BaseUrl = baseUrl;
@@ -251,8 +264,50 @@ public sealed partial class CatalogSettings(
                 await AddMemberAsync(db, tier, id, ct);
             }
             await db.SaveChangesAsync(ct);
+            if (existingId is not null && existingId != id)
+            {
+                await health.RenameAsync(existingId, id, () => transaction.CommitAsync(ct), ct);
+            }
+            else
+            {
+                await transaction.CommitAsync(ct);
+            }
         }
         await ChangedAsync(true, ct);
+    }
+
+    /// <summary>
+    /// Moves a local model to <paramref name="newId"/> with everything keyed by its ID, so its pinned sessions stay on it
+    /// and its usage history follows it.
+    /// </summary>
+    private static async Task<CatalogModel> RenameAsync(RouterDbContext db, CatalogModel model, string newId, CancellationToken ct)
+    {
+        var oldId = model.Id;
+        var ids = await db.Models.Select(m => m.Id).ToListAsync(ct);
+        if (ids.Any(m => m != oldId && string.Equals(m, newId, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new SettingsException($"A model with ID '{newId}' already exists.");
+        }
+        var lists = await db.ProviderModelLists.AsNoTracking().ToListAsync(ct);
+        if (lists.Any(l => l.ModelIds?.Contains(newId, StringComparer.OrdinalIgnoreCase) == true))
+        {
+            throw new SettingsException($"'{newId}' is a subscription model ID.");
+        }
+
+        db.Entry(model).State = EntityState.Detached;
+        model.Id = newId;
+        db.Models.Add(model);
+        await db.SaveChangesAsync(ct);
+        // Rows left for an ID that was never in the catalog would collide with the moved ones.
+        await db.ModelPrices.Where(p => p.ModelId == newId).ExecuteDeleteAsync(ct);
+        await db.ModelCooldowns.Where(c => c.ModelId == newId).ExecuteDeleteAsync(ct);
+        await db.TierMembers.Where(m => m.ModelId == oldId).ExecuteUpdateAsync(u => u.SetProperty(m => m.ModelId, newId), ct);
+        await db.ModelPrices.Where(p => p.ModelId == oldId).ExecuteUpdateAsync(u => u.SetProperty(p => p.ModelId, newId), ct);
+        await db.ModelCooldowns.Where(c => c.ModelId == oldId).ExecuteUpdateAsync(u => u.SetProperty(c => c.ModelId, newId), ct);
+        await db.SessionPins.Where(p => p.ModelId == oldId).ExecuteUpdateAsync(u => u.SetProperty(p => p.ModelId, newId), ct);
+        await db.RequestUsages.Where(r => r.ModelId == oldId).ExecuteUpdateAsync(u => u.SetProperty(r => r.ModelId, newId), ct);
+        await db.Models.Where(m => m.Id == oldId).ExecuteDeleteAsync(ct);
+        return model;
     }
 
     public async Task RemoveLocalModelAsync(string modelId, CancellationToken ct = default)
