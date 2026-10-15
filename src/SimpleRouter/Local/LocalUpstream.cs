@@ -125,26 +125,27 @@ public sealed class LocalUpstream(
             started = true;
             return start + sse;
         }
-        async Task Write(string sse)
+        await using var output = new StreamKeepAlive(context.Response.Body, options.Value.Limits.KeepAliveInterval, time, ct);
+        async Task Write(string sse, bool final)
         {
             if (sse.Length == 0)
             {
                 return;
             }
-            await WriteAsync(context, started ? sse : Begin(sse), ct);
+            await output.WriteAsync(Encoding.UTF8.GetBytes(started ? sse : Begin(sse)), final);
         }
         var grace = new StreamStartGrace(options.Value.Limits.StreamStartGrace, time, async () =>
         {
             if (!started)
             {
-                await WriteAsync(context, Begin(""), ct);
+                await Write(Begin(""), final: false);
             }
         });
 
         string tail;
         try
         {
-            var (closing, early, rejection) = await TranslateChunksAsync(translator, Write, () => started, grace, response, ct);
+            var (closing, early, rejection) = await TranslateChunksAsync(translator, sse => Write(sse, final: false), () => started, grace, response, ct);
             if (early is not null)
             {
                 return early;
@@ -161,7 +162,7 @@ public sealed class LocalUpstream(
             logger.LogWarning("Local model {model} stream failed: {error}", model.Id, e.Message);
             tail = translator.Abort($"Local model {model.Id} stream was interrupted.");
         }
-        await Write(tail);
+        await Write(tail, final: true);
         return null;
     }
 
@@ -258,16 +259,6 @@ public sealed class LocalUpstream(
         }
         await write(translator.Feed(chunk));
         return null;
-    }
-
-    private static async Task WriteAsync(HttpContext context, string sse, CancellationToken ct)
-    {
-        if (sse.Length == 0)
-        {
-            return;
-        }
-        await context.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(sse), ct);
-        await context.Response.Body.FlushAsync(ct);
     }
 
     private async Task<UpstreamResult> ErrorAsync(HttpContext context, CatalogModel model, HttpResponseMessage response, CancellationToken ct)

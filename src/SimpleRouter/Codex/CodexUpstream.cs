@@ -156,13 +156,14 @@ public sealed class CodexUpstream(
             events.Insert(0, start);
             started = true;
         }
+        await using var output = new StreamKeepAlive(context.Response.Body, options.Value.Limits.KeepAliveInterval, time, ct);
         var grace = new StreamStartGrace(options.Value.Limits.StreamStartGrace, time, async () =>
         {
             if (!started)
             {
                 var events = new List<JsonObject>();
                 Begin(events);
-                await WriteAsync(context, events, ct);
+                await WriteAsync(output, events, translator.Ended);
             }
         });
         await TranslateAsync(translator, response, async events =>
@@ -175,7 +176,7 @@ public sealed class CodexUpstream(
                 }
                 Begin(events);
             }
-            await WriteAsync(context, events, ct);
+            await WriteAsync(output, events, translator.Ended);
         }, ct, grace);
         return started;
     }
@@ -278,14 +279,13 @@ public sealed class CodexUpstream(
         }
     }
 
-    private static async Task WriteAsync(HttpContext context, List<JsonObject> events, CancellationToken ct)
+    private static async Task WriteAsync(StreamKeepAlive output, List<JsonObject> events, bool final)
     {
         if (events.Count == 0)
         {
             return;
         }
-        await context.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(ResponsesStreamTranslator.Format(events)), ct);
-        await context.Response.Body.FlushAsync(ct);
+        await output.WriteAsync(Encoding.UTF8.GetBytes(ResponsesStreamTranslator.Format(events)), final);
     }
 
     /// <summary>
