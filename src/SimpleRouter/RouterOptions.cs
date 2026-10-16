@@ -49,6 +49,8 @@ public sealed class RouterOptions
 
     public LimitOptions Limits { get; set; } = new();
 
+    public SystemOneOptions SystemOne { get; set; } = new();
+
     /// <summary>Parses <see cref="ListenAddress"/>; throws when it is not an IP address.</summary>
     public IPAddress ResolveListenAddress()
     {
@@ -121,6 +123,16 @@ public sealed class LocalOptions
 
     /// <summary>A streaming response that sends nothing for this long is ended with an error event.</summary>
     public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromSeconds(120);
+}
+
+/// <summary>SystemOne decision endpoint settings.</summary>
+public sealed class SystemOneOptions
+{
+    /// <summary>A decision call that has not answered after this many seconds is 504; generous because a model may load on demand.</summary>
+    public int TimeoutSeconds { get; set; } = 60;
+
+    /// <summary>The largest <c>/v1/systemone</c> body accepted; images and videos arrive base64-encoded inside it.</summary>
+    public long MaxBodyBytes { get; set; } = 100 * 1024 * 1024;
 }
 
 /// <summary>How long a model is skipped after a fault, when the provider reports no reset, and how long failover stays possible on a stream.</summary>

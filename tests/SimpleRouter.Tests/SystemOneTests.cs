@@ -1,9 +1,11 @@
+using System.IO.Pipelines;
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using SimpleRouter.Data;
+using SimpleRouter.Local;
 using SimpleRouter.Routing;
 using SimpleRouter.SystemOne;
 using SimpleRouter.Tests.Support;
@@ -27,18 +29,30 @@ public class SystemOneTests
 
     private const string Answer = """{"model":"vllm-d3","answers":{"kind":{"type":"choice","choice":"code","probabilities":{"code":0.99,"chat":0.01},"confidence":0.99}},"usage":{"input_tokens":213,"output_tokens":0}}""";
 
-    private static async Task<(RouterHost Host, FakeHandler Decide)> StartAsync()
+    /// <summary>The health probe's endpoint: answers <see cref="Status"/> and records each probe.</summary>
+    private sealed class Probe
+    {
+        public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
+        public FakeHandler Handler { get; }
+
+        public Probe() => Handler = new FakeHandler { Respond = _ => new HttpResponseMessage(Status) };
+    }
+
+    private static async Task<(RouterHost Host, FakeHandler Decide, Probe Probe)> StartAsync(params string[] extraArgs)
     {
         var seedPath = Path.Combine(Path.GetTempPath(), "simple-router-tests", $"seed-{Guid.NewGuid():N}.json");
         Directory.CreateDirectory(Path.GetDirectoryName(seedPath)!);
         await File.WriteAllTextAsync(seedPath, Seed);
         var decide = new FakeHandler { Respond = _ => Json(Answer) };
-        var host = await RouterHost.StartInAsync(RouterHost.NewDataDirectory(), new FakeHandler(),
+        var probe = new Probe();
+        var host = await RouterHost.StartInAsync(RouterHost.NewDataDirectory(), probe.Handler,
             services => services.AddHttpClient(SystemOneProxy.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => decide),
-            $"--SimpleRouter:SeedFile={seedPath}");
+            [$"--SimpleRouter:SeedFile={seedPath}", .. extraArgs]);
         await host.AuthorizedClientAsync();
-        return (host, decide);
+        return (host, decide, probe);
     }
+
+    private static Task CheckHealthAsync(RouterHost host) => host.Services.GetRequiredService<LocalHealth>().CheckAsync(CancellationToken.None);
 
     private static HttpResponseMessage Json(string body, HttpStatusCode status = HttpStatusCode.OK) =>
         new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
@@ -53,7 +67,7 @@ public class SystemOneTests
     [Fact]
     public async Task Forwards_the_body_with_the_upstream_model_id_and_returns_the_answer_unchanged()
     {
-        var (host, decide) = await StartAsync();
+        var (host, decide, _) = await StartAsync();
         await using var _ = host;
 
         using var response = await host.Client.PostAsync("/v1/systemone", Decision("d3"));
@@ -72,7 +86,7 @@ public class SystemOneTests
     [Fact]
     public async Task An_upstream_error_status_and_body_pass_through()
     {
-        var (host, decide) = await StartAsync();
+        var (host, decide, _) = await StartAsync();
         await using var _ = host;
         decide.Respond = _ => Json("""{"error":"instructions is not allowed"}""", HttpStatusCode.BadRequest);
 
@@ -89,7 +103,7 @@ public class SystemOneTests
     [InlineData("sub-high")]
     public async Task A_missing_unknown_disabled_or_non_systemone_model_is_404_without_calling_upstream(string? model)
     {
-        var (host, decide) = await StartAsync();
+        var (host, decide, _) = await StartAsync();
         await using var _ = host;
 
         using var response = await host.Client.PostAsync("/v1/systemone", Decision(model));
@@ -102,7 +116,7 @@ public class SystemOneTests
     [Fact]
     public async Task A_body_that_is_not_a_json_object_is_400()
     {
-        var (host, _) = await StartAsync();
+        var (host, _, _) = await StartAsync();
         await using var __ = host;
 
         using var response = await host.Client.PostAsync("/v1/systemone", new StringContent("[1]", Encoding.UTF8, "application/json"));
@@ -111,21 +125,82 @@ public class SystemOneTests
     }
 
     [Fact]
-    public async Task An_unreachable_upstream_is_503()
+    public async Task An_unreachable_upstream_is_503_and_its_model_stays_unavailable_until_a_probe_succeeds()
     {
-        var (host, decide) = await StartAsync();
+        var (host, decide, _) = await StartAsync();
         await using var _ = host;
         decide.Respond = _ => throw new HttpRequestException("refused");
 
+        using var refused = await host.Client.PostAsync("/v1/systemone", Decision("d3"));
+        decide.Respond = _ => Json(Answer);
+        using var unhealthy = await host.Client.PostAsync("/v1/systemone", Decision("d3"));
+        await CheckHealthAsync(host);
+        using var served = await host.Client.PostAsync("/v1/systemone", Decision("d3"));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, refused.StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, unhealthy.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, served.StatusCode);
+        Assert.Equal(2, decide.Requests.Count);
+    }
+
+    [Fact]
+    public async Task A_model_whose_probe_failed_is_503_without_calling_upstream_until_a_probe_succeeds()
+    {
+        var (host, decide, probe) = await StartAsync();
+        await using var _ = host;
+
+        probe.Status = HttpStatusCode.ServiceUnavailable;
+        await CheckHealthAsync(host);
+        using var down = await host.Client.PostAsync("/v1/systemone", Decision("d3"));
+        probe.Status = HttpStatusCode.OK;
+        await CheckHealthAsync(host);
+        using var up = await host.Client.PostAsync("/v1/systemone", Decision("d3"));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, down.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, up.StatusCode);
+        Assert.Single(decide.Requests);
+        Assert.Contains(probe.Handler.Requests, r => r.Uri.ToString() == "http://decide.test/v1/models");
+        Assert.DoesNotContain(probe.Handler.Requests, r => r.Uri.Host == "decide-off.test");
+    }
+
+    [Fact]
+    public async Task An_upstream_slower_than_the_timeout_is_504()
+    {
+        var (host, decide, _) = await StartAsync("--SimpleRouter:SystemOne:TimeoutSeconds=1");
+        await using var _ = host;
+        // Headers arrive at once; the body never does, and the stalled read honors the router's deadline.
+        decide.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new Pipe().Reader.AsStream()) };
+
         using var response = await host.Client.PostAsync("/v1/systemone", Decision("d3"));
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(HttpStatusCode.GatewayTimeout, response.StatusCode);
+        Assert.Equal("timeout_error", JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["type"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task A_body_over_the_systemone_limit_is_413_and_one_over_the_server_wide_limit_is_served()
+    {
+        var (host, decide, _) = await StartAsync("--SimpleRouter:SystemOne:MaxBodyBytes=40000000");
+        await using var _ = host;
+        StringContent WithImage(int bytes) => new(
+            "{\"model\":\"d3\",\"state\":\"look\",\"images\":[\"data:image/png;base64," + new string('A', bytes) + "\"],\"questions\":{}}",
+            Encoding.UTF8, "application/json");
+
+        using var large = await host.Client.PostAsync("/v1/systemone", WithImage(36_000_000));
+        // With 100-continue the refusal arrives before the body is sent, as it would for a well-behaved client.
+        using var oversized = new HttpRequestMessage(HttpMethod.Post, "/v1/systemone") { Content = WithImage(41_000_000) };
+        oversized.Headers.ExpectContinue = true;
+        using var tooLarge = await host.Client.SendAsync(oversized);
+
+        Assert.Equal(HttpStatusCode.OK, large.StatusCode);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, tooLarge.StatusCode);
+        Assert.Single(decide.Requests);
     }
 
     [Fact]
     public async Task Requires_the_gateway_key()
     {
-        var (host, decide) = await StartAsync();
+        var (host, decide, _) = await StartAsync();
         await using var _ = host;
         using var anonymous = new HttpClient { BaseAddress = host.Client.BaseAddress };
 
@@ -138,7 +213,7 @@ public class SystemOneTests
     [Fact]
     public async Task A_messages_request_is_never_served_by_a_systemone_model_even_as_a_tier_member()
     {
-        var (host, decide) = await StartAsync();
+        var (host, decide, _) = await StartAsync();
         await using var _ = host;
         await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
         {
