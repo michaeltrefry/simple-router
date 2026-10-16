@@ -113,15 +113,19 @@ public class SystemOneTests
         Assert.Empty(decide.Requests);
     }
 
-    [Fact]
-    public async Task A_body_that_is_not_a_json_object_is_400()
+    [Theory]
+    [InlineData("[1]")]
+    [InlineData("""{"model":"d3","model":"d3-off","questions":{}}""")]
+    public async Task A_body_that_is_not_a_json_object_or_repeats_a_key_is_400(string body)
     {
-        var (host, _, _) = await StartAsync();
+        var (host, decide, _) = await StartAsync();
         await using var __ = host;
 
-        using var response = await host.Client.PostAsync("/v1/systemone", new StringContent("[1]", Encoding.UTF8, "application/json"));
+        using var response = await host.Client.PostAsync("/v1/systemone", new StringContent(body, Encoding.UTF8, "application/json"));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request_error", JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["type"]!.GetValue<string>());
+        Assert.Empty(decide.Requests);
     }
 
     [Fact]

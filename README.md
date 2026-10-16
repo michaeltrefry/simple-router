@@ -15,7 +15,7 @@ dotnet run --project src/SimpleRouter                   # serve on http://127.0.
 
 Clients authenticate with the gateway key via `X-Weave-Router-Key`, `x-api-key` or `Authorization: Bearer`.
 
-Endpoints: `POST /v1/messages` (streaming and non-streaming), `POST /v1/messages/count_tokens`, `GET /v1/models`, `GET /v1/subscriptions/usage`, `GET /v1/sessions/{client_session_id}/cost` (see [Usage and cost](#usage-and-cost)).
+Endpoints: `POST /v1/messages` (streaming and non-streaming), `POST /v1/messages/count_tokens`, `GET /v1/models`, `GET /v1/subscriptions/usage`, `GET /v1/sessions/{client_session_id}/cost` (see [Usage and cost](#usage-and-cost)), and for decision models `POST /v1/systemone`, `GET /v1/systemone/models` and an MCP server at `/v1/mcp` (see [Decision models](#decision-models-systemone)).
 
 `GET /v1/models` (Anthropic list shape, `?limit=` 1 to 1000, default 20) lists the Claude catalog models that an alias maps to a tier with at least one enabled member (a disabled Claude model still names its tier while another member serves it), highest tier first: with the seeded catalog `claude-fable-5-1` (max), `claude-opus-5-5` (high), `claude-sonnet-5-5` (mid) and `claude-haiku-5-5` (low). Each ID sent back as `model` is served in that tier, so a client's model picker offers every tier.
 
@@ -117,6 +117,16 @@ The client's effort is `output_config.effort` (`none`, `minimal`, `low`, `medium
 - Local: per the model's `effort` in the seed or `seed.local.json`. `mode` is `none` (default, nothing sent), `reasoning_effort` (sends `reasoning_effort: <level>`) or `chat_template_kwargs` (sends `kwargs[<level>]` as `chat_template_kwargs`, e.g. `{ "none": { "enable_thinking": false }, "high": { "enable_thinking": true } }`); `levels` lists the levels the model accepts; in `chat_template_kwargs` mode every listed level needs a `kwargs` entry or the router refuses to start. An optional `default` level is sent when the client sends no effort, for a server whose own default is unwanted: LM Studio, for one, thinks by default and ignores `enable_thinking: false`, so thinking is turned off there with `{ "mode": "reasoning_effort", "levels": [ "none" ], "default": "none" }`.
 
 A database seeded before effort mappings existed takes them from `seed.json` once, on the next start; a mapping cleared after that stays cleared. A stored mapping that cannot be read is ignored (with a startup warning naming the model).
+
+## Decision models (SystemOne)
+
+A SystemOne decision model (such as [vllm-sr/d3](https://huggingface.co/vllm-sr/d3)) does not generate text: given an input and choice, yes/no (`noul`) or score questions, it returns a probability for every answer. Clients call it; the router never uses one for its own routing, joins one to a tier or lists one in `GET /v1/models`, and only ever probes its `GET {baseUrl}/models` with the local health check.
+
+- `POST /v1/systemone` takes vLLM's System One body; `model` is the catalog ID (seeded: `d3`, disabled, at a placeholder `localhost` URL). The body is forwarded to `{baseUrl}/systemone` with `model` replaced by the upstream model ID, and the upstream's status and JSON come back unchanged. Router errors use the Anthropic envelope: 404 for a missing, unknown or disabled model, 503 when its last health check failed or it is unreachable, 504 after 60 s (`--SimpleRouter:SystemOne:TimeoutSeconds`; generous because a server may load the model on demand), 413 above 100 MB (`--SimpleRouter:SystemOne:MaxBodyBytes`; images and videos arrive base64-encoded). There is no failover between decision models.
+- `GET /v1/systemone/models` lists the enabled ones: `{"data":[{"id":"d3","healthy":true}]}`.
+- `/v1/mcp` is a Streamable HTTP MCP server (gateway key required) with `systemone_models` and `systemone_decide` (model, state, questions, optional images and videos). Upstream and router errors come back as tool errors. For Claude Code: `claude mcp add --transport http simple-router http://127.0.0.1:8790/v1/mcp --header "x-api-key: <gateway key>"`.
+
+Each call that names a SystemOne model is recorded like a Messages request, with no tier and the input tokens the model reports. Add, edit or remove decision models with **Add SystemOne model** on the settings page, or point the seeded `d3` at a server in `seed.local.json` (`{ "id": "d3", "enabled": true, "baseUrl": "http://<host>:8000/v1", "upstreamModelId": "<served id>" }`). The seed only fills an empty database, so on an existing install use the settings page.
 
 ## Dashboard
 

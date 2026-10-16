@@ -9,6 +9,26 @@ namespace SimpleRouter.Api;
 
 public static class SystemOneEndpoints
 {
+    // Duplicate keys fail the parse instead of throwing on first access.
+    private static readonly JsonDocumentOptions Strict = new() { AllowDuplicateProperties = false };
+
+    /// <summary>
+    /// Answers a <c>/v1/mcp</c> body over <see cref="SystemOneOptions.MaxBodyBytes"/> with the error envelope; Kestrel's own
+    /// refusal has no body, which an MCP client reports only as a broken transport.
+    /// </summary>
+    public static IApplicationBuilder UseMcpBodyLimitError(this IApplicationBuilder app) => app.Use(async (context, next) =>
+    {
+        try
+        {
+            await next(context);
+        }
+        catch (BadHttpRequestException e) when (e.StatusCode == StatusCodes.Status413PayloadTooLarge
+            && context.Request.Path.StartsWithSegments("/v1/mcp") && !context.Response.HasStarted)
+        {
+            await AnthropicError.WriteAsync(context, StatusCodes.Status413PayloadTooLarge, "request_too_large", e.Message);
+        }
+    });
+
     public static void MapSystemOneEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet("/v1/systemone/models", async (HttpContext context, SystemOneProxy proxy) =>
@@ -27,7 +47,7 @@ public static class SystemOneEndpoints
             JsonObject? request;
             try
             {
-                request = await JsonNode.ParseAsync(context.Request.Body, cancellationToken: context.RequestAborted) as JsonObject;
+                request = await JsonNode.ParseAsync(context.Request.Body, documentOptions: Strict, cancellationToken: context.RequestAborted) as JsonObject;
             }
             catch (BadHttpRequestException e) when (e.StatusCode == StatusCodes.Status413PayloadTooLarge)
             {
