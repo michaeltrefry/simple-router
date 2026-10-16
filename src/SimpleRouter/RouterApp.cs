@@ -1,6 +1,7 @@
 using System.Net;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SimpleRouter.Api;
 using SimpleRouter.Claude;
@@ -90,6 +91,9 @@ public static class RouterApp
         builder.Services.AddSingleton<IModelUpstream, LocalUpstream>();
         builder.Services.AddSingleton<LocalHealth>();
         builder.Services.AddSingleton<SystemOneProxy>();
+        builder.Services.AddHttpContextAccessor();
+        // Stateless: the tools keep nothing between calls, so no session survives a restart or needs cleaning up.
+        builder.Services.AddMcpServer().WithHttpTransport(o => o.Stateless = true).WithTools<SystemOneTools>();
         builder.Services.AddHostedService<LocalHealthMonitor>();
         builder.Services.AddSingleton<IModelListSource, ClaudeModelList>();
         builder.Services.AddSingleton<IModelListSource, CodexModelList>();
@@ -136,6 +140,7 @@ public static class RouterApp
         app.MapMessagesEndpoints();
         app.MapDarkFactoryEndpoints();
         app.MapSystemOneEndpoints();
+        app.MapMcp("/v1/mcp").WithMetadata(new RequestSizeLimitAttribute(options.SystemOne.MaxBodyBytes));
         app.UseAntiforgery();
         app.MapStaticAssets();
         app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
