@@ -7,7 +7,7 @@ using SimpleRouter.Routing;
 namespace SimpleRouter.Local;
 
 /// <summary>
-/// Health of enabled local endpoints, probed with <c>GET {baseUrl}/models</c>. A model counts as healthy only after a
+/// Health of enabled local and SystemOne endpoints, probed with <c>GET {baseUrl}/models</c>. A model counts as healthy only after a
 /// successful probe, so new sessions never land on an endpoint that has not been checked.
 /// </summary>
 public sealed class LocalHealth(
@@ -91,7 +91,7 @@ public sealed class LocalHealth(
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
             models = await db.Models.AsNoTracking()
-                .Where(m => m.Provider == ProviderKind.Local && m.Enabled && m.BaseUrl != null)
+                .Where(m => (m.Provider == ProviderKind.Local || m.Provider == ProviderKind.SystemOne) && m.Enabled && m.BaseUrl != null)
                 .ToListAsync(ct);
         }
 
@@ -134,7 +134,7 @@ public sealed class LocalHealth(
     {
         if (!_healthy.TryGetValue(modelId, out var previous) || previous != healthy)
         {
-            logger.LogInformation("Local model {model} is {state}", modelId, healthy ? "healthy" : "unhealthy");
+            logger.LogInformation("Model {model} is {state}", modelId, healthy ? "healthy" : "unhealthy");
         }
         _healthy[modelId] = healthy;
     }
