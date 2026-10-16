@@ -4,6 +4,7 @@ using SimpleRouter.Claude;
 using SimpleRouter.Codex;
 using SimpleRouter.Gateway;
 using SimpleRouter.Local;
+using SimpleRouter.SystemOne;
 
 namespace SimpleRouter.Tests.Support;
 
@@ -41,7 +42,7 @@ public sealed class RouterHost : IAsyncDisposable
     public string DataDirectory { get; }
     public FakeHandler Upstream { get; }
     public FakeHandler OAuth { get; }
-    /// <summary>Every local OpenAI-compatible endpoint (chat and health checks); route on the request URI.</summary>
+    /// <summary>Every local OpenAI-compatible and SystemOne endpoint (chat, decisions and health checks); route on the request URI.</summary>
     public FakeHandler Local { get; }
     public HttpClient Client { get; }
     /// <summary>The Codex Responses backend.</summary>
@@ -81,6 +82,7 @@ public sealed class RouterHost : IAsyncDisposable
         {
             services.AddHttpClient(LocalUpstream.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => local);
             services.AddHttpClient(LocalHealth.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => local);
+            services.AddHttpClient(SystemOneProxy.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => local);
         }
     };
 

@@ -20,9 +20,9 @@
                         <td class="mono">@m.UpstreamModelId</td>
                         <td>@(m.Tiers.Count == 0 ? "—" : string.Join(", ", m.Tiers.Select(t => t.Name())))</td>
                         <td class="actions">
-                            @if (m.Provider == ProviderKind.Local)
+                            @if (m.Provider is ProviderKind.Local or ProviderKind.SystemOne)
                             {
-                                <button class="edit" disabled="@Busy" @onclick="() => Open(m)">Edit</button>
+                                <button class="edit" disabled="@Busy" @onclick="() => Open(m.Provider, m)">Edit</button>
                                 @if (_confirmRemove == m.Id)
                                 {
                                     <button class="confirm-remove danger" disabled="@Busy" @onclick="() => RemoveAsync(m.Id)">Confirm remove</button>
@@ -39,28 +39,34 @@
         </table>
     </div>
     <FormStatus Error="@Error" Notice="@Notice" />
-    @if (_form)
+    @if (_form == ProviderKind.Local)
     {
         <LocalModelForm @key="_editing?.Id" Existing="_editing" OnSaved="SavedAsync" OnCancel="Close" />
     }
+    else if (_form == ProviderKind.SystemOne)
+    {
+        <SystemOneModelForm @key="_editing?.Id" Existing="_editing" OnSaved="SavedAsync" OnCancel="Close" />
+    }
     else
     {
-        <button id="add-local-model" @onclick="() => Open(null)">Add local model</button>
+        <button id="add-local-model" @onclick="() => Open(ProviderKind.Local, null)">Add local model</button>
+        <button id="add-systemone-model" @onclick="() => Open(ProviderKind.SystemOne, null)">Add SystemOne model</button>
     }
 </section>
 
 @code {
-    private bool _form;
+    /// <summary>Which model form is open, if any.</summary>
+    private ProviderKind? _form;
     private ModelRow? _editing;
     private string? _confirmRemove;
     private readonly Dictionary<string, bool> _refused = [];
 
-    private void Open(ModelRow? model)
+    private void Open(ProviderKind kind, ModelRow? model)
     {
-        (_form, _editing, Error, Notice) = (true, model, null, null);
+        (_form, _editing, Error, Notice) = (kind, model, null, null);
     }
 
-    private void Close() => (_form, _editing) = (false, null);
+    private void Close() => (_form, _editing) = (null, null);
 
     private async Task SavedAsync(string message)
     {
@@ -86,7 +92,7 @@
     private async Task RemoveAsync(string id)
     {
         _confirmRemove = null;
-        if (await RunAsync(() => Catalog.RemoveLocalModelAsync(id), id + " removed.") && _editing?.Id == id)
+        if (await RunAsync(() => Catalog.RemoveModelAsync(id), id + " removed.") && _editing?.Id == id)
         {
             Close();
         }

@@ -16,7 +16,7 @@
         @foreach (var tier in Enum.GetValues<ModelTier>())
         {
             var members = Snapshot.Tiers[tier];
-            var others = Snapshot.Models.Where(m => !members.Contains(m.Id)).ToList();
+            var others = Snapshot.Models.Where(m => !members.Contains(m.Id) && m.Provider != ProviderKind.SystemOne).ToList();
             <div class="tier" data-tier="@tier.Name()">
                 <h3>@tier.Name()</h3>
                 @if (members.Count == 0)
