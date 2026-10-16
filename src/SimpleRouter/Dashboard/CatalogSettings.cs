@@ -8,8 +8,8 @@ namespace SimpleRouter.Dashboard;
 
 /// <summary>
 /// Edits the routing catalog from the dashboard. Selection, tier rules, prices and effort mappings are read from the
-/// database per request, so a saved edit applies to the next new session; local health is the one in-memory state, so
-/// every local edit re-probes before it returns.
+/// database per request, so a saved edit applies to the next new session; endpoint health is the one in-memory state, so
+/// every local or SystemOne edit re-probes before it returns.
 /// </summary>
 public sealed partial class CatalogSettings(
     IDbContextFactory<RouterDbContext> dbFactory,
@@ -61,7 +61,7 @@ public sealed partial class CatalogSettings(
             provider = model.Provider;
             await db.SaveChangesAsync(ct);
         }
-        await ChangedAsync(provider == ProviderKind.Local, ct);
+        await ChangedAsync(Probed(provider), ct);
     }
 
     public async Task AddToTierAsync(ModelTier tier, string modelId, CancellationToken ct = default)
@@ -69,6 +69,10 @@ public sealed partial class CatalogSettings(
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
             var model = await FindAsync(db, modelId, ct);
+            if (model.Provider == ProviderKind.SystemOne)
+            {
+                throw new SettingsException($"'{modelId}' is a SystemOne decision model: it answers /v1/systemone and cannot join a tier.");
+            }
             await AddMemberAsync(db, tier, model.Id, ct);
             await db.SaveChangesAsync(ct);
         }
@@ -78,9 +82,9 @@ public sealed partial class CatalogSettings(
     /// <summary>Adds a subscription model to a tier by its upstream ID, creating its catalog entry (enabled) when it has none.</summary>
     public async Task AddSubscriptionModelToTierAsync(ModelTier tier, ProviderKind provider, string upstreamModelId, CancellationToken ct = default)
     {
-        if (provider == ProviderKind.Local)
+        if (provider is ProviderKind.Local or ProviderKind.SystemOne)
         {
-            throw new SettingsException("Local models are added with the local model form.");
+            throw new SettingsException("Local and SystemOne models are added with their model forms.");
         }
         var id = ValidModelId(upstreamModelId, "Model ID");
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
@@ -282,7 +286,71 @@ public sealed partial class CatalogSettings(
     }
 
     /// <summary>
-    /// Moves a local model to <paramref name="newId"/> with everything keyed by its ID, so its pinned sessions stay on it
+    /// Adds a SystemOne decision model (<paramref name="existingId"/> null) or updates <paramref name="existingId"/>, renaming
+    /// it when the input's ID differs, then probes it. It never joins a tier.
+    /// </summary>
+    public async Task SaveSystemOneModelAsync(SystemOneModelInput input, string? existingId, CancellationToken ct = default)
+    {
+        var id = ValidModelId(input.Id, "Model ID");
+        var upstreamId = input.UpstreamModelId.Trim();
+        if (upstreamId.Length == 0)
+        {
+            throw new SettingsException("Upstream model ID is required.");
+        }
+        var baseUrl = ValidBaseUrl(input.BaseUrl);
+
+        await using (var db = await dbFactory.CreateDbContextAsync(ct))
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            CatalogModel? model;
+            if (existingId is null)
+            {
+                if (await db.Models.FindAsync([id], ct) is not null)
+                {
+                    throw new SettingsException($"A model with ID '{id}' already exists.");
+                }
+                model = new CatalogModel { Id = id, Provider = ProviderKind.SystemOne, UpstreamModelId = upstreamId };
+                db.Models.Add(model);
+                db.ModelPrices.Add(new ModelPrice { ModelId = id });
+            }
+            else
+            {
+                model = await db.Models.FindAsync([existingId], ct);
+                if (model is not { Provider: ProviderKind.SystemOne })
+                {
+                    throw new SettingsException($"'{existingId}' is not a SystemOne model.");
+                }
+                if (existingId != id)
+                {
+                    model = await RenameAsync(db, model, id, ct);
+                }
+            }
+            model.UpstreamModelId = upstreamId;
+            model.BaseUrl = baseUrl;
+            model.Enabled = input.Enabled;
+            if (!string.IsNullOrEmpty(input.NewApiKey))
+            {
+                model.ProtectedApiKey = secrets.Protect(input.NewApiKey);
+            }
+            else if (input.ClearApiKey)
+            {
+                model.ProtectedApiKey = null;
+            }
+            await db.SaveChangesAsync(ct);
+            if (existingId is not null && existingId != id)
+            {
+                await health.RenameAsync(existingId, id, () => transaction.CommitAsync(ct), ct);
+            }
+            else
+            {
+                await transaction.CommitAsync(ct);
+            }
+        }
+        await ChangedAsync(true, ct);
+    }
+
+    /// <summary>
+    /// Moves a local or SystemOne model to <paramref name="newId"/> with everything keyed by its ID, so its pinned sessions stay on it
     /// and its usage history follows it.
     /// </summary>
     private static async Task<CatalogModel> RenameAsync(RouterDbContext db, CatalogModel model, string newId, CancellationToken ct)
@@ -315,14 +383,15 @@ public sealed partial class CatalogSettings(
         return model;
     }
 
-    public async Task RemoveLocalModelAsync(string modelId, CancellationToken ct = default)
+    /// <summary>Removes a local or SystemOne model; subscription models are only disabled or taken out of tiers.</summary>
+    public async Task RemoveModelAsync(string modelId, CancellationToken ct = default)
     {
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
             var model = await FindAsync(db, modelId, ct);
-            if (model.Provider != ProviderKind.Local)
+            if (!Probed(model.Provider))
             {
-                throw new SettingsException($"'{modelId}' is not a local model.");
+                throw new SettingsException($"'{modelId}' is not a local or SystemOne model.");
             }
             await using var transaction = await db.Database.BeginTransactionAsync(ct);
             await db.TierMembers.Where(m => m.ModelId == modelId).ExecuteDeleteAsync(ct);
@@ -352,6 +421,9 @@ public sealed partial class CatalogSettings(
         }
         return await health.TestAsync(url, key, ct);
     }
+
+    /// <summary>Providers whose endpoints <see cref="LocalHealth"/> probes.</summary>
+    private static bool Probed(ProviderKind provider) => provider is ProviderKind.Local or ProviderKind.SystemOne;
 
     private async Task ChangedAsync(bool probeLocals, CancellationToken ct)
     {

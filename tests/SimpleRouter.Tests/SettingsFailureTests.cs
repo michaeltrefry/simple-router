@@ -65,7 +65,7 @@ public class SettingsFailureTests
         await catalog.SavePriceAsync(new PriceRow("local-seeded", 1, 2, 0, 0, 0));
         await ExecuteAsync(host, "CREATE TRIGGER refuse_model_delete BEFORE DELETE ON Models BEGIN SELECT RAISE(ABORT, 'refused'); END;");
 
-        await Assert.ThrowsAsync<DbUpdateException>(() => catalog.RemoveLocalModelAsync("local-seeded"));
+        await Assert.ThrowsAsync<DbUpdateException>(() => catalog.RemoveModelAsync("local-seeded"));
 
         await using var db = await DbAsync(host);
         Assert.NotNull(await db.Models.FindAsync("local-seeded"));

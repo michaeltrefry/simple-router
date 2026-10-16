@@ -31,5 +31,8 @@ public sealed record LocalModelInput(
     string Id, string UpstreamModelId, string BaseUrl, int? ContextWindow, bool SupportsTools, bool SupportsVision, bool Enabled,
     EffortMapping? Effort, IReadOnlyCollection<ModelTier> Tiers, string? NewApiKey = null, bool ClearApiKey = false, int? MaxPromptTokens = null);
 
+/// <summary>A SystemOne decision model to add or update; the API key fields work as in <see cref="LocalModelInput"/>.</summary>
+public sealed record SystemOneModelInput(string Id, string UpstreamModelId, string BaseUrl, bool Enabled, string? NewApiKey = null, bool ClearApiKey = false);
+
 /// <summary>A settings edit that was refused; the message is shown to the user.</summary>
 public sealed class SettingsException(string message) : Exception(message);
