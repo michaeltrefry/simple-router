@@ -187,6 +187,23 @@ public class EffortRoutingTests
         Assert.Equal(new Dictionary<string, string?> { ["qwen-high"] = null }, await RecordedEffortsAsync(host, 1));
     }
 
+    [Fact]
+    public async Task A_local_models_default_effort_is_sent_when_the_client_sends_none()
+    {
+        await using var host = await StartAsync(overrides: """
+            { "models": [ { "id": "qwen3.8-27b", "enabled": true, "baseUrl": "http://qwen.test/v1",
+                "effort": { "mode": "reasoning_effort", "levels": [ "none" ], "default": "none" } } ] }
+            """);
+
+        await SendAsync(host, Message("qwen-silent", "low", effort: null, thinking: null));
+        await SendAsync(host, Message("qwen-high", "low", "high"));
+
+        var sent = host.Local.Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/chat/completions"))
+            .Select(r => JsonNode.Parse(r.Body)!["reasoning_effort"]?.GetValue<string>());
+        Assert.Equal(["none", "none"], sent);
+        Assert.Equal(new Dictionary<string, string?> { ["qwen-silent"] = "none", ["qwen-high"] = "none" }, await RecordedEffortsAsync(host, 2));
+    }
+
     private static async Task EditAsync(RouterHost host, Func<RouterDbContext, Task> edit)
     {
         await using var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();

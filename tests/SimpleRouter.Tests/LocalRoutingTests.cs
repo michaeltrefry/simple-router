@@ -24,7 +24,7 @@ public class LocalRoutingTests
               "baseUrl": "http://local-a.test/v1", "apiKey": "local-secret-a", "contextWindow": 1000, "supportsVision": true },
             { "id": "local-b", "provider": "local", "upstreamModelId": "upstream-local-b", "enabled": true, "baseUrl": "http://local-b.test/v1/" },
             { "id": "local-off", "provider": "local", "upstreamModelId": "upstream-local-off", "enabled": false, "baseUrl": "http://local-off.test/v1" },
-            { "id": "local-c", "provider": "local", "upstreamModelId": "upstream-local-c", "enabled": true, "baseUrl": "http://local-c.test/v1", "supportsTools": false }
+            { "id": "local-c", "provider": "local", "upstreamModelId": "upstream-local-c", "enabled": true, "baseUrl": "http://local-c.test/v1", "supportsTools": false, "maxPromptTokens": 50000 }
           ],
           "tiers": {
             "high": [ "sub-mid", "local-a" ],
@@ -189,6 +189,62 @@ public class LocalRoutingTests
         var big = new JsonArray { new JsonObject { ["role"] = "user", ["content"] = new string('x', 8000) } };
 
         Assert.Equal("local-b.test", await ServedByAsync(host, Message(sessionId: "big", messages: big)));
+    }
+
+    [Fact]
+    public async Task A_prompt_over_a_locals_max_prompt_goes_to_the_next_model_and_a_session_that_outgrows_it_moves_there()
+    {
+        var (host, locals) = await StartAsync();
+        await using var _host = host;
+        await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        {
+            Assert.Equal(50000, (await db.Models.FindAsync("local-c"))!.MaxPromptTokens);
+            (await db.Models.FindAsync("local-a"))!.MaxPromptTokens = 300;
+            await db.SaveChangesAsync();
+        }
+        // local-a is then the only local of mid, as Mimo is.
+        locals.Healthy.Remove("local-b.test");
+        await CheckHealthAsync(host);
+        // About 400 estimated tokens: inside local-a's 1000-token window, over its 300-token prompt cap.
+        var longText = new string('x', 1600);
+        JsonArray Grown() => [
+            new JsonObject { ["role"] = "user", ["content"] = "hello" },
+            new JsonObject { ["role"] = "assistant", ["content"] = "hi" },
+            new JsonObject { ["role"] = "user", ["content"] = longText },
+        ];
+
+        Assert.Equal("claude", await ServedByAsync(host, Message(sessionId: "long", messages: [new JsonObject { ["role"] = "user", ["content"] = longText }])));
+        Assert.Equal("local-a.test", await ServedByAsync(host, Message(sessionId: "growing")));
+        Assert.Equal("claude", await ServedByAsync(host, Message(sessionId: "growing", messages: Grown())));
+        Assert.Equal("claude", await ServedByAsync(host, Message(sessionId: "growing")));
+    }
+
+    [Fact]
+    public async Task A_client_that_gives_up_before_the_response_starts_is_recorded_as_499_for_the_serving_model()
+    {
+        var (host, locals) = await StartAsync();
+        await using var _host = host;
+        // A local model still thinking: the stream is open and silent, so nothing has been sent to the client yet.
+        var pipe = new Pipe();
+        locals.Chat = _ => Sse(new StreamContent(pipe.Reader.AsStream()));
+        using var giveUp = new CancellationTokenSource();
+
+        var send = host.Client.SendAsync(Message(sessionId: "gave-up", stream: true), giveUp.Token);
+        for (var i = 0; i < 200 && ChatRequests(host).Count == 0; i++)
+        {
+            await Task.Delay(10);
+        }
+        await giveUp.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => send);
+
+        await using var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
+        RequestUsage? row = null;
+        for (var i = 0; i < 200 && (row = await db.RequestUsages.AsNoTracking().FirstOrDefaultAsync(u => u.ClientSessionId == "gave-up")) is null; i++)
+        {
+            await Task.Delay(20);
+        }
+        Assert.NotNull(row);
+        Assert.Equal((499, "local-a", 0L), (row.Status, row.ModelId, row.OutputTokens));
     }
 
     [Fact]

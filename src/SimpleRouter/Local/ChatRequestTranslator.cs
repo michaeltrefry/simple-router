@@ -55,7 +55,7 @@ public static class ChatRequestTranslator
         return chat;
     }
 
-    /// <summary>The client's effort goes as the nearest level the model's mapping lists; without one the server keeps its default.</summary>
+    /// <summary>The client's effort, else the mapping's default, goes as the nearest level the mapping lists; without either the server keeps its own.</summary>
     private static void AddEffort(JsonObject chat, JsonObject request, CatalogModel model)
     {
         if (model.Effort is not { } mapping || Effort.Sent(request, model) is not { } level)
