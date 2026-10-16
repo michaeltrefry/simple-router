@@ -12,6 +12,7 @@ using SimpleRouter.Gateway;
 using SimpleRouter.Https;
 using SimpleRouter.Local;
 using SimpleRouter.Routing;
+using SimpleRouter.SystemOne;
 using SimpleRouter.Usage;
 
 namespace SimpleRouter;
@@ -88,6 +89,7 @@ public static class RouterApp
         builder.Services.AddSingleton<IModelUpstream, CodexUpstream>();
         builder.Services.AddSingleton<IModelUpstream, LocalUpstream>();
         builder.Services.AddSingleton<LocalHealth>();
+        builder.Services.AddSingleton<SystemOneProxy>();
         builder.Services.AddHostedService<LocalHealthMonitor>();
         builder.Services.AddSingleton<IModelListSource, ClaudeModelList>();
         builder.Services.AddSingleton<IModelListSource, CodexModelList>();
@@ -109,6 +111,7 @@ public static class RouterApp
         builder.Services.AddHttpClient(CodexOAuthClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30));
         builder.Services.AddHttpClient(CodexUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
         builder.Services.AddHttpClient(LocalUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
+        builder.Services.AddHttpClient(SystemOneProxy.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
         builder.Services.AddHttpClient(LocalHealth.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(5));
 
         // The dashboard trusts only a loopback remote address, so the framework's FORWARDEDHEADERS_ENABLED switch must
@@ -132,6 +135,7 @@ public static class RouterApp
         app.MapModelsEndpoints();
         app.MapMessagesEndpoints();
         app.MapDarkFactoryEndpoints();
+        app.MapSystemOneEndpoints();
         app.UseAntiforgery();
         app.MapStaticAssets();
         app.MapRazorComponents<App>().AddInteractiveServerRenderMode();

@@ -10,7 +10,7 @@ public sealed class CatalogModel
     public required string UpstreamModelId { get; set; }
     public bool Enabled { get; set; }
 
-    /// <summary>OpenAI-compatible base URL including its version segment (e.g. <c>http://localhost:8000/v1</c>); local models only.</summary>
+    /// <summary>OpenAI-compatible base URL including its version segment (e.g. <c>http://localhost:8000/v1</c>); local and SystemOne models only.</summary>
     public string? BaseUrl { get; set; }
 
     /// <summary>Optional bearer key for <see cref="BaseUrl"/>, protected with <see cref="SecretProtector"/>.</summary>
