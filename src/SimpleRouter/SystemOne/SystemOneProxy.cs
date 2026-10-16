@@ -7,6 +7,7 @@ using SimpleRouter.Api;
 using SimpleRouter.Data;
 using SimpleRouter.Local;
 using SimpleRouter.Routing;
+using SimpleRouter.Usage;
 
 namespace SimpleRouter.SystemOne;
 
@@ -33,6 +34,8 @@ public sealed class SystemOneProxy(
     SecretProtector secrets,
     LocalHealth health,
     IOptions<RouterOptions> options,
+    UsageRecorder usage,
+    TimeProvider time,
     ILogger<SystemOneProxy> logger)
 {
     public const string HttpClientName = "systemone-upstream";
@@ -45,8 +48,11 @@ public sealed class SystemOneProxy(
         return ids.Select(id => new SystemOneModel(id, health.IsHealthy(id))).ToList();
     }
 
-    /// <summary>Rewrites <paramref name="request"/>'s <c>model</c> in place: its images and videos can be large, so it is not copied.</summary>
-    public async Task<SystemOneReply> DecideAsync(JsonObject request, CancellationToken ct)
+    /// <summary>
+    /// Rewrites <paramref name="request"/>'s <c>model</c> in place: its images and videos can be large, so it is not copied.
+    /// Every call that names a SystemOne model is recorded, including refusals and calls the client abandons (status 499).
+    /// </summary>
+    public async Task<SystemOneReply> DecideAsync(JsonObject request, string? clientSessionId, CancellationToken ct)
     {
         var id = request["model"] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
         CatalogModel? model = null;
@@ -61,6 +67,39 @@ public sealed class SystemOneProxy(
                 id is null ? "model is required: the ID of a SystemOne model." : $"No enabled SystemOne model is named '{id}'.");
         }
 
+        var started = time.GetTimestamp();
+        SystemOneReply reply;
+        try
+        {
+            reply = await SendAsync(model, request, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await usage.RecordAsync(new ServedRequest(clientSessionId, model, null, 499, TokenUsage.None, time.GetElapsedTime(started), null));
+            throw;
+        }
+        await usage.RecordAsync(new ServedRequest(clientSessionId, model, null, reply.Status, UsageOf(reply), time.GetElapsedTime(started), null));
+        return reply;
+    }
+
+    private static TokenUsage UsageOf(SystemOneReply reply)
+    {
+        if (reply.ErrorType is not null || reply.Status is < 200 or >= 300)
+        {
+            return TokenUsage.None;
+        }
+        try
+        {
+            return TokenUsage.None.Merge(JsonNode.Parse(reply.Body)?["usage"]);
+        }
+        catch (JsonException)
+        {
+            return TokenUsage.None;
+        }
+    }
+
+    private async Task<SystemOneReply> SendAsync(CatalogModel model, JsonObject request, CancellationToken ct)
+    {
         if (!health.IsHealthy(model.Id))
         {
             return SystemOneReply.Error(StatusCodes.Status503ServiceUnavailable, "overloaded_error",

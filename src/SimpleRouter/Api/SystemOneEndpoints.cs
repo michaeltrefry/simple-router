@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
+using SimpleRouter.Routing;
 using SimpleRouter.SystemOne;
 
 namespace SimpleRouter.Api;
@@ -44,7 +45,8 @@ public static class SystemOneEndpoints
                 return;
             }
 
-            var reply = await proxy.DecideAsync(request, context.RequestAborted);
+            var sessionId = context.Request.Headers[SessionKey.HeaderName].ToString().Trim();
+            var reply = await proxy.DecideAsync(request, sessionId.Length == 0 ? null : sessionId, context.RequestAborted);
             if (reply.ErrorType is { } type)
             {
                 await AnthropicError.WriteAsync(context, reply.Status, type, reply.ErrorMessage!);

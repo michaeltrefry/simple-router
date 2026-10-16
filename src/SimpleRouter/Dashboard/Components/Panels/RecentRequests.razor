@@ -27,7 +27,7 @@
                         <tr>
                             <td class="mono">@Time(r.At)</td>
                             <td class="mono session">@(r.ClientSessionId ?? "—")</td>
-                            <td>@r.Tier.Name()</td>
+                            <td>@(r.Tier?.Name() ?? "—")</td>
                             <td class="mono">@r.ModelId</td>
                             <td>@(r.Effort ?? "—")</td>
                             <td class="num">@Latency(r.LatencyMs)</td>

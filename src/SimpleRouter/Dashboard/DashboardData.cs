@@ -7,7 +7,7 @@ namespace SimpleRouter.Dashboard;
 
 /// <summary>One served request as the dashboard lists it.</summary>
 public sealed record RequestRow(
-    DateTimeOffset At, string? ClientSessionId, ModelTier Tier, string ModelId, ProviderKind Provider, string? Effort,
+    DateTimeOffset At, string? ClientSessionId, ModelTier? Tier, string ModelId, ProviderKind Provider, string? Effort,
     long LatencyMs, int Status, long InputTokens, long OutputTokens, long CostUsdMicros);
 
 /// <summary>A session pin and the current status of its pinned model.</summary>

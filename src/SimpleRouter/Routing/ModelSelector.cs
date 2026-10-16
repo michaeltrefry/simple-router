@@ -271,7 +271,7 @@ public sealed class ModelSelector(
             {
                 return cooldown.Reason == FaultKind.AuthRejected ? ModelStatus.AuthRejected : ModelStatus.Cooling;
             }
-            return m.Provider == ProviderKind.Local && !health.IsHealthy(m.Id) ? ModelStatus.Unhealthy : ModelStatus.Eligible;
+            return m.Provider is ProviderKind.Local or ProviderKind.SystemOne && !health.IsHealthy(m.Id) ? ModelStatus.Unhealthy : ModelStatus.Eligible;
         };
     }
 
