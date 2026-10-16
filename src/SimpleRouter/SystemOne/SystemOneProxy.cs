@@ -20,6 +20,9 @@ public sealed record SystemOneReply(int Status, byte[] Body, string? ContentType
         new(status, [], null, model, type, message);
 }
 
+/// <summary>An enabled SystemOne model a client can call, and whether its endpoint passed its last health check.</summary>
+public sealed record SystemOneModel(string Id, bool Healthy);
+
 /// <summary>
 /// Forwards a SystemOne decision request to the catalog model it names: <c>model</c> becomes the upstream model ID and
 /// the rest of the body is sent as it came. Decision models are never routed; the client picks one by ID.
@@ -33,6 +36,14 @@ public sealed class SystemOneProxy(
     ILogger<SystemOneProxy> logger)
 {
     public const string HttpClientName = "systemone-upstream";
+
+    public async Task<List<SystemOneModel>> ModelsAsync(CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var ids = await db.Models.AsNoTracking().Where(m => m.Provider == ProviderKind.SystemOne && m.Enabled)
+            .OrderBy(m => m.Id).Select(m => m.Id).ToListAsync(ct);
+        return ids.Select(id => new SystemOneModel(id, health.IsHealthy(id))).ToList();
+    }
 
     /// <summary>Rewrites <paramref name="request"/>'s <c>model</c> in place: its images and videos can be large, so it is not copied.</summary>
     public async Task<SystemOneReply> DecideAsync(JsonObject request, CancellationToken ct)

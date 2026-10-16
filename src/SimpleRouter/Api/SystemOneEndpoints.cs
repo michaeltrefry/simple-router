@@ -10,6 +10,12 @@ public static class SystemOneEndpoints
 {
     public static void MapSystemOneEndpoints(this IEndpointRouteBuilder app)
     {
+        app.MapGet("/v1/systemone/models", async (HttpContext context, SystemOneProxy proxy) =>
+            await context.Response.WriteAsJsonAsync(new
+            {
+                data = (await proxy.ModelsAsync(context.RequestAborted)).Select(m => new { id = m.Id, healthy = m.Healthy }),
+            }, context.RequestAborted));
+
         app.MapPost("/v1/systemone", async (HttpContext context, SystemOneProxy proxy, IOptions<RouterOptions> options) =>
         {
             // Raised past the server-wide limit before the body is read: media arrives base64-encoded in it.

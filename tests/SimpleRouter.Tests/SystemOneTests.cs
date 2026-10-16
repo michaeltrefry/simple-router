@@ -230,6 +230,38 @@ public class SystemOneTests
     }
 
     [Fact]
+    public async Task Lists_enabled_systemone_models_with_their_health_and_omits_disabled_ones()
+    {
+        var (host, _, probe) = await StartAsync();
+        await using var __ = host;
+
+        var up = JsonNode.Parse(await host.Client.GetStringAsync("/v1/systemone/models"))!.ToJsonString();
+        probe.Status = HttpStatusCode.ServiceUnavailable;
+        await CheckHealthAsync(host);
+        var down = JsonNode.Parse(await host.Client.GetStringAsync("/v1/systemone/models"))!.ToJsonString();
+
+        Assert.Equal("""{"data":[{"id":"d3","healthy":true}]}""", up);
+        Assert.Equal("""{"data":[{"id":"d3","healthy":false}]}""", down);
+    }
+
+    [Fact]
+    public async Task Systemone_models_are_not_listed_in_the_anthropic_models_endpoint()
+    {
+        var (host, _, _) = await StartAsync();
+        await using var __ = host;
+        await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        {
+            db.TierAliases.Add(new TierAlias { Pattern = "*", Tier = ModelTier.High, Position = 0 });
+            await db.SaveChangesAsync();
+        }
+
+        var ids = JsonNode.Parse(await host.Client.GetStringAsync("/v1/models?limit=1000"))!["data"]!.AsArray()
+            .Select(m => m!["id"]!.GetValue<string>()).ToList();
+
+        Assert.Equal(["sub-high"], ids);
+    }
+
+    [Fact]
     public async Task The_shipped_seed_has_d3_as_a_disabled_systemone_model_outside_every_tier()
     {
         await using var host = await RouterHost.StartAsync();
