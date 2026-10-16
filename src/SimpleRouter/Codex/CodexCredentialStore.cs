@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using SimpleRouter.Data;
+using SimpleRouter.Routing;
 
 namespace SimpleRouter.Codex;
 
@@ -20,7 +21,12 @@ public sealed class CodexCredentialStore(IDbContextFactory<RouterDbContext> dbFa
         return new CodexTokens(protector.Unprotect(row.ProtectedRefreshToken), access, row.AccessTokenExpiresAt, protector.Unprotect(row.ProtectedAccountId));
     }
 
-    public async Task SaveAsync(CodexTokens tokens, CancellationToken ct = default)
+    public Task SaveAsync(CodexTokens tokens, CancellationToken ct = default) => SaveAsync(tokens, false, ct);
+
+    /// <summary>Saves an explicit login and discards the previous account's cooldowns in the same transaction.</summary>
+    public Task SaveLoginAsync(CodexTokens tokens, CancellationToken ct = default) => SaveAsync(tokens, true, ct);
+
+    private async Task SaveAsync(CodexTokens tokens, bool resetCooldowns, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var row = await db.CodexCredentials.SingleOrDefaultAsync(c => c.Id == CredentialId, ct);
@@ -33,6 +39,11 @@ public sealed class CodexCredentialStore(IDbContextFactory<RouterDbContext> dbFa
         row.ProtectedAccessToken = tokens.AccessToken is null ? null : protector.Protect(tokens.AccessToken);
         row.AccessTokenExpiresAt = tokens.AccessTokenExpiresAt;
         row.ProtectedAccountId = protector.Protect(tokens.AccountId);
+        if (resetCooldowns)
+        {
+            db.ModelCooldowns.RemoveRange(await db.ModelCooldowns
+                .Where(c => db.Models.Any(m => m.Id == c.ModelId && m.Provider == ProviderKind.Codex)).ToListAsync(ct));
+        }
         await db.SaveChangesAsync(ct);
     }
 }

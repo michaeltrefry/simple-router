@@ -40,7 +40,7 @@ public sealed class CodexLoginCommand(CodexOAuthClient oauth, CodexCredentialSto
         {
             return false;
         }
-        await store.SaveAsync(await oauth.ExchangeAsync(authorization, ct), ct);
+        await store.SaveLoginAsync(await oauth.ExchangeAsync(authorization, ct), ct);
         return true;
     }
 
