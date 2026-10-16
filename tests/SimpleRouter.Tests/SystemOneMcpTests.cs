@@ -29,7 +29,7 @@ public class SystemOneMcpTests
 
     private const string Answer = """{"model":"vllm-d3","answers":{"reasoning":{"type":"noul","noul":0.56}},"usage":{"input_tokens":120,"output_tokens":0}}""";
 
-    private static async Task<RouterHost> StartAsync()
+    private static async Task<RouterHost> StartAsync(params string[] extraArgs)
     {
         var seedPath = Path.Combine(Path.GetTempPath(), "simple-router-tests", $"seed-{Guid.NewGuid():N}.json");
         Directory.CreateDirectory(Path.GetDirectoryName(seedPath)!);
@@ -40,7 +40,7 @@ public class SystemOneMcpTests
                 ? new HttpResponseMessage(HttpStatusCode.OK)
                 : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Answer, Encoding.UTF8, "application/json") },
         };
-        return await RouterHost.StartInAsync(RouterHost.NewDataDirectory(), local, $"--SimpleRouter:SeedFile={seedPath}");
+        return await RouterHost.StartInAsync(RouterHost.NewDataDirectory(), local, [$"--SimpleRouter:SeedFile={seedPath}", .. extraArgs]);
     }
 
     private static async Task<McpClient> ConnectAsync(RouterHost host, string? key)
@@ -139,6 +139,31 @@ public class SystemOneMcpTests
         Assert.NotEqual(true, result.IsError);
         Assert.Equal(36_000_000 + "data:image/png;base64,".Length,
             JsonNode.Parse(host.Local.Requests.Last(r => r.Uri.AbsolutePath.EndsWith("/systemone")).Body)!["images"]![0]!.GetValue<string>().Length);
+    }
+
+    [Fact]
+    public async Task A_body_over_the_systemone_limit_is_413_with_the_error_envelope()
+    {
+        await using var host = await StartAsync("--SimpleRouter:SystemOne:MaxBodyBytes=2000");
+        var call = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = 1,
+            ["method"] = "tools/call",
+            ["params"] = new JsonObject { ["name"] = "systemone_decide", ["arguments"] = new JsonObject { ["model"] = "d3", ["state"] = new string('A', 5000), ["questions"] = new JsonObject() } },
+        };
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/mcp") { Content = new StringContent(call.ToJsonString(), Encoding.UTF8, "application/json") };
+        request.Headers.Add(GatewayAuthMiddleware.RouterKeyHeader, await host.GatewayKeyAsync());
+        request.Headers.Accept.ParseAdd("application/json");
+        request.Headers.Accept.ParseAdd("text/event-stream");
+        // With 100-continue the refusal arrives before the body is sent.
+        request.Headers.ExpectContinue = true;
+
+        using var response = await host.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        Assert.Equal("request_too_large", JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["type"]!.GetValue<string>());
+        Assert.DoesNotContain(host.Local.Requests, r => r.Uri.AbsolutePath.EndsWith("/systemone"));
     }
 
     [Fact]

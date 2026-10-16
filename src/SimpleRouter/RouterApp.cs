@@ -136,6 +136,7 @@ public static class RouterApp
         });
         app.UseMiddleware<DashboardHostFilter>();
         app.UseMiddleware<GatewayAuthMiddleware>();
+        app.UseMcpBodyLimitError();
         app.MapModelsEndpoints();
         app.MapMessagesEndpoints();
         app.MapDarkFactoryEndpoints();
