@@ -41,6 +41,6 @@ public sealed class ClaudeLoginCommand(ClaudeOAuthClient oauth, ClaudeCredential
         }
 
         var tokens = await oauth.ExchangeCodeAsync(parts[0], login, ct);
-        await store.SaveAsync(tokens, ct);
+        await store.SaveLoginAsync(tokens, ct);
     }
 }
