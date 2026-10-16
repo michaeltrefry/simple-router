@@ -7,7 +7,7 @@ namespace SimpleRouter.Usage;
 
 /// <summary>A served request to record: the model and tier that answered, the response status and its usage.</summary>
 public sealed record ServedRequest(
-    string? ClientSessionId, CatalogModel Model, ModelTier Tier, int Status, TokenUsage Usage, TimeSpan Latency, string? Effort);
+    string? ClientSessionId, CatalogModel Model, ModelTier? Tier, int Status, TokenUsage Usage, TimeSpan Latency, string? Effort);
 
 /// <summary>Prices a served request from <see cref="RouterDbContext.ModelPrices"/> and stores it as a <see cref="RequestUsage"/> row.</summary>
 public sealed class UsageRecorder(

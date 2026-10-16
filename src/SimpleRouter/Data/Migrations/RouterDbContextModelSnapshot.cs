@@ -215,7 +215,6 @@ namespace SimpleRouter.Data.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("Tier")
-                        .IsRequired()
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");

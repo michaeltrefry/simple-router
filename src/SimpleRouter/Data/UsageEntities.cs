@@ -13,7 +13,7 @@ public sealed class ModelPrice
     public decimal CacheWrite1hPerMTok { get; set; }
 }
 
-/// <summary>One served Messages request: who asked, which model answered, its tokens and their priced cost.</summary>
+/// <summary>One served Messages or SystemOne request: who asked, which model answered, its tokens and their priced cost.</summary>
 public sealed class RequestUsage
 {
     public long Id { get; set; }
@@ -21,7 +21,8 @@ public sealed class RequestUsage
     public string? ClientSessionId { get; set; }
     public required string ModelId { get; set; }
     public ProviderKind Provider { get; set; }
-    public ModelTier Tier { get; set; }
+    /// <summary>Null for a SystemOne decision call, which is never routed in a tier.</summary>
+    public ModelTier? Tier { get; set; }
     public int Status { get; set; }
     public long InputTokens { get; set; }
     public long OutputTokens { get; set; }

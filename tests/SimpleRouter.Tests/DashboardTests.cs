@@ -103,6 +103,23 @@ public class DashboardTests
     }
 
     [Fact]
+    public async Task A_systemone_request_without_a_tier_is_listed_with_a_placeholder_tier()
+    {
+        await using var host = await StartAsync();
+        await SeedAsync(host, db => db.RequestUsages.Add(new RequestUsage
+        {
+            At = new DateTimeOffset(2026, 10, 16, 9, 0, 0, TimeSpan.Zero), ModelId = "d3", Provider = ProviderKind.SystemOne,
+            Tier = null, Status = 200, LatencyMs = 54, InputTokens = 213,
+        }));
+        using var dashboard = Dashboard(host);
+
+        var cut = dashboard.Render<RecentRequests>();
+
+        cut.WaitForAssertion(() => Assert.Single(cut.FindAll("#recent-requests tbody tr")), Wait);
+        Assert.Equal("2026-10-16 09:00:00Z|—|—|d3|—|54 ms|200|213 / 0|$0.0000", Cells(cut, 0));
+    }
+
+    [Fact]
     public async Task The_pins_and_model_views_show_a_seeded_cooldown_with_its_reset_time()
     {
         await using var host = await StartAsync();

@@ -152,11 +152,13 @@ public class SystemOneTests
         probe.Status = HttpStatusCode.ServiceUnavailable;
         await CheckHealthAsync(host);
         using var down = await host.Client.PostAsync("/v1/systemone", Decision("d3"));
+        var dashboardStatus = (await host.Services.GetRequiredService<ModelSelector>().StatusesAsync(CancellationToken.None)).Single(s => s.ModelId == "d3").Status;
         probe.Status = HttpStatusCode.OK;
         await CheckHealthAsync(host);
         using var up = await host.Client.PostAsync("/v1/systemone", Decision("d3"));
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, down.StatusCode);
+        Assert.Equal(ModelStatus.Unhealthy, dashboardStatus);
         Assert.Equal(HttpStatusCode.OK, up.StatusCode);
         Assert.Single(decide.Requests);
         Assert.Contains(probe.Handler.Requests, r => r.Uri.ToString() == "http://decide.test/v1/models");
@@ -227,6 +229,70 @@ public class SystemOneTests
 
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
         Assert.Empty(decide.Requests);
+    }
+
+    private static async Task<List<RequestUsage>> UsageAsync(RouterHost host)
+    {
+        // Recorded before the reply is written, so it is already stored when the client has the response.
+        await using var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync();
+        return await db.RequestUsages.AsNoTracking().OrderBy(u => u.Id).ToListAsync();
+    }
+
+    [Fact]
+    public async Task A_served_call_is_recorded_without_a_tier_with_its_input_tokens_and_client_session()
+    {
+        var (host, _, _) = await StartAsync();
+        await using var __ = host;
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/systemone") { Content = Decision("d3") };
+        request.Headers.Add(SessionKey.HeaderName, "session-1");
+
+        using var response = await host.Client.SendAsync(request);
+
+        var row = Assert.Single(await UsageAsync(host));
+        Assert.Equal(("d3", ProviderKind.SystemOne, (ModelTier?)null, 200, 213L, 0L, "session-1"),
+            (row.ModelId, row.Provider, row.Tier, row.Status, row.InputTokens, row.OutputTokens, row.ClientSessionId));
+    }
+
+    [Fact]
+    public async Task Refusals_of_a_named_model_are_recorded_with_their_status_and_unknown_models_are_not()
+    {
+        var (host, decide, _) = await StartAsync("--SimpleRouter:SystemOne:TimeoutSeconds=1");
+        await using var __ = host;
+
+        decide.Respond = _ => Json("""{"error":"bad"}""", HttpStatusCode.BadRequest);
+        using var rejected = await host.Client.PostAsync("/v1/systemone", Decision("d3"));
+        decide.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new Pipe().Reader.AsStream()) };
+        using var timedOut = await host.Client.PostAsync("/v1/systemone", Decision("d3"));
+        using var unknown = await host.Client.PostAsync("/v1/systemone", Decision("nope"));
+
+        Assert.Equal([400, 504], (await UsageAsync(host)).Select(u => u.Status));
+    }
+
+    [Fact]
+    public async Task A_call_the_client_abandons_is_recorded_as_499()
+    {
+        var (host, decide, _) = await StartAsync();
+        await using var __ = host;
+        var reached = new TaskCompletionSource();
+        decide.Respond = _ =>
+        {
+            reached.TrySetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new Pipe().Reader.AsStream()) };
+        };
+        using var abandon = new CancellationTokenSource();
+
+        var call = host.Client.PostAsync("/v1/systemone", Decision("d3"), abandon.Token);
+        await reached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        abandon.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call);
+
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        List<RequestUsage> rows;
+        while ((rows = await UsageAsync(host)).Count == 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(50);
+        }
+        Assert.Equal(499, Assert.Single(rows).Status);
     }
 
     [Fact]
