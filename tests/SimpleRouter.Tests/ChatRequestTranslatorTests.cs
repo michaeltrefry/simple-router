@@ -106,6 +106,26 @@ public class ChatRequestTranslatorTests
     }
 
     [Fact]
+    public void Local_reasoning_goes_back_as_reasoning_content_and_other_providers_reasoning_does_not()
+    {
+        var chat = Translate("""
+            {"model":"m","max_tokens":1,"messages":[{"role":"user","content":"go"},
+              {"role":"assistant","content":[
+                {"type":"thinking","thinking":"from claude","signature":"sig"},
+                {"type":"thinking","thinking":"from codex","signature":"codex:ENC"},
+                {"type":"thinking","thinking":"step one","signature":"local:"},
+                {"type":"thinking","thinking":"step two","signature":"local:"},
+                {"type":"tool_use","id":"call_9","name":"Bash","input":{}}]},
+              {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_9"}]}]}
+            """);
+
+        var assistant = chat["messages"]![1]!;
+        Assert.Equal("step one\nstep two", assistant["reasoning_content"]!.GetValue<string>());
+        Assert.Null(assistant["content"]);
+        Assert.Null(chat["messages"]![0]!["reasoning_content"]);
+    }
+
+    [Fact]
     public void Assistant_turn_with_only_tool_calls_has_null_content()
     {
         var chat = Translate("""

@@ -40,7 +40,7 @@ public class ChatResponseTranslatorTests
         Assert.StartsWith("msg_", message["id"]!.GetValue<string>());
         Assert.Equal("local-a", message["model"]!.GetValue<string>());
         Assert.Equal("""
-            [{"type":"text","text":"I'll read it."},{"type":"tool_use","id":"call_1","name":"Read","input":{"path":"a.txt"}},{"type":"tool_use","id":"call_2","name":"Grep","input":{}}]
+            [{"type":"thinking","thinking":"secret planplan","signature":"local:"},{"type":"text","text":"I'll read it."},{"type":"tool_use","id":"call_1","name":"Read","input":{"path":"a.txt"}},{"type":"tool_use","id":"call_2","name":"Grep","input":{}}]
             """, message["content"]!.ToJsonString(WireJson.Relaxed));
         Assert.Equal("tool_use", message["stop_reason"]!.GetValue<string>());
         Assert.True(message.ContainsKey("stop_sequence") && message["stop_sequence"] is null);

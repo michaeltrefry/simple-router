@@ -6,10 +6,14 @@ namespace SimpleRouter.Local;
 
 /// <summary>
 /// Translates a Chat Completions response into an Anthropic message. Upstream reasoning (<c>reasoning_content</c>,
-/// <c>reasoning</c>, a leading <c>&lt;think&gt;</c> block) is omitted rather than surfaced as thinking blocks.
+/// <c>reasoning</c>, a leading <c>&lt;think&gt;</c> block) becomes a thinking block signed with <see cref="SignaturePrefix"/>,
+/// so the next request can hand it back to a local model as <c>reasoning_content</c>.
 /// </summary>
 public static partial class ChatResponseTranslator
 {
+    /// <summary>Marks a thinking signature as local reasoning rather than an Anthropic signature.</summary>
+    public const string SignaturePrefix = "local:";
+
     [GeneratedRegex("^[a-zA-Z0-9_-]+$")]
     private static partial Regex ValidToolUseId();
 
@@ -20,7 +24,14 @@ public static partial class ChatResponseTranslator
         var content = new JsonArray();
 
         var filter = new ThinkTagFilter();
-        var text = filter.Feed(ChatRequestTranslator.Str(message?["content"]) ?? "") + filter.Flush();
+        var (tagged, text) = filter.Feed(ChatRequestTranslator.Str(message?["content"]) ?? "");
+        var (taggedRest, textRest) = filter.Flush();
+        text += textRest;
+        var thinking = Reasoning(message) + tagged + taggedRest;
+        if (thinking.Length > 0)
+        {
+            content.Add(new JsonObject { ["type"] = "thinking", ["thinking"] = thinking, ["signature"] = SignaturePrefix });
+        }
         if (text.Length > 0)
         {
             content.Add(new JsonObject { ["type"] = "text", ["text"] = text });
@@ -53,6 +64,10 @@ public static partial class ChatResponseTranslator
             ["usage"] = Usage(chat["usage"], estimatedInputTokens),
         };
     }
+
+    /// <summary>The reasoning a message or stream delta carries in a separate field (vLLM and llama.cpp: <c>reasoning_content</c>; others: <c>reasoning</c>).</summary>
+    public static string Reasoning(JsonNode? message) =>
+        ChatRequestTranslator.Str(message?["reasoning_content"]) ?? ChatRequestTranslator.Str(message?["reasoning"]) ?? "";
 
     /// <summary>Truncation wins; otherwise any emitted tool call means the client must run tools, whatever the upstream said.</summary>
     public static string StopReason(string? finishReason, bool hasToolUse) => finishReason switch

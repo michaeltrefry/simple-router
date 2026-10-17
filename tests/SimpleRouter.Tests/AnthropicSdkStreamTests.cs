@@ -189,6 +189,23 @@ public class AnthropicSdkStreamTests
     }
 
     [Fact]
+    public async Task A_local_stream_with_reasoning_accumulates_a_signed_thinking_block_in_the_sdk()
+    {
+        await using var host = await StartLocalAsync(_ => ChatSse(
+            """{"id":"c4","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Need the "}}]}""",
+            """{"id":"c4","choices":[{"index":0,"delta":{"reasoning_content":"file list."}}]}""",
+            """{"id":"c4","choices":[{"index":0,"delta":{"content":"Checking."}}]}""",
+            """{"id":"c4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":40,"completion_tokens":9}}""",
+            "[DONE]"));
+
+        var message = await StreamAsync(host, FirstTurn());
+
+        Assert.True(message.Content[0].TryPickThinking(out var thinking));
+        Assert.Equal(("Need the file list.", "local:"), (thinking!.Thinking, thinking.Signature));
+        Assert.Equal("Checking.", Text(message));
+    }
+
+    [Fact]
     public async Task A_local_tool_call_round_trip_accumulates_in_the_sdk()
     {
         await using var host = await StartLocalAsync(_ => ChatSse(

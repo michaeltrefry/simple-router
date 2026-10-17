@@ -3,8 +3,8 @@ using System.Text;
 namespace SimpleRouter.Local;
 
 /// <summary>
-/// Removes a leading <c>&lt;think&gt;…&lt;/think&gt;</c> reasoning block from streamed content. Only a block that opens
-/// the content (after whitespace) counts, so prose that mentions the tag is kept. Tags split across chunks are handled.
+/// Splits a leading <c>&lt;think&gt;…&lt;/think&gt;</c> reasoning block off streamed content. Only a block that opens
+/// the content (after whitespace) counts, so prose that mentions the tag stays text. Tags split across chunks are handled.
 /// </summary>
 public sealed class ThinkTagFilter
 {
@@ -16,10 +16,12 @@ public sealed class ThinkTagFilter
     private readonly StringBuilder _pending = new();
     private State _state;
 
-    public string Feed(string text)
+    /// <summary>The reasoning and the text in <paramref name="text"/>; either may be empty while a tag could still be forming.</summary>
+    public (string Thinking, string Text) Feed(string text)
     {
         var s = _pending.Append(text).ToString();
         _pending.Clear();
+        var thinking = "";
         while (true)
         {
             switch (_state)
@@ -35,17 +37,19 @@ public sealed class ThinkTagFilter
                     if (Open.StartsWith(trimmed, StringComparison.Ordinal))
                     {
                         _pending.Append(s);
-                        return "";
+                        return (thinking, "");
                     }
                     _state = State.Passthrough;
-                    return s;
+                    return (thinking, s);
                 case State.Inside:
                     var end = s.IndexOf(Close, StringComparison.Ordinal);
                     if (end < 0)
                     {
-                        _pending.Append(s, s.Length - PartialCloseLength(s), PartialCloseLength(s));
-                        return "";
+                        var held = PartialCloseLength(s);
+                        _pending.Append(s, s.Length - held, held);
+                        return (thinking + s[..^held], "");
                     }
+                    thinking += s[..end];
                     s = s[(end + Close.Length)..];
                     _state = State.AfterClose;
                     continue;
@@ -55,19 +59,24 @@ public sealed class ThinkTagFilter
                     {
                         _state = State.Passthrough;
                     }
-                    return s;
+                    return (thinking, s);
                 default:
-                    return s;
+                    return (thinking, s);
             }
         }
     }
 
-    /// <summary>Text held back while it could still be the opening tag; an unterminated reasoning block is dropped.</summary>
-    public string Flush()
+    /// <summary>Text held back while it could still be the opening tag, or reasoning held back while it could be the closing one.</summary>
+    public (string Thinking, string Text) Flush()
     {
-        var s = _state == State.Leading ? _pending.ToString() : "";
+        var s = _pending.ToString();
         _pending.Clear();
-        return s;
+        return _state switch
+        {
+            State.Leading => ("", s),
+            State.Inside => (s, ""),
+            _ => ("", ""),
+        };
     }
 
     private static int PartialCloseLength(string s)
