@@ -42,6 +42,21 @@ public class SettingsFailureTests
     }
 
     [Fact]
+    public async Task A_conversation_limit_below_one_is_refused()
+    {
+        var (host, _) = await StartAsync();
+        await using var _host = host;
+        var catalog = host.Services.GetRequiredService<CatalogSettings>();
+
+        var error = await Assert.ThrowsAsync<SettingsException>(() => catalog.SaveLocalModelAsync(
+            new LocalModelInput("new-local", "up", "http://new.test/v1", null, true, false, true, null, [ModelTier.Low], MaxConversations: 0), null));
+
+        Assert.Contains("Max conversations", error.Message);
+        await using var db = await DbAsync(host);
+        Assert.Null(await db.Models.FindAsync("new-local"));
+    }
+
+    [Fact]
     public async Task A_failed_alias_save_keeps_the_previous_aliases()
     {
         var (host, _) = await StartAsync();

@@ -23,7 +23,7 @@ public class LocalRoutingTests
             { "id": "local-a", "provider": "local", "upstreamModelId": "upstream-local-a", "enabled": true,
               "baseUrl": "http://local-a.test/v1", "apiKey": "local-secret-a", "contextWindow": 1000, "supportsVision": true },
             { "id": "local-b", "provider": "local", "upstreamModelId": "upstream-local-b", "enabled": true, "baseUrl": "http://local-b.test/v1/" },
-            { "id": "local-off", "provider": "local", "upstreamModelId": "upstream-local-off", "enabled": false, "baseUrl": "http://local-off.test/v1" },
+            { "id": "local-off", "provider": "local", "upstreamModelId": "upstream-local-off", "enabled": false, "baseUrl": "http://local-off.test/v1", "maxConversations": 1 },
             { "id": "local-c", "provider": "local", "upstreamModelId": "upstream-local-c", "enabled": true, "baseUrl": "http://local-c.test/v1", "supportsTools": false, "maxPromptTokens": 50000 }
           ],
           "tiers": {
@@ -645,5 +645,74 @@ public class LocalRoutingTests
         var renamed = await db.Models.FindAsync("local-renamed");
         Assert.Equal("http://override.test/v1", renamed!.BaseUrl);
         Assert.False(renamed.Enabled);
+    }
+
+    /// <summary>Gives local-a a one-conversation limit and leaves it the only local of mid, as Mimo is.</summary>
+    private static async Task SingleSlotLocalAAsync(RouterHost host, Locals locals, bool subscriptionEnabled = true)
+    {
+        await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        {
+            Assert.Equal(1, (await db.Models.FindAsync("local-off"))!.MaxConversations);
+            (await db.Models.FindAsync("local-a"))!.MaxConversations = 1;
+            (await db.Models.FindAsync("sub-mid"))!.Enabled = subscriptionEnabled;
+            await db.SaveChangesAsync();
+        }
+        locals.Healthy.Remove("local-b.test");
+        await CheckHealthAsync(host);
+    }
+
+    [Fact]
+    public async Task A_single_slot_local_keeps_its_conversation_and_others_go_to_the_next_model_and_stay_there()
+    {
+        var (host, locals) = await StartAsync();
+        await using var _host = host;
+        await SingleSlotLocalAAsync(host, locals);
+
+        Assert.Equal("local-a.test", await ServedByAsync(host, Message(sessionId: "s1")));
+        Assert.Equal("claude", await ServedByAsync(host, Message(sessionId: "s2")));
+        Assert.Equal("local-a.test", await ServedByAsync(host, Message(sessionId: "s1")));
+        Assert.Equal("claude", await ServedByAsync(host, Message(sessionId: "s2")));
+    }
+
+    [Fact]
+    public async Task A_session_whose_single_slot_local_is_busy_with_another_conversation_re_pins_and_stays_moved()
+    {
+        var (host, locals) = await StartAsync(null, "--SimpleRouter:Local:ConversationIdle=00:00:00");
+        await using var _host = host;
+        await SingleSlotLocalAAsync(host, locals);
+        Assert.Equal("local-a.test", await ServedByAsync(host, Message(sessionId: "s1")));
+
+        var respond = host.Local.Respond;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.Local.RespondAsync = async request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/chat/completions") && entered.TrySetResult())
+            {
+                await release.Task;
+            }
+            return respond(request);
+        };
+        var inFlight = host.Client.SendAsync(Message(sessionId: "s2"));
+        await entered.Task;
+
+        Assert.Equal("claude", await ServedByAsync(host, Message(sessionId: "s1")));
+        release.SetResult();
+        using (var s2 = await inFlight)
+        {
+            Assert.Equal(HttpStatusCode.OK, s2.StatusCode);
+        }
+        Assert.Equal("claude", await ServedByAsync(host, Message(sessionId: "s1")));
+    }
+
+    [Fact]
+    public async Task A_busy_single_slot_local_still_serves_when_no_other_model_is_eligible()
+    {
+        var (host, locals) = await StartAsync();
+        await using var _host = host;
+        await SingleSlotLocalAAsync(host, locals, subscriptionEnabled: false);
+
+        Assert.Equal("local-a.test", await ServedByAsync(host, Message(sessionId: "s1")));
+        Assert.Equal("local-a.test", await ServedByAsync(host, Message(sessionId: "s2")));
     }
 }

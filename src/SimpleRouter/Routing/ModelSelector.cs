@@ -5,18 +5,24 @@ using SimpleRouter.Local;
 
 namespace SimpleRouter.Routing;
 
+/// <summary>A selected model and the hold on its conversation place, released when the request is done.</summary>
+public sealed record ModelSelection(CatalogModel Model, IDisposable Hold);
+
 /// <summary>
 /// Picks the model for a (session, tier): its existing pin if still eligible, else the next eligible tier member in
 /// round-robin order, unless another pin of the same client session in the tier holds an eligible model, which the new
 /// pin then shares without taking a turn. Eligible means enabled, served by a registered upstream, logged in and present in the provider's
 /// discovered model list (subscriptions), not cooling after a fault (<see cref="ModelCooldowns"/>), healthy (locals) and
 /// able to serve the request (<see cref="RequestNeeds"/>). Mid and Low give new sessions to eligible local models first and use subscriptions only when none is.
+/// A local model already serving its limit of other conversations (<see cref="LocalConversations"/>) is skipped, and a
+/// session pinned to it re-pins, unless no other model is eligible.
 /// Both the pin and the per-tier round-robin cursor are persisted, so assignments survive restarts.
 /// </summary>
 public sealed class ModelSelector(
     IDbContextFactory<RouterDbContext> dbFactory,
     IEnumerable<IModelUpstream> upstreams,
     LocalHealth health,
+    LocalConversations conversations,
     DashboardEvents events,
     TimeProvider time,
     ILogger<ModelSelector> logger)
@@ -38,30 +44,34 @@ public sealed class ModelSelector(
     /// <summary>
     /// Returns the session's model in <paramref name="tier"/>, assigning and persisting a pin if it has none or its pinned
     /// model is no longer eligible; null when the tier has no eligible model. Models in <paramref name="exclude"/> (already
-    /// tried by this request) count as ineligible, so a failed pinned model is re-pinned.
+    /// tried by this request) count as ineligible, so a failed pinned model is re-pinned. The returned hold keeps the
+    /// session's place on a local model with a conversation limit until it is disposed.
     /// </summary>
-    public async Task<CatalogModel?> SelectAsync(ModelTier tier, SessionIdentity session, RequestNeeds needs, CancellationToken ct,
+    public async Task<ModelSelection?> SelectAsync(ModelTier tier, SessionIdentity session, RequestNeeds needs, CancellationToken ct,
         IReadOnlySet<string>? exclude = null)
     {
         await using (var reader = await dbFactory.CreateDbContextAsync(ct))
         {
-            var eligible = await EligibleAsync(reader, tier, needs, ct, exclude: exclude);
+            var (eligible, crowded) = Open(await EligibleAsync(reader, tier, needs, ct, exclude: exclude), session);
             if (eligible.Count == 0)
             {
                 return null;
             }
-            if (await PinnedAsync(reader, tier, session, eligible, ct) is { } pinned)
+            if (await PinnedAsync(reader, tier, session, eligible, ct) is { } pinned
+                && conversations.TryEnter(pinned, session.Key, force: crowded) is { } hold)
             {
-                return pinned;
+                return new ModelSelection(pinned, hold);
             }
         }
 
         CatalogModel model;
+        IDisposable? held;
         await _gate.WaitAsync(ct);
         try
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct);
-            var eligible = await EligibleAsync(db, tier, needs, ct, exclude: exclude);
+            var all = await EligibleAsync(db, tier, needs, ct, exclude: exclude);
+            var (eligible, crowded) = Open(all, session);
             if (eligible.Count == 0)
             {
                 return null;
@@ -69,9 +79,13 @@ public sealed class ModelSelector(
 
             var pin = await db.SessionPins.FindAsync([session.Key, tier], ct);
             var pinned = pin is null ? null : eligible.FirstOrDefault(m => m.Id == pin.ModelId);
-            if (pinned is not null)
+            if (pinned is not null && conversations.TryEnter(pinned, session.Key, force: crowded) is { } hold)
             {
-                return pinned;
+                return new ModelSelection(pinned, hold);
+            }
+            if (pin is not null && all.Any(m => m.Id == pin.ModelId))
+            {
+                logger.LogInformation("Model {model} is serving other conversations; moving a session in tier {tier}", pin.ModelId, tier.Name());
             }
 
             var sibling = pin is null ? await SiblingAsync(db, tier, session, eligible, ct) : null;
@@ -91,6 +105,9 @@ public sealed class ModelSelector(
                 model = pool[(int)(cursor.Next % pool.Count)];
                 cursor.Next++;
             }
+            // Under the gate no other assignment can fill the model since it was found open; a pinned request racing in
+            // may have, which costs one extra conversation rather than a failed request.
+            held = conversations.TryEnter(model, session.Key, force: true)!;
 
             if (pin is null)
             {
@@ -116,14 +133,14 @@ public sealed class ModelSelector(
             _gate.Release();
         }
         events.Publish();
-        return model;
+        return new ModelSelection(model, held);
     }
 
     /// <summary>The session's pinned model if still eligible, else the model its next round-robin turn would get; never assigns.</summary>
     public async Task<CatalogModel?> PeekAsync(ModelTier tier, SessionIdentity session, RequestNeeds needs, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var eligible = await EligibleAsync(db, tier, needs, ct);
+        var (eligible, _) = Open(await EligibleAsync(db, tier, needs, ct), session);
         if (eligible.Count == 0)
         {
             return null;
@@ -139,6 +156,16 @@ public sealed class ModelSelector(
         var cursor = await db.TierCursors.AsNoTracking().FirstOrDefaultAsync(c => c.Tier == tier, ct);
         var pool = NewSessionPool(tier, eligible);
         return pool[(int)((cursor?.Next ?? 0) % pool.Count)];
+    }
+
+    /// <summary>
+    /// The eligible models that admit this session's conversation; all of them, flagged crowded, when none does, so a
+    /// busy local model still serves rather than the tier going empty.
+    /// </summary>
+    private (List<CatalogModel> Eligible, bool Crowded) Open(List<CatalogModel> eligible, SessionIdentity session)
+    {
+        var open = eligible.Where(m => conversations.Admits(m, session.Key)).ToList();
+        return open.Count > 0 || eligible.Count == 0 ? (open, false) : (eligible, true);
     }
 
     private static List<CatalogModel> NewSessionPool(ModelTier tier, List<CatalogModel> eligible)

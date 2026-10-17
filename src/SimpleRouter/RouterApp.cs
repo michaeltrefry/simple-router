@@ -101,6 +101,7 @@ public static class RouterApp
         builder.Services.AddHostedService<ModelDiscoveryMonitor>();
         builder.Services.AddSingleton<CatalogSeeder>();
         builder.Services.AddSingleton<ModelCooldowns>();
+        builder.Services.AddSingleton<LocalConversations>();
         builder.Services.AddSingleton<ModelSelector>();
         builder.Services.AddSingleton<MessageRouter>();
         builder.Services.AddSingleton<UsageRecorder>();

@@ -97,6 +97,7 @@ public class SettingsFormsTests
         await cut.ChangeAsync("#local-model-form .effort-levels", "high, low");
         await cut.ChangeAsync("#local-model-form .effort-default", "low");
         await cut.ChangeAsync("#local-model-form .max-prompt", "20000");
+        await cut.ChangeAsync("#local-model-form .max-conversations", "1");
         await cut.ClickAsync("#local-model-form .save");
 
         Assert.Equal("seeded.test", await ServedByAsync(host, Message("kept-key", "low")));
@@ -108,6 +109,7 @@ public class SettingsFormsTests
             Assert.Equal(EffortMode.ReasoningEffort, model.Effort.Mode);
             Assert.Equal(EffortLevel.Low, model.Effort.Default);
             Assert.Equal(20000, model.MaxPromptTokens);
+            Assert.Equal(1, model.MaxConversations);
         }
 
         await cut.Row("model-settings", "local-seeded").QuerySelector(".edit")!.ClickAsync(new());
