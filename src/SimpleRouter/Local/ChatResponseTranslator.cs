@@ -27,7 +27,8 @@ public static partial class ChatResponseTranslator
         var (tagged, text) = filter.Feed(ChatRequestTranslator.Str(message?["content"]) ?? "");
         var (taggedRest, textRest) = filter.Flush();
         text += textRest;
-        var thinking = Reasoning(message) + tagged + taggedRest;
+        // A server that fills a reasoning field may also leave the same reasoning in <think> tags (llama.cpp's deepseek-legacy format).
+        var thinking = Reasoning(message) is { Length: > 0 } field ? field : tagged + taggedRest;
         if (thinking.Length > 0)
         {
             content.Add(new JsonObject { ["type"] = "thinking", ["thinking"] = thinking, ["signature"] = SignaturePrefix });

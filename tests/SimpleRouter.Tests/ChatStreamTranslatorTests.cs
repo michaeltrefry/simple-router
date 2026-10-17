@@ -113,8 +113,6 @@ public class ChatStreamTranslatorTests
     public void Reasoning_fields_and_leading_think_tags_split_across_chunks_stream_as_one_signed_thinking_block()
     {
         var message = Run(
-            """{"choices":[{"index":0,"delta":{"reasoning_content":"pondering"}}]}""",
-            """{"choices":[{"index":0,"delta":{"reasoning":"more"}}]}""",
             Content("  <thi"),
             Content("nk>step one</th"),
             Content("ink>\n\nAnswer: use <think> tags"),
@@ -125,10 +123,22 @@ public class ChatStreamTranslatorTests
             thinking =>
             {
                 Assert.Equal("thinking", thinking.Type);
-                Assert.Equal("ponderingmorestep one", thinking.Text);
+                Assert.Equal("step one", thinking.Text);
                 Assert.Equal(ChatResponseTranslator.SignaturePrefix, thinking.Signature);
             },
             text => Assert.Equal(("text", "Answer: use <think> tags sparingly."), (text.Type, text.Text)));
+    }
+
+    [Fact]
+    public void Reasoning_fields_win_over_the_same_reasoning_repeated_in_think_tags()
+    {
+        var message = Run(
+            """{"choices":[{"index":0,"delta":{"reasoning_content":"Let","content":"<think>Let"}}]}""",
+            """{"choices":[{"index":0,"delta":{"reasoning":" me","content":" me</think>"}}]}""",
+            Content("Answer."),
+            Finish("stop"));
+
+        Assert.Equal([("thinking", "Let me"), ("text", "Answer.")], message.Blocks.Select(b => (b.Type, b.Text)));
     }
 
     [Fact]

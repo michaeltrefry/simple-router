@@ -22,6 +22,7 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
     private readonly ThinkTagFilter _think = new();
     private readonly SortedDictionary<int, ToolCall> _tools = [];
     private int _blocks;
+    private bool _reasoningField;
     private int? _open;
     private string? _openKind;
     private int? _lastToolIndex;
@@ -60,11 +61,14 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
 
         var sse = new StringBuilder();
         var delta = choice["delta"];
-        Append(sse, "thinking", ChatResponseTranslator.Reasoning(delta));
+        var reasoning = ChatResponseTranslator.Reasoning(delta);
+        _reasoningField |= reasoning.Length > 0;
+        Append(sse, "thinking", reasoning);
         if (ChatRequestTranslator.Str(delta?["content"]) is { } content)
         {
             var (thinking, text) = _think.Feed(content);
-            Append(sse, "thinking", thinking);
+            // A server that fills a reasoning field may also leave the same reasoning in <think> tags (llama.cpp's deepseek-legacy format).
+            Append(sse, "thinking", _reasoningField ? "" : thinking);
             Append(sse, "text", text);
         }
         foreach (var call in delta?["tool_calls"] as JsonArray ?? [])
@@ -82,7 +86,7 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
     {
         var sse = new StringBuilder();
         var (thinking, text) = _think.Flush();
-        Append(sse, "thinking", thinking);
+        Append(sse, "thinking", _reasoningField ? "" : thinking);
         Append(sse, "text", text);
         Close(sse);
 
