@@ -15,6 +15,7 @@ public sealed partial class CatalogSettings(
     IDbContextFactory<RouterDbContext> dbFactory,
     SecretProtector secrets,
     LocalHealth health,
+    LocalConversations conversations,
     DashboardEvents events)
 {
     /// <summary>Alias globs run against every request's model; these caps bound their matching cost.</summary>
@@ -281,6 +282,7 @@ public sealed partial class CatalogSettings(
             if (existingId is not null && existingId != id)
             {
                 await health.RenameAsync(existingId, id, () => transaction.CommitAsync(ct), ct);
+                conversations.Rename(existingId, id);
             }
             else
             {

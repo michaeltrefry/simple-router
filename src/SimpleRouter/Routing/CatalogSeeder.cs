@@ -163,6 +163,7 @@ public sealed class CatalogSeeder(
         foreach (var m in seed.Models)
         {
             Effort.Validate(m.Effort, m.Id);
+            ValidateConversations(m.MaxConversations, m.Id);
         }
         return seed;
     }
@@ -211,6 +212,7 @@ public sealed class CatalogSeeder(
         foreach (var o in overrides.Models ?? [])
         {
             Effort.Validate(o.Effort, o.Id);
+            ValidateConversations(o.MaxConversations, o.Id);
             if (await db.Models.FindAsync([o.Id], ct) is not { } model)
             {
                 logger.LogWarning("Seed override names unknown model {model}; skipped", o.Id);
@@ -237,6 +239,14 @@ public sealed class CatalogSeeder(
         }
         await db.SaveChangesAsync(ct);
         logger.LogInformation("Applied the seed override file");
+    }
+
+    private static void ValidateConversations(int? maxConversations, string id)
+    {
+        if (maxConversations is <= 0)
+        {
+            throw new InvalidDataException($"Model {id}: maxConversations must be a positive number, or absent for no limit.");
+        }
     }
 
     private string? Protect(string? apiKey) => string.IsNullOrEmpty(apiKey) ? null : secrets.Protect(apiKey);

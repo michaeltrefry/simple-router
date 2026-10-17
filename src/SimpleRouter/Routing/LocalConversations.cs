@@ -23,7 +23,7 @@ public sealed class LocalConversations(IOptions<RouterOptions> options, TimeProv
     /// <summary>True unless <paramref name="model"/> is at its limit with conversations other than <paramref name="sessionKey"/>.</summary>
     public bool Admits(CatalogModel model, string sessionKey)
     {
-        if (model.MaxConversations is not { } max)
+        if (model.Provider != ProviderKind.Local || model.MaxConversations is not { } max)
         {
             return true;
         }
@@ -41,7 +41,7 @@ public sealed class LocalConversations(IOptions<RouterOptions> options, TimeProv
     /// </summary>
     public IDisposable? TryEnter(CatalogModel model, string sessionKey, bool force = false)
     {
-        if (model.MaxConversations is not { } max)
+        if (model.Provider != ProviderKind.Local || model.MaxConversations is not { } max)
         {
             return Released.Instance;
         }
@@ -59,6 +59,30 @@ public sealed class LocalConversations(IOptions<RouterOptions> options, TimeProv
             holder.InFlight++;
             holder.LastActive = time.GetUtcNow();
             return new Lease(this, model.Id, sessionKey);
+        }
+    }
+
+    /// <summary>Drops <paramref name="sessionKey"/>'s idle hold on a model it has moved away from, so the place is free at once.</summary>
+    public void Leave(string modelId, string sessionKey)
+    {
+        lock (_models)
+        {
+            if (_models.TryGetValue(modelId, out var holders) && holders.TryGetValue(sessionKey, out var holder) && holder.InFlight == 0)
+            {
+                holders.Remove(sessionKey);
+            }
+        }
+    }
+
+    /// <summary>Moves a renamed model's holds to its new ID.</summary>
+    public void Rename(string oldId, string newId)
+    {
+        lock (_models)
+        {
+            if (_models.Remove(oldId, out var holders))
+            {
+                _models[newId] = holders;
+            }
         }
     }
 

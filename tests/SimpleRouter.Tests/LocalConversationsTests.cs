@@ -75,4 +75,43 @@ public class LocalConversationsTests
         Assert.True(conversations.Admits(unlimited, "b"));
         Assert.NotNull(conversations.TryEnter(unlimited, "b"));
     }
+
+    [Fact]
+    public void Leaving_frees_an_idle_place_at_once_but_not_one_in_flight()
+    {
+        var (conversations, _) = Create();
+
+        conversations.TryEnter(SingleSlot, "a")!.Dispose();
+        var inFlight = conversations.TryEnter(SingleSlot, "a")!;
+        conversations.Leave("mimo", "a");
+        Assert.False(conversations.Admits(SingleSlot, "b"));
+
+        inFlight.Dispose();
+        conversations.Leave("mimo", "a");
+        Assert.True(conversations.Admits(SingleSlot, "b"));
+    }
+
+    [Fact]
+    public void A_renamed_model_keeps_its_holds()
+    {
+        var (conversations, _) = Create();
+        conversations.TryEnter(SingleSlot, "a")!.Dispose();
+
+        conversations.Rename("mimo", "mimo-2");
+
+        var renamed = new CatalogModel { Id = "mimo-2", UpstreamModelId = "mimo", Provider = ProviderKind.Local, MaxConversations = 1 };
+        Assert.False(conversations.Admits(renamed, "b"));
+        Assert.True(conversations.Admits(SingleSlot, "b"));
+    }
+
+    [Fact]
+    public void A_limit_on_a_subscription_model_is_ignored()
+    {
+        var (conversations, _) = Create();
+        var subscription = new CatalogModel { Id = "sonnet", UpstreamModelId = "sonnet", Provider = ProviderKind.Claude, MaxConversations = 1 };
+
+        conversations.TryEnter(subscription, "a");
+
+        Assert.True(conversations.Admits(subscription, "b"));
+    }
 }

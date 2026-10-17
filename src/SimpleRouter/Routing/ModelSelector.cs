@@ -65,50 +65,65 @@ public sealed class ModelSelector(
         }
 
         CatalogModel model;
-        IDisposable? held;
+        IDisposable held;
         await _gate.WaitAsync(ct);
         try
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct);
-            var all = await EligibleAsync(db, tier, needs, ct, exclude: exclude);
-            var (eligible, crowded) = Open(all, session);
-            if (eligible.Count == 0)
-            {
-                return null;
-            }
-
             var pin = await db.SessionPins.FindAsync([session.Key, tier], ct);
-            var pinned = pin is null ? null : eligible.FirstOrDefault(m => m.Id == pin.ModelId);
-            if (pinned is not null && conversations.TryEnter(pinned, session.Key, force: crowded) is { } hold)
+            // A pinned request on the fast path can fill a model between finding it open and entering it; then choose again.
+            while (true)
             {
-                return new ModelSelection(pinned, hold);
-            }
-            if (pin is not null && all.Any(m => m.Id == pin.ModelId))
-            {
-                logger.LogInformation("Model {model} is serving other conversations; moving a session in tier {tier}", pin.ModelId, tier.Name());
-            }
-
-            var sibling = pin is null ? await SiblingAsync(db, tier, session, eligible, ct) : null;
-            if (sibling is not null)
-            {
-                model = sibling;
-            }
-            else
-            {
-                var cursor = await db.TierCursors.FindAsync([tier], ct);
-                if (cursor is null)
+                var all = await EligibleAsync(db, tier, needs, ct, exclude: exclude);
+                var (eligible, crowded) = Open(all, session);
+                if (eligible.Count == 0)
                 {
-                    cursor = new TierCursor { Tier = tier };
-                    db.TierCursors.Add(cursor);
+                    return null;
                 }
-                var pool = NewSessionPool(tier, eligible);
-                model = pool[(int)(cursor.Next % pool.Count)];
-                cursor.Next++;
-            }
-            // Under the gate no other assignment can fill the model since it was found open; a pinned request racing in
-            // may have, which costs one extra conversation rather than a failed request.
-            held = conversations.TryEnter(model, session.Key, force: true)!;
 
+                var pinned = pin is null ? null : eligible.FirstOrDefault(m => m.Id == pin.ModelId);
+                if (pinned is not null && conversations.TryEnter(pinned, session.Key, force: crowded) is { } hold)
+                {
+                    return new ModelSelection(pinned, hold);
+                }
+                if (pin is not null && all.Any(m => m.Id == pin.ModelId))
+                {
+                    logger.LogInformation("Model {model} is serving other conversations; moving a session in tier {tier}", pin.ModelId, tier.Name());
+                }
+
+                var sibling = pin is null ? await SiblingAsync(db, tier, session, eligible, ct) : null;
+                TierCursor? cursor = null;
+                if (sibling is not null)
+                {
+                    model = sibling;
+                }
+                else
+                {
+                    cursor = await db.TierCursors.FindAsync([tier], ct);
+                    if (cursor is null)
+                    {
+                        cursor = new TierCursor { Tier = tier };
+                        db.TierCursors.Add(cursor);
+                    }
+                    var pool = NewSessionPool(tier, eligible);
+                    model = pool[(int)(cursor.Next % pool.Count)];
+                }
+                if (conversations.TryEnter(model, session.Key, force: crowded) is { } entered)
+                {
+                    held = entered;
+                    if (cursor is not null)
+                    {
+                        cursor.Next++;
+                    }
+                    break;
+                }
+            }
+
+            if (pin is not null && pin.ModelId != model.Id)
+            {
+                // The old model no longer counts this conversation, or it would stay closed to others for the idle window.
+                conversations.Leave(pin.ModelId, session.Key);
+            }
             if (pin is null)
             {
                 db.SessionPins.Add(new SessionPin
@@ -125,7 +140,15 @@ public sealed class ModelSelector(
                 // The pinned model was disabled, removed from the tier, went unhealthy, is cooling, failed this request or cannot serve it.
                 pin.ModelId = model.Id;
             }
-            await db.SaveChangesAsync(ct);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch
+            {
+                held.Dispose();
+                throw;
+            }
             logger.LogInformation("Pinned a session to {model} in tier {tier}", model.Id, tier.Name());
         }
         finally

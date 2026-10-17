@@ -715,4 +715,38 @@ public class LocalRoutingTests
         Assert.Equal("local-a.test", await ServedByAsync(host, Message(sessionId: "s1")));
         Assert.Equal("local-a.test", await ServedByAsync(host, Message(sessionId: "s2")));
     }
+
+    [Fact]
+    public async Task A_conversation_that_outgrows_a_single_slot_local_frees_it_at_once()
+    {
+        var (host, locals) = await StartAsync();
+        await using var _host = host;
+        await SingleSlotLocalAAsync(host, locals);
+        await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        {
+            (await db.Models.FindAsync("local-a"))!.MaxPromptTokens = 300;
+            await db.SaveChangesAsync();
+        }
+        Assert.Equal("local-a.test", await ServedByAsync(host, Message(sessionId: "s1")));
+        JsonArray grown = [
+            new JsonObject { ["role"] = "user", ["content"] = "hello" },
+            new JsonObject { ["role"] = "assistant", ["content"] = "hi" },
+            new JsonObject { ["role"] = "user", ["content"] = new string('x', 1600) },
+        ];
+
+        Assert.Equal("claude", await ServedByAsync(host, Message(sessionId: "s1", messages: grown)));
+        Assert.Equal("local-a.test", await ServedByAsync(host, Message(sessionId: "s2")));
+    }
+
+    [Fact]
+    public async Task An_override_with_a_conversation_limit_below_one_fails_startup()
+    {
+        var dataDirectory = RouterHost.NewDataDirectory();
+        Directory.CreateDirectory(dataDirectory);
+        await File.WriteAllTextAsync(Path.Combine(dataDirectory, "seed.local.json"), """{ "models": [ { "id": "local-a", "maxConversations": 0 } ] }""");
+
+        var e = await Assert.ThrowsAsync<InvalidDataException>(() => StartAsync(dataDirectory));
+
+        Assert.Contains("local-a", e.Message);
+    }
 }
