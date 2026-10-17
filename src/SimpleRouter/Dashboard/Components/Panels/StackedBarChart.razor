@@ -1,0 +1,85 @@
+@* A stacked bar per bucket, one segment per series; drawn as SVG on the server so the dashboard needs no chart script. *@
+
+<svg class="chart" id="@Id" viewBox="0 0 @Width @Height" role="img" aria-label="@Label">
+    @if (Max == 0)
+    {
+        <g><text class="chart-empty" x="@(Width / 2)" y="@(Height / 2)" text-anchor="middle">No requests in this period</text></g>
+    }
+    else
+    {
+        @foreach (var tick in new[] { 0d, 0.5, 1 })
+        {
+            var y = Num(Top + PlotHeight * (1 - tick));
+            <g>
+                <line class="chart-grid" x1="@Left" x2="@(Width - Right)" y1="@y" y2="@y" />
+                <text class="chart-axis" x="@(Left - 6)" y="@y" text-anchor="end" dominant-baseline="middle">@FormatAxis(Max * tick)</text>
+            </g>
+        }
+    }
+    @for (var i = 0; i < Buckets.Count; i++)
+    {
+        var bucket = i;
+        var x = Left + Slot * bucket;
+        <g class="chart-col">
+            <title>@Tooltip(bucket)</title>
+            <rect class="chart-hit" x="@Num(x)" y="@Top" width="@Num(Slot)" height="@PlotHeight" />
+            @{ double stacked = 0; }
+            @for (var s = 0; s < Series.Count; s++)
+            {
+                var value = Series[s].Values[bucket];
+                if (value <= 0)
+                {
+                    continue;
+                }
+                var h = PlotHeight * value / Max;
+                stacked += h;
+                <rect x="@Num(x + Slot * 0.15)" y="@Num(Top + PlotHeight - stacked)" width="@Num(Slot * 0.7)" height="@Num(h)" fill="@Series[s].Color" />
+            }
+        </g>
+        @if (bucket % LabelEvery == 0)
+        {
+            <g><text class="chart-axis" x="@Num(x + Slot / 2)" y="@(Height - 4)" text-anchor="middle">@Buckets[bucket]</text></g>
+        }
+    }
+</svg>
+
+@code {
+    /// <summary>One stack layer: a name, its color and a value per bucket.</summary>
+    public sealed record Layer(string Name, string Color, double[] Values);
+
+    private const int Width = 600, Height = 200, Top = 8, Left = 52, Right = 8, Bottom = 22;
+    private const int PlotHeight = Height - Top - Bottom;
+
+    [Parameter, EditorRequired] public string Id { get; set; } = "";
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter, EditorRequired] public IReadOnlyList<string> Buckets { get; set; } = [];
+    [Parameter, EditorRequired] public IReadOnlyList<Layer> Series { get; set; } = [];
+    [Parameter, EditorRequired] public Func<double, string> Format { get; set; } = v => v.ToString();
+    [Parameter] public Func<double, string>? AxisFormat { get; set; }
+
+    private double Slot => (double)(Width - Left - Right) / Math.Max(Buckets.Count, 1);
+    private int LabelEvery => Math.Max(1, (int)Math.Ceiling(Buckets.Count / 8d));
+    private double Max { get; set; }
+
+    protected override void OnParametersSet() =>
+        Max = Nice(Enumerable.Range(0, Buckets.Count).Select(i => Series.Sum(s => s.Values[i])).DefaultIfEmpty().Max());
+
+    // Rounds the axis top up to a readable value (60 rather than 59) so the gridline labels are round.
+    private static double Nice(double max)
+    {
+        if (max <= 0)
+        {
+            return 0;
+        }
+        var scale = Math.Pow(10, Math.Floor(Math.Log10(max)));
+        return new[] { 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10 }.First(f => f * scale >= max * (1 - 1e-9)) * scale;
+    }
+
+    private string FormatAxis(double v) => (AxisFormat ?? Format)(v);
+
+    private string Tooltip(int bucket) => string.Join("\n",
+        Series.Where(s => s.Values[bucket] > 0).Select(s => $"{s.Name}: {Format(s.Values[bucket])}")
+            .Prepend(Buckets[bucket]));
+
+    private static string Num(double v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+}

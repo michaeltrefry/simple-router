@@ -31,6 +31,9 @@ public abstract class LivePanel<T> : ComponentBase, IDisposable where T : class
         await LoadAsync();
     }
 
+    /// <summary>Reloads now, for a change made in the panel itself (a different range picked, say).</summary>
+    protected void Refresh() => OnChanged();
+
     // Coalesces signals: at most one reload runs, and any signals arriving meanwhile cause one more.
     private void OnChanged()
     {

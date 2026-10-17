@@ -1,0 +1,80 @@
+@inherits LivePanel<UsageChart>
+@inject DashboardData Dashboard
+
+<section class="card" id="usage-charts">
+    <div class="card-head">
+        <h2>Usage</h2>
+        <div class="segmented">
+            @foreach (var (range, label) in Ranges)
+            {
+                <button class="@(range == _range ? "active" : null)" @onclick="() => Pick(range)">@label</button>
+            }
+        </div>
+    </div>
+    @if (Data is null)
+    {
+        <p class="muted">Loading…</p>
+    }
+    else
+    {
+        <div class="stats">
+            <div class="stat"><span class="stat-label">Requests</span><span class="stat-value" id="usage-requests">@Tokens(Data.Requests)</span></div>
+            <div class="stat"><span class="stat-label">In + out tokens</span><span class="stat-value" id="usage-tokens">@Compact(Data.Tokens)</span></div>
+            <div class="stat"><span class="stat-label">Cost</span><span class="stat-value" id="usage-cost">@Dollars(Data.CostUsdMicros / 1_000_000d)</span></div>
+        </div>
+        <div class="grid">
+            <div>
+                <h3>Model usage</h3>
+                <p class="muted chart-sub">Requests per @Unit by the model that served them.</p>
+                <StackedBarChart Id="model-usage" Label="Requests per model" Buckets="Labels" Format="v => Tokens((long)v)" AxisFormat="@RequestAxis"
+                                 Series="@Layers(s => s.Requests.Select(r => (double)r))" />
+            </div>
+            <div>
+                <h3>Model spend</h3>
+                <p class="muted chart-sub">Cost per @Unit by the model that served them.</p>
+                <StackedBarChart Id="model-spend" Label="Cost per model" Buckets="Labels" Format="v => Cost((long)v)" AxisFormat="v => Dollars(v / 1_000_000)"
+                                 Series="@Layers(s => s.CostUsdMicros.Select(c => (double)c))" />
+            </div>
+        </div>
+        @if (Data.Series.Count > 0)
+        {
+            <ul class="legend">
+                @for (var i = 0; i < Data.Series.Count; i++)
+                {
+                    <li class="mono"><span class="swatch" style="background: @Color(i)"></span>@Data.Series[i].ModelId</li>
+                }
+            </ul>
+        }
+    }
+</section>
+
+@code {
+    private static readonly (UsageRange Range, string Label)[] Ranges = [(UsageRange.Day, "24h"), (UsageRange.Week, "7d"), (UsageRange.Month, "30d")];
+
+    private static readonly string[] Palette =
+        ["#FF6C47", "#358CC2", "#3FB950", "#EC9C41", "#7B70C9", "#41CAEC", "#F7CD04", "#009998", "#1D5C83", "#DA3633"];
+
+    private UsageRange _range = UsageRange.Week;
+
+    protected override Task<UsageChart> QueryAsync(CancellationToken ct) => Dashboard.UsageChartAsync(_range, ct);
+
+    private void Pick(UsageRange range)
+    {
+        _range = range;
+        Refresh();
+    }
+
+    private string Unit => Data?.Range == UsageRange.Day ? "hour" : "day";
+
+    private IReadOnlyList<string> Labels => Data!.Buckets
+        .Select(b => b.UtcDateTime.ToString(Data.Range == UsageRange.Day ? "HH:mm" : "MMM d", System.Globalization.CultureInfo.InvariantCulture))
+        .ToList();
+
+    private IReadOnlyList<StackedBarChart.Layer> Layers(Func<UsageSeries, IEnumerable<double>> values) =>
+        Data!.Series.Select((s, i) => new StackedBarChart.Layer(s.ModelId, Color(i), [.. values(s)])).ToList();
+
+    // The midline of a small axis can be fractional (1.5 of 3 requests); truncating it would mislabel the gridline.
+    private static string RequestAxis(double v) => v >= 1_000 ? Compact((long)v) : v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string Color(int index) => Palette[index % Palette.Length];
+}

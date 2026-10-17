@@ -10,6 +10,16 @@ public static class DashboardFormat
 
     public static string Cost(long micros) => (micros / 1_000_000m).ToString("$0.0000", CultureInfo.InvariantCulture);
 
+    /// <summary>Dollars for chart axes and totals: cents, or four places under a cent.</summary>
+    public static string Dollars(double usd) => usd.ToString(usd is > 0 and < 0.01 ? "$0.0000" : "$#,0.00", CultureInfo.InvariantCulture);
+
+    public static string Compact(long count) => count switch
+    {
+        >= 1_000_000 => (count / 1_000_000d).ToString("0.#M", CultureInfo.InvariantCulture),
+        >= 1_000 => (count / 1_000d).ToString("0.#K", CultureInfo.InvariantCulture),
+        _ => count.ToString(CultureInfo.InvariantCulture),
+    };
+
     public static string Latency(long ms) => ms < 1000
         ? $"{ms} ms"
         : (ms / 1000d).ToString("0.0 s", CultureInfo.InvariantCulture);
