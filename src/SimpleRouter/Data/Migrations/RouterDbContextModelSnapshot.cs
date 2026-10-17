@@ -34,6 +34,9 @@ namespace SimpleRouter.Data.Migrations
                     b.Property<bool>("Enabled")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("MaxConversations")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int?>("MaxPromptTokens")
                         .HasColumnType("INTEGER");
 

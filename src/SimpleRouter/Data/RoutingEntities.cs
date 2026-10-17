@@ -25,6 +25,12 @@ public sealed class CatalogModel
     /// </summary>
     public int? MaxPromptTokens { get; set; }
 
+    /// <summary>
+    /// How many conversations a local server keeps cached at once (a single-slot server: 1); while that many others are
+    /// active a new one goes to the tier's next model (<see cref="LocalConversations"/>). Null means no limit.
+    /// </summary>
+    public int? MaxConversations { get; set; }
+
     public bool SupportsTools { get; set; } = true;
     public bool SupportsVision { get; set; }
 

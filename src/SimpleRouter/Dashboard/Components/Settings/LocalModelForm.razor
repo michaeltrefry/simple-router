@@ -18,6 +18,7 @@
         }
         <label>Context window (tokens) <input class="context-window" @bind="_contextWindow" placeholder="empty = unlimited" /></label>
         <label>Max prompt (tokens) <input class="max-prompt" @bind="_maxPrompt" placeholder="empty = no cap; larger goes to the next model" /></label>
+        <label>Max conversations <input class="max-conversations" @bind="_maxConversations" placeholder="empty = no limit; 1 for a single-slot server" /></label>
         <label class="check"><input class="supports-tools" type="checkbox" @bind="_tools" /> Supports tools</label>
         <label class="check"><input class="supports-vision" type="checkbox" @bind="_vision" /> Supports vision</label>
         <label class="check"><input class="local-enabled" type="checkbox" @bind="_enabled" /> Enabled</label>
@@ -58,7 +59,7 @@
     [Parameter] public EventCallback<string> OnSaved { get; set; }
     [Parameter] public EventCallback OnCancel { get; set; }
 
-    private string _id = "", _upstream = "", _baseUrl = "", _apiKey = "", _contextWindow = "", _maxPrompt = "";
+    private string _id = "", _upstream = "", _baseUrl = "", _apiKey = "", _contextWindow = "", _maxPrompt = "", _maxConversations = "";
     private string _effortMode = "none", _effortLevels = "", _effortKwargs = "", _effortDefault = "";
     private bool _tools = true, _vision, _enabled = true, _clearApiKey, _busy, _testOk;
     private HashSet<ModelTier> _tiers = [];
@@ -73,15 +74,18 @@
         (_id, _upstream, _baseUrl) = (m.Id, m.UpstreamModelId, m.BaseUrl ?? "");
         _contextWindow = m.ContextWindow?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
         _maxPrompt = m.MaxPromptTokens?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        _maxConversations = m.MaxConversations?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
         (_tools, _vision, _enabled) = (m.SupportsTools, m.SupportsVision, m.Enabled);
         _tiers = m.Tiers.ToHashSet();
         (_effortMode, _effortLevels, _effortKwargs, _effortDefault) = EffortInput.Format(m.Effort);
     }
 
-    private static int? Tokens(string value, string field) =>
+    private static int? Tokens(string value, string field) => Count(value, field, "tokens");
+
+    private static int? Count(string value, string field, string unit) =>
         string.IsNullOrWhiteSpace(value) ? null
         : int.TryParse(value.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n
-        : throw new SettingsException($"{field} must be a whole number of tokens.");
+        : throw new SettingsException($"{field} must be a whole number of {unit}.");
 
     private void Toggle(ModelTier tier, bool on)
     {
@@ -119,7 +123,7 @@
         {
             var input = new LocalModelInput(_id, _upstream, _baseUrl, Tokens(_contextWindow, "Context window"), _tools, _vision, _enabled,
                 EffortInput.Parse(_effortMode, _effortLevels, _effortKwargs, _effortDefault), _tiers, _apiKey, _clearApiKey,
-                Tokens(_maxPrompt, "Max prompt"));
+                Tokens(_maxPrompt, "Max prompt"), Count(_maxConversations, "Max conversations", "conversations"));
             await Catalog.SaveLocalModelAsync(input, existingId: Existing?.Id);
             _apiKey = "";
             await OnSaved.InvokeAsync($"{_id.Trim()} saved.");

@@ -15,6 +15,7 @@ public sealed partial class CatalogSettings(
     IDbContextFactory<RouterDbContext> dbFactory,
     SecretProtector secrets,
     LocalHealth health,
+    LocalConversations conversations,
     DashboardEvents events)
 {
     /// <summary>Alias globs run against every request's model; these caps bound their matching cost.</summary>
@@ -41,7 +42,7 @@ public sealed partial class CatalogSettings(
         return new SettingsSnapshot(
             models.Select(m => new ModelRow(m.Id, m.Provider, m.UpstreamModelId, m.Enabled, m.BaseUrl, m.ProtectedApiKey is not null,
                 m.ContextWindow, m.SupportsTools, m.SupportsVision, m.Effort,
-                tiers.Where(t => t.Value.Contains(m.Id)).Select(t => t.Key).ToList(), m.MaxPromptTokens)).ToList(),
+                tiers.Where(t => t.Value.Contains(m.Id)).Select(t => t.Key).ToList(), m.MaxPromptTokens, m.MaxConversations)).ToList(),
             tiers,
             aliases.Select(a => new AliasRow(a.Pattern, a.Tier)).ToList(),
             ModelTiers.TryParse(setting?.Value, out var defaultTier) ? defaultTier : ModelTier.High,
@@ -220,6 +221,10 @@ public sealed partial class CatalogSettings(
         {
             throw new SettingsException("Max prompt must be a positive number of tokens, or empty for no cap.");
         }
+        if (input.MaxConversations is <= 0)
+        {
+            throw new SettingsException("Max conversations must be a positive number, or empty for no limit.");
+        }
         ValidEffort(input.Effort, id);
 
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
@@ -253,6 +258,7 @@ public sealed partial class CatalogSettings(
             model.BaseUrl = baseUrl;
             model.ContextWindow = input.ContextWindow;
             model.MaxPromptTokens = input.MaxPromptTokens;
+            model.MaxConversations = input.MaxConversations;
             model.SupportsTools = input.SupportsTools;
             model.SupportsVision = input.SupportsVision;
             model.Enabled = input.Enabled;
@@ -276,6 +282,7 @@ public sealed partial class CatalogSettings(
             if (existingId is not null && existingId != id)
             {
                 await health.RenameAsync(existingId, id, () => transaction.CommitAsync(ct), ct);
+                conversations.Rename(existingId, id);
             }
             else
             {

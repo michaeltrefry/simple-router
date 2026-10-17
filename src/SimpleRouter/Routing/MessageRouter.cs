@@ -69,12 +69,18 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         var tried = new HashSet<string>();
         ModelFault? overflow = null;
         var onlyOverflow = true;
-        while (await selector.SelectAsync(tier, session, needs, ct, tried) is { } chosen)
+        while (await selector.SelectAsync(tier, session, needs, ct, tried) is { } selection)
         {
+            var chosen = selection.Model;
             tried.Add(chosen.Id);
             // Upstreams rewrite the body for their provider; a failover must start from the client's request.
             var call = new UpstreamCall(context, (JsonObject)request.DeepClone(), session, chosen, false, needs.EstimatedTokens);
-            var (result, tokens) = await SendTappedAsync(chosen, call, partial => RecordServedAsync(chosen, partial));
+            UpstreamResult result;
+            TokenUsage? tokens;
+            using (selection.Hold)
+            {
+                (result, tokens) = await SendTappedAsync(chosen, call, partial => RecordServedAsync(chosen, partial));
+            }
             if (result.Fault is { } fault)
             {
                 await cooldowns.RecordAsync(chosen, fault);

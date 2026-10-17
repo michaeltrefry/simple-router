@@ -123,6 +123,12 @@ public sealed class LocalOptions
 
     /// <summary>A streaming response that sends nothing for this long is ended with an error event.</summary>
     public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromSeconds(120);
+
+    /// <summary>
+    /// How long after its last request ends a conversation still holds its place on a local model with
+    /// <see cref="Data.CatalogModel.MaxConversations"/>; a request in flight always holds it.
+    /// </summary>
+    public TimeSpan ConversationIdle { get; set; } = TimeSpan.FromMinutes(5);
 }
 
 /// <summary>SystemOne decision endpoint settings.</summary>

@@ -5,7 +5,8 @@ namespace SimpleRouter.Dashboard;
 /// <summary>A catalog model as the settings page shows it; the API key is only ever reported as set or not.</summary>
 public sealed record ModelRow(
     string Id, ProviderKind Provider, string UpstreamModelId, bool Enabled, string? BaseUrl, bool HasApiKey, int? ContextWindow,
-    bool SupportsTools, bool SupportsVision, EffortMapping? Effort, IReadOnlyList<ModelTier> Tiers, int? MaxPromptTokens = null);
+    bool SupportsTools, bool SupportsVision, EffortMapping? Effort, IReadOnlyList<ModelTier> Tiers, int? MaxPromptTokens = null,
+    int? MaxConversations = null);
 
 /// <summary>A model's prices in USD per million tokens; a model without a stored row shows zeros with <see cref="Stored"/> false.</summary>
 public sealed record PriceRow(
@@ -29,7 +30,8 @@ public sealed record SettingsSnapshot(
 /// </summary>
 public sealed record LocalModelInput(
     string Id, string UpstreamModelId, string BaseUrl, int? ContextWindow, bool SupportsTools, bool SupportsVision, bool Enabled,
-    EffortMapping? Effort, IReadOnlyCollection<ModelTier> Tiers, string? NewApiKey = null, bool ClearApiKey = false, int? MaxPromptTokens = null);
+    EffortMapping? Effort, IReadOnlyCollection<ModelTier> Tiers, string? NewApiKey = null, bool ClearApiKey = false, int? MaxPromptTokens = null,
+    int? MaxConversations = null);
 
 /// <summary>A SystemOne decision model to add or update; the API key fields work as in <see cref="LocalModelInput"/>.</summary>
 public sealed record SystemOneModelInput(string Id, string UpstreamModelId, string BaseUrl, bool Enabled, string? NewApiKey = null, bool ClearApiKey = false);
