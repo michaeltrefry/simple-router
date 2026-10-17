@@ -5,9 +5,10 @@ using SimpleRouter.Api;
 namespace SimpleRouter.Local;
 
 /// <summary>
-/// Turns Chat Completions stream chunks into an Anthropic Messages SSE stream. Text streams live as one text block;
-/// tool calls are accumulated by upstream index (their arguments may arrive fragmented and interleaved) and emitted
-/// after it as sequential <c>tool_use</c> blocks once each call's JSON is complete. Reasoning is omitted.
+/// Turns Chat Completions stream chunks into an Anthropic Messages SSE stream. Reasoning and text stream live as
+/// thinking and text blocks (a switch between them closes one and opens the other); tool calls are accumulated by upstream
+/// index (their arguments may arrive fragmented and interleaved) and emitted after them as sequential <c>tool_use</c>
+/// blocks once each call's JSON is complete.
 /// </summary>
 public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
 {
@@ -21,7 +22,9 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
     private readonly ThinkTagFilter _think = new();
     private readonly SortedDictionary<int, ToolCall> _tools = [];
     private int _blocks;
-    private int? _openText;
+    private bool _reasoningField;
+    private int? _open;
+    private string? _openKind;
     private int? _lastToolIndex;
     private string? _finishReason;
     private JsonNode? _usage;
@@ -58,9 +61,15 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
 
         var sse = new StringBuilder();
         var delta = choice["delta"];
+        var reasoning = ChatResponseTranslator.Reasoning(delta);
+        _reasoningField |= reasoning.Length > 0;
+        Append(sse, "thinking", reasoning);
         if (ChatRequestTranslator.Str(delta?["content"]) is { } content)
         {
-            AppendText(sse, _think.Feed(content));
+            var (thinking, text) = _think.Feed(content);
+            // A server that fills a reasoning field may also leave the same reasoning in <think> tags (llama.cpp's deepseek-legacy format).
+            Append(sse, "thinking", _reasoningField ? "" : thinking);
+            Append(sse, "text", text);
         }
         foreach (var call in delta?["tool_calls"] as JsonArray ?? [])
         {
@@ -76,8 +85,10 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
     public string Finish()
     {
         var sse = new StringBuilder();
-        AppendText(sse, _think.Flush());
-        CloseText(sse);
+        var (thinking, text) = _think.Flush();
+        Append(sse, "thinking", _reasoningField ? "" : thinking);
+        Append(sse, "text", text);
+        Close(sse);
 
         var toolUses = 0;
         foreach (var call in _tools.Values.Where(c => c.Name.Length > 0))
@@ -114,7 +125,7 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
     public string Abort(string message)
     {
         var sse = new StringBuilder();
-        CloseText(sse);
+        Close(sse);
         sse.Append(Event("error", new JsonObject
         {
             ["type"] = "error",
@@ -143,32 +154,45 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
         tool.Arguments.Append(ChatRequestTranslator.Str(call?["function"]?["arguments"]));
     }
 
-    private void AppendText(StringBuilder sse, string text)
+    /// <param name="kind"><c>thinking</c> or <c>text</c>.</param>
+    private void Append(StringBuilder sse, string kind, string text)
     {
         if (text.Length == 0)
         {
             return;
         }
-        if (_openText is null)
+        if (_openKind != kind)
         {
-            _openText = _blocks++;
+            Close(sse);
+            _open = _blocks++;
+            _openKind = kind;
             sse.Append(Event("content_block_start", new JsonObject
             {
                 ["type"] = "content_block_start",
-                ["index"] = _openText,
-                ["content_block"] = new JsonObject { ["type"] = "text", ["text"] = "" },
+                ["index"] = _open,
+                ["content_block"] = kind == "text"
+                    ? new JsonObject { ["type"] = "text", ["text"] = "" }
+                    : new JsonObject { ["type"] = "thinking", ["thinking"] = "", ["signature"] = "" },
             }));
         }
-        sse.Append(Delta(_openText.Value, new JsonObject { ["type"] = "text_delta", ["text"] = text }));
+        sse.Append(Delta(_open!.Value, kind == "text"
+            ? new JsonObject { ["type"] = "text_delta", ["text"] = text }
+            : new JsonObject { ["type"] = "thinking_delta", ["thinking"] = text }));
     }
 
-    private void CloseText(StringBuilder sse)
+    private void Close(StringBuilder sse)
     {
-        if (_openText is { } index)
+        if (_open is not { } index)
         {
-            sse.Append(Stop(index));
-            _openText = null;
+            return;
         }
+        if (_openKind == "thinking")
+        {
+            sse.Append(Delta(index, new JsonObject { ["type"] = "signature_delta", ["signature"] = ChatResponseTranslator.SignaturePrefix }));
+        }
+        sse.Append(Stop(index));
+        _open = null;
+        _openKind = null;
     }
 
     private static string Delta(int index, JsonObject delta) =>

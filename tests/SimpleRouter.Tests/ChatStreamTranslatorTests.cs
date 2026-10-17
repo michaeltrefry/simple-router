@@ -110,26 +110,58 @@ public class ChatStreamTranslatorTests
     }
 
     [Fact]
-    public void Leading_think_tags_split_across_chunks_and_reasoning_fields_are_omitted()
+    public void Reasoning_fields_and_leading_think_tags_split_across_chunks_stream_as_one_signed_thinking_block()
     {
         var message = Run(
-            """{"choices":[{"index":0,"delta":{"reasoning_content":"pondering"}}]}""",
-            """{"choices":[{"index":0,"delta":{"reasoning":"more"}}]}""",
             Content("  <thi"),
             Content("nk>step one</th"),
             Content("ink>\n\nAnswer: use <think> tags"),
             Content(" sparingly."),
             Finish("stop"));
 
-        Assert.Equal("Answer: use <think> tags sparingly.", Assert.Single(message.Blocks).Text);
+        Assert.Collection(message.Blocks,
+            thinking =>
+            {
+                Assert.Equal("thinking", thinking.Type);
+                Assert.Equal("step one", thinking.Text);
+                Assert.Equal(ChatResponseTranslator.SignaturePrefix, thinking.Signature);
+            },
+            text => Assert.Equal(("text", "Answer: use <think> tags sparingly."), (text.Type, text.Text)));
+    }
+
+    [Fact]
+    public void Reasoning_fields_win_over_the_same_reasoning_repeated_in_think_tags()
+    {
+        var message = Run(
+            """{"choices":[{"index":0,"delta":{"reasoning_content":"Let","content":"<think>Let"}}]}""",
+            """{"choices":[{"index":0,"delta":{"reasoning":" me","content":" me</think>"}}]}""",
+            Content("Answer."),
+            Finish("stop"));
+
+        Assert.Equal([("thinking", "Let me"), ("text", "Answer.")], message.Blocks.Select(b => (b.Type, b.Text)));
+    }
+
+    [Fact]
+    public void Reasoning_after_text_opens_a_new_thinking_block_and_tool_calls_follow_both()
+    {
+        var message = Run(
+            """{"choices":[{"index":0,"delta":{"reasoning_content":"first"}}]}""",
+            Content("Looking."),
+            """{"choices":[{"index":0,"delta":{"reasoning_content":"second"}}]}""",
+            Tool(0, "call_1", "Read", "{}"),
+            Finish("tool_calls"));
+
+        Assert.Equal(["thinking", "text", "thinking", "tool_use"], message.Blocks.Select(b => b.Type));
+        Assert.Equal("second", message.Blocks[2].Text);
     }
 
     [Fact]
     public void A_stream_of_only_reasoning_still_produces_a_valid_message()
     {
-        var message = Run(Content("<think>only thoughts"), Finish("length"));
+        var message = Run(Content("<think>only thoughts</thi"), Finish("length"));
 
-        Assert.Empty(message.Blocks);
+        var thinking = Assert.Single(message.Blocks);
+        Assert.Equal(("thinking", "only thoughts</thi"), (thinking.Type, thinking.Text));
         Assert.Equal("max_tokens", message.StopReason);
     }
 

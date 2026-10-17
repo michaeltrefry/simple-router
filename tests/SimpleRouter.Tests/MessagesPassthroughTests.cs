@@ -93,6 +93,19 @@ public class MessagesPassthroughTests
     }
 
     [Fact]
+    public async Task Local_reasoning_is_dropped_before_claude()
+    {
+        var sent = await SendThroughClaudeAsync("""
+            {"model":"claude-sonnet-4-5","max_tokens":64,"messages":[
+              {"role":"user","content":"hi"},
+              {"role":"assistant","content":[{"type":"thinking","thinking":"from mimo","signature":"local:"},{"type":"text","text":"a"}]},
+              {"role":"user","content":"again"}]}
+            """);
+
+        Assert.Equal("""[{"type":"text","text":"a"}]""", sent["messages"]![1]!["content"]!.ToJsonString());
+    }
+
+    [Fact]
     public async Task Thinking_is_turned_off_when_the_last_tool_use_turn_lost_its_foreign_thinking()
     {
         var sent = await SendThroughClaudeAsync("""

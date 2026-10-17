@@ -82,6 +82,7 @@ public static class ChatRequestTranslator
         }
 
         var text = new List<string>();
+        var reasoning = new List<string>();
         var calls = new JsonArray();
         foreach (var block in blocks)
         {
@@ -105,7 +106,10 @@ public static class ChatRequestTranslator
                         },
                     });
                     break;
-                // Thinking blocks are dropped: a local model cannot verify their signatures.
+                // Reasoning a local model produced goes back so templates that render past reasoning see it; other providers' is dropped.
+                case "thinking" when Str(block!["signature"])?.StartsWith(ChatResponseTranslator.SignaturePrefix, StringComparison.Ordinal) == true:
+                    reasoning.Add(Str(block["thinking"]) ?? "");
+                    break;
             }
         }
 
@@ -113,6 +117,10 @@ public static class ChatRequestTranslator
         if (calls.Count > 0)
         {
             message["tool_calls"] = calls;
+        }
+        if (reasoning.Count > 0)
+        {
+            message["reasoning_content"] = string.Join("\n", reasoning);
         }
         return message;
     }

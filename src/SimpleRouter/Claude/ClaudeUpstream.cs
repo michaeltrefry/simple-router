@@ -48,7 +48,7 @@ public sealed class ClaudeUpstream(
     }
 
     /// <summary>
-    /// Thinking blocks served by another provider carry no Anthropic signature (none, or Codex's encrypted reasoning),
+    /// Thinking blocks served by another provider carry no Anthropic signature (none, Codex's encrypted reasoning or a local marker),
     /// and Anthropic rejects the whole request over one, so a session that moves to Claude drops them from its history.
     /// </summary>
     private static void DropForeignThinking(JsonObject request)
@@ -78,7 +78,9 @@ public sealed class ClaudeUpstream(
 
     private static bool IsForeignThinking(JsonNode? block) =>
         Str(block?["type"]) == "thinking"
-        && (Str(block!["signature"]) is not { Length: > 0 } signature || signature.StartsWith(ResponsesStreamTranslator.SignaturePrefix, StringComparison.Ordinal));
+        && (Str(block!["signature"]) is not { Length: > 0 } signature
+            || signature.StartsWith(ResponsesStreamTranslator.SignaturePrefix, StringComparison.Ordinal)
+            || signature.StartsWith(ChatResponseTranslator.SignaturePrefix, StringComparison.Ordinal));
 
     private static string? Str(JsonNode? node) => ChatRequestTranslator.Str(node);
 
