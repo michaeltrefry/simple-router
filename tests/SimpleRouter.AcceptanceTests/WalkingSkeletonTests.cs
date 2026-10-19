@@ -26,7 +26,7 @@ public class WalkingSkeletonTests
         {
             await app.Services.GetRequiredService<ClaudeCredentialStore>()
                 .SaveAsync(new ClaudeTokens("fake-refresh-1", "stale", DateTimeOffset.UtcNow.AddHours(-1)));
-            using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+            using var client = new HttpClient { BaseAddress = new UriBuilder(app.Urls.First()) { Host = "127.0.0.1" }.Uri };
             client.DefaultRequestHeaders.Add("x-api-key", await app.Services.GetRequiredService<GatewayKeyStore>().GetAsync());
 
             var models = await client.GetStringAsync("/v1/models?limit=1000");
