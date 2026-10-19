@@ -217,10 +217,19 @@ namespace SimpleRouter.Data.Migrations
                     b.Property<string>("Effort")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("FailureDetail")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FailureKind")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("GenerationId")
                         .HasColumnType("TEXT");
 
                     b.Property<long>("InputTokens")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool?>("IsStreaming")
                         .HasColumnType("INTEGER");
 
                     b.Property<long>("LatencyMs")
@@ -228,6 +237,9 @@ namespace SimpleRouter.Data.Migrations
 
                     b.Property<string>("ModelId")
                         .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Outcome")
                         .HasColumnType("TEXT");
 
                     b.Property<long>("OutputTokens")
@@ -240,15 +252,26 @@ namespace SimpleRouter.Data.Migrations
                     b.Property<string>("ResolvedModelId")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("SessionKey")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("Status")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("StopReason")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Tier")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("UpstreamModelId")
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
 
                     b.HasIndex("ClientSessionId");
+
+                    b.HasIndex("SessionKey", "Tier", "Id");
 
                     b.ToTable("RequestUsages");
                 });

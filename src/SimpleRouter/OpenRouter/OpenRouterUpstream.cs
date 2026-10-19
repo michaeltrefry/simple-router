@@ -45,6 +45,7 @@ public sealed class OpenRouterUpstream(
         }
         catch (Exception e) when (e is HttpRequestException || e is OperationCanceledException && !ct.IsCancellationRequested)
         {
+            RequestDiagnostics.Fail(context, e is OperationCanceledException ? "upstream_timeout" : "upstream_unreachable");
             logger.LogWarning("OpenRouter model {model} is unreachable", call.Model.Id);
             return UpstreamResult.NotServed(new ModelFault(FaultKind.Unreachable));
         }
@@ -52,6 +53,7 @@ public sealed class OpenRouterUpstream(
         {
             if (!response.IsSuccessStatusCode)
             {
+                RequestDiagnostics.Fail(context, "http_error");
                 var status = (int)response.StatusCode;
                 if (status is 401 or 402 or 403 or 404 or 408 or 429 or >= 500)
                     return UpstreamResult.NotServed(new ModelFault(Fault(status), LimitHeaders.RetryAfter(response.Headers, time.GetUtcNow())));
@@ -83,21 +85,45 @@ public sealed class OpenRouterUpstream(
             }
             catch (Exception e) when (e is JsonException or IOException or HttpRequestException)
             {
+                RequestDiagnostics.Fail(context, e is JsonException ? "malformed_response" : "transport_error");
                 raw = null;
             }
-            if (raw is null) return UpstreamResult.NotServed(new ModelFault(FaultKind.Overloaded));
+            if (raw is null)
+            {
+                if (RequestDiagnostics.Get(context) is null) RequestDiagnostics.Fail(context, "malformed_response");
+                return UpstreamResult.NotServed(new ModelFault(FaultKind.Overloaded));
+            }
             UpstreamUsageMetadata.Capture(context, raw);
             if (raw["error"] is { } error)
             {
+                RequestDiagnostics.Fail(context, "upstream_error");
                 var status = error is JsonObject obj && int.TryParse(obj["code"]?.ToString(), out var code) ? code : 502;
                 return UpstreamResult.NotServed(new ModelFault(ErrorFault(error, status)));
             }
             if ((raw["choices"] as JsonArray)?.FirstOrDefault() is not JsonObject choice
-                || choice["message"] is not JsonObject || ChatRequestTranslator.Str(choice["finish_reason"]) == "error")
+                || choice["message"] is not JsonObject)
+            {
+                RequestDiagnostics.Fail(context, "malformed_response");
                 return UpstreamResult.NotServed(new ModelFault(FaultKind.Overloaded));
+            }
+            if (ChatRequestTranslator.Str(choice["finish_reason"]) == "error")
+            {
+                RequestDiagnostics.Fail(context, "upstream_error");
+                return UpstreamResult.NotServed(new ModelFault(FaultKind.Overloaded));
+            }
+            byte[] translated;
+            try
+            {
+                translated = JsonSerializer.SerializeToUtf8Bytes(
+                    ChatResponseTranslator.Translate(raw, call.Model.Id, call.EstimatedInputTokens, openRouter: true), WireJson.Relaxed);
+            }
+            catch (InvalidOperationException)
+            {
+                RequestDiagnostics.Fail(context, "malformed_response");
+                return UpstreamResult.NotServed(new ModelFault(FaultKind.Overloaded));
+            }
             context.Response.ContentType = "application/json";
-            await context.Response.Body.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(
-                ChatResponseTranslator.Translate(raw, call.Model.Id, call.EstimatedInputTokens, openRouter: true), WireJson.Relaxed), ct);
+            await context.Response.Body.WriteAsync(translated, ct);
             return UpstreamResult.Served;
         }
     }

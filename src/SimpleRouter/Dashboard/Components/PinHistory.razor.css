@@ -1,0 +1,10 @@
+nav { margin-bottom: 16px; overflow-wrap: anywhere; }
+dl { display: grid; grid-template-columns: minmax(150px, 230px) minmax(0, 1fr); gap: 8px 20px; margin: 0 0 16px; }
+dt { color: var(--muted-fg); }
+dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.pagination { display: flex; flex-wrap: wrap; gap: 24px; margin: 12px 0 0; }
+@media (max-width: 600px) {
+    dl { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+    dd { margin-bottom: 10px; }
+    nav a { display: inline-block; padding-block: 10px; }
+}

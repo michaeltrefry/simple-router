@@ -1,11 +1,29 @@
 using System.Globalization;
 using SimpleRouter.Routing;
+using SimpleRouter.OpenRouter;
 
 namespace SimpleRouter.Dashboard;
 
 /// <summary>Display text and status-pill styles shared by the dashboard panels.</summary>
 public static class DashboardFormat
 {
+    public static string PinUrl(string sessionKey, ModelTier tier, long? beforeId = null) =>
+        $"/ui/pins?sessionKey={Uri.EscapeDataString(sessionKey)}&tier={tier.Name()}" +
+        (beforeId is { } id ? $"&beforeId={id.ToString(CultureInfo.InvariantCulture)}" : "");
+
+    public static string RequestUrl(long id) => $"/ui/requests/{id.ToString(CultureInfo.InvariantCulture)}";
+
+    public static string? ActualModel(RequestRow row) => row.Provider == ProviderKind.OpenRouter
+        && row.ResolvedModelId is { } model && OpenRouterRoutingOptions.IsAuto(model) ? null : row.ResolvedModelId;
+
+    public static string OutcomeLabel(string? outcome) => outcome switch
+    {
+        "completed" => "Completed",
+        "failed" => "Failed",
+        "client_cancelled" => "Client cancelled",
+        _ => "Unknown",
+    };
+
     public static string Time(DateTimeOffset? at) => at is { } value ? value.UtcDateTime.ToString("u", CultureInfo.InvariantCulture) : "—";
 
     public static string Cost(long micros) => (micros / 1_000_000m).ToString("$0.0000", CultureInfo.InvariantCulture);

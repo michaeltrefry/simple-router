@@ -18,18 +18,18 @@
                 <thead>
                     <tr>
                         <th>Time (UTC)</th><th>Session</th><th>Tier</th><th>Model</th><th>Effort</th>
-                        <th class="num">Latency</th><th>Status</th><th class="num">In / out tokens</th><th class="num">Cost</th>
+                        <th class="num">Latency</th><th>HTTP</th><th class="num">In / out tokens</th><th class="num">Cost</th><th>Outcome</th>
                     </tr>
                 </thead>
                 <tbody>
                     @foreach (var r in Data)
                     {
                         <tr>
-                            <td class="mono">@Time(r.At)</td>
+                            <td class="mono"><a href="@RequestUrl(r.Id)" aria-label="@($"Request {r.Id}, {Time(r.At)}")">@Time(r.At)</a></td>
                             <td class="mono session">@(r.ClientSessionId ?? "—")</td>
                             <td>@(r.Tier?.Name() ?? "—")</td>
                             <td class="mono">@r.ModelId
-                                @if (r.ResolvedModelId is { } resolved)
+                                @if (ActualModel(r) is { } resolved)
                                 {
                                     <div class="muted" title="Resolved upstream model">@resolved</div>
                                 }
@@ -39,6 +39,7 @@
                             <td><span class="@Pill(r.Status)">@r.Status</span></td>
                             <td class="num">@Tokens(r.InputTokens) / @Tokens(r.OutputTokens)</td>
                             <td class="num" title="@(r.CostSource ?? "estimated")">@(r.CostSource == "unknown" ? "Unknown" : Cost(r.CostUsdMicros))</td>
+                            <td title="@(r.Outcome is null ? "Outcome not recorded" : null)">@OutcomeLabel(r.Outcome)</td>
                         </tr>
                     }
                 </tbody>

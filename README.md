@@ -164,6 +164,10 @@ Each call that names a SystemOne model is recorded like a Messages request, with
 
 ## Dashboard
 
+Open a pin key in Monitoring to browse `/ui/pins?sessionKey=<key>&tier=<tier>`, then open a request for `/ui/requests/{id}`. History matches the **exact routing session key and tier**, includes requests before repinning to another model, and pages beyond the newest 50 using a stable request-ID cursor. Deleting a pin does not remove its recorded history. Recent-request timestamps also link directly to details.
+
+Request details separate completion outcome (`completed`, `failed`, `client_cancelled`, or `unknown`) from HTTP status: HTTP 200 alone does not prove a stream completed. They show the configured router entry and upstream snapshot separately from the actual resolved model (when reported), plus generation ID, latency, effort, stop/failure reason, tokens including caches, cost provenance and session correlation. No prompts, response bodies or credentials are displayed. Legacy rows clearly show unrecorded fields; requests without a routing key and tier are unassociated, never guessed into a pin from their client session ID. All history/detail routes retain the dashboard loopback Host/Origin protections.
+
 `http://127.0.0.1:8790/ui` shows live monitoring (subscription accounts, model status, session pins, recent requests). `/ui/settings` edits the router without a restart; each change applies to the next new session:
 
 - Connect Claude (open the sign-in link, paste the `code#state` it shows) and Connect Codex (enter the shown code at the link; the page polls until it is approved). Both fetch the subscription's model list afterwards, as the CLI logins do.

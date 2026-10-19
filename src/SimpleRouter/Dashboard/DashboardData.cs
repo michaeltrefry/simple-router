@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using SimpleRouter.Data;
 using SimpleRouter.Routing;
@@ -9,7 +10,12 @@ namespace SimpleRouter.Dashboard;
 public sealed record RequestRow(
     DateTimeOffset At, string? ClientSessionId, ModelTier? Tier, string ModelId, ProviderKind Provider, string? Effort,
     long LatencyMs, int Status, long InputTokens, long OutputTokens, long CostUsdMicros,
-    string? ResolvedModelId = null, string? GenerationId = null, string? CostSource = null);
+    string? ResolvedModelId = null, string? GenerationId = null, string? CostSource = null,
+    long Id = 0, string? SessionKey = null, string? UpstreamModelId = null, bool? IsStreaming = null,
+    string? Outcome = null, string? FailureKind = null, string? FailureDetail = null, string? StopReason = null,
+    long CacheReadTokens = 0, long CacheWriteTokens = 0, long CacheWrite1hTokens = 0);
+
+public sealed record RequestPage(List<RequestRow> Rows, long? NextBeforeId);
 
 /// <summary>A session pin and the current status of its pinned model.</summary>
 public sealed record PinRow(string SessionKey, string? ClientSessionId, ModelTier Tier, string ModelId, DateTimeOffset CreatedAt, ModelStatusEntry? Status);
@@ -40,9 +46,41 @@ public sealed class DashboardData(
         return await db.RequestUsages.AsNoTracking()
             .OrderByDescending(u => u.Id)
             .Take(RecentLimit)
-            .Select(u => new RequestRow(u.At, u.ClientSessionId, u.Tier, u.ModelId, u.Provider, u.Effort, u.LatencyMs, u.Status,
-                u.InputTokens, u.OutputTokens, u.CostUsdMicros, u.ResolvedModelId, u.GenerationId, u.CostSource))
+            .Select(RequestProjection)
             .ToListAsync(ct);
+    }
+
+    private static readonly Expression<Func<RequestUsage, RequestRow>> RequestProjection = u => new RequestRow(
+        u.At, u.ClientSessionId, u.Tier, u.ModelId, u.Provider, u.Effort, u.LatencyMs, u.Status,
+        u.InputTokens, u.OutputTokens, u.CostUsdMicros, u.ResolvedModelId, u.GenerationId, u.CostSource,
+        u.Id, u.SessionKey, u.UpstreamModelId, u.IsStreaming, u.Outcome, u.FailureKind, u.FailureDetail, u.StopReason,
+        u.CacheReadTokens, u.CacheWriteTokens, u.CacheWrite1hTokens);
+
+    public async Task<RequestRow?> RequestAsync(long id, CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.RequestUsages.AsNoTracking().Where(u => u.Id == id).Select(RequestProjection).SingleOrDefaultAsync(ct);
+    }
+
+    public async Task<RequestPage> PinRequestsAsync(string sessionKey, ModelTier tier, long? beforeId, CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        // The routing key and tier identify a pin across model changes; client IDs and model IDs do not.
+        var query = db.RequestUsages.AsNoTracking().Where(u => u.SessionKey == sessionKey && u.Tier == tier);
+        if (beforeId is { } cursor) query = query.Where(u => u.Id < cursor);
+        var rows = await query.OrderByDescending(u => u.Id).Take(RecentLimit + 1).Select(RequestProjection).ToListAsync(ct);
+        var hasMore = rows.Count > RecentLimit;
+        if (hasMore) rows.RemoveAt(RecentLimit);
+        return new RequestPage(rows, hasMore ? rows[^1].Id : null);
+    }
+
+    public async Task<PinRow?> PinAsync(string sessionKey, ModelTier tier, CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var pin = await db.SessionPins.AsNoTracking().SingleOrDefaultAsync(p => p.SessionKey == sessionKey && p.Tier == tier, ct);
+        if (pin is null) return null;
+        var status = (await selector.StatusesAsync(ct)).FirstOrDefault(s => s.ModelId == pin.ModelId);
+        return new PinRow(pin.SessionKey, pin.ClientSessionId, pin.Tier, pin.ModelId, pin.CreatedAt, status);
     }
 
     public async Task<UsageChart> UsageChartAsync(UsageRange range, CancellationToken ct)

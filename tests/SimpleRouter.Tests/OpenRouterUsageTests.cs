@@ -66,7 +66,9 @@ public class OpenRouterUsageTests
         await host.Services.GetRequiredService<UsageRecorder>().RecordAsync(new ServedRequest(null, Auto(), ModelTier.High, 200,
             new TokenUsage(10, 20, 0, 0), TimeSpan.Zero, null, new UpstreamUsageMetadata(resolved, null, null)));
         await using var check = await factory.CreateDbContextAsync();
-        Assert.Equal("unknown", (await check.RequestUsages.SingleAsync()).CostSource);
+        var row = await check.RequestUsages.SingleAsync();
+        Assert.Equal("unknown", row.CostSource);
+        Assert.Null(row.ResolvedModelId);
     }
 
     [Fact]

@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using SimpleRouter.Api;
 using SimpleRouter.Data;
 using SimpleRouter.Routing;
+using SimpleRouter.Usage;
 
 namespace SimpleRouter.Local;
 
@@ -55,9 +56,10 @@ public sealed class LocalUpstream(
         {
             response = await httpClientFactory.CreateClient(HttpClientName).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         }
-        catch (HttpRequestException e)
+        catch (Exception e) when (e is HttpRequestException || e is OperationCanceledException && !ct.IsCancellationRequested)
         {
-            logger.LogWarning("Local model {model} is unreachable: {error}", model.Id, e.Message);
+            RequestDiagnostics.Fail(context, e is OperationCanceledException ? "upstream_timeout" : "upstream_unreachable");
+            logger.LogWarning("Local model {model} is unreachable", model.Id);
             health.MarkUnhealthy(model.Id);
             return UpstreamResult.NotServed(new ModelFault(FaultKind.Unreachable));
         }
@@ -87,6 +89,7 @@ public sealed class LocalUpstream(
 
     private async Task<UpstreamResult> ErrorAsync(HttpContext context, CatalogModel model, HttpResponseMessage response, CancellationToken ct)
     {
+        RequestDiagnostics.Fail(context, "http_error");
         var status = (int)response.StatusCode;
         var retryAfter = LimitHeaders.RetryAfter(response.Headers, time.GetUtcNow());
         if (status is 429 or >= 500)

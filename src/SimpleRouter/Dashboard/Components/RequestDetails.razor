@@ -1,0 +1,95 @@
+@page "/ui/requests/{Id:long}"
+@inject DashboardData Dashboard
+
+<PageTitle>Request @Id · Simple Router</PageTitle>
+<nav aria-label="Breadcrumb">
+    <a href="/ui">Monitoring</a> /
+    @if (_request is { SessionKey: not null, Tier: not null } associated)
+    {
+        <a href="@PinUrl(associated.SessionKey, associated.Tier.Value)">Pin history</a><span> / </span>
+    }
+    Request @Id
+</nav>
+<header class="page-header"><h1>Request @Id</h1><p class="muted">Recorded metadata only. Prompts, responses and credentials are never displayed.</p></header>
+@if (_loading) { <p role="status">Loading request…</p> }
+else if (_error) { <p role="alert">Could not load this request. Please reload this page to try again.</p> }
+else if (_request is not { } r)
+{
+    <section class="card"><h2>Request not found</h2><p>No recorded request has this ID. It may have been removed.</p><a href="/ui">Back to Monitoring</a></section>
+}
+else
+{
+    <section class="card">
+        <h2>Result</h2>
+        <dl id="request-result">
+            <dt>Outcome</dt><dd>@OutcomeLabel(r.Outcome)</dd>
+            <dt>HTTP status</dt><dd>@r.Status</dd>
+            <dt>Timestamp (UTC)</dt><dd>@Time(r.At)</dd>
+            <dt>Latency</dt><dd>@Tokens(r.LatencyMs) ms</dd>
+            <dt>Response mode</dt><dd>@(r.IsStreaming switch { true => "Streaming", false => "Non-streaming", null => "Unknown (not recorded)" })</dd>
+            <dt>Stop reason</dt><dd>@(r.StopReason ?? "Not recorded")</dd>
+            <dt>Failure kind</dt><dd>@(r.FailureKind ?? "Not recorded")</dd>
+            <dt>Failure detail</dt><dd>@(r.FailureDetail ?? "Not recorded")</dd>
+        </dl>
+        <p class="muted">HTTP status does not establish stream completion. A stream can fail or be cancelled after HTTP 200.</p>
+        @if (r.Outcome is null) { <p class="muted">Completion outcome was not recorded and cannot be inferred from HTTP status.</p> }
+    </section>
+    <section class="card">
+        <h2>Model and routing</h2>
+        <dl id="request-routing">
+            <dt>Configured router entry</dt><dd class="mono">@r.ModelId</dd>
+            <dt>Provider</dt><dd>@r.Provider.ToString().ToLowerInvariant()</dd>
+            <dt>Actual resolved upstream model</dt><dd class="mono">@(ActualModel(r) ?? "Unknown (not reported)")</dd>
+            <dt>Configured upstream snapshot</dt><dd class="mono">@(r.UpstreamModelId ?? "Unknown (not recorded)")</dd>
+            <dt>Generation ID</dt><dd class="mono">@(r.GenerationId ?? "Not recorded")</dd>
+            <dt>Tier</dt><dd>@(r.Tier?.Name() ?? "Not tier-routed")</dd>
+            <dt>Effort</dt><dd>@(r.Effort ?? "Not recorded")</dd>
+            <dt>Routing session key</dt><dd class="mono">@(r.SessionKey ?? "Unassociated (not recorded)")</dd>
+            <dt>Client session ID</dt><dd class="mono">@(r.ClientSessionId ?? "Not recorded")</dd>
+        </dl>
+        <p class="muted">The configured entry and upstream snapshot describe routing configuration at request time, not proof of the actual model used. Auto routing can select a different model.</p>
+        @if (r.SessionKey is { } key && r.Tier is { } tier)
+        {
+            <a href="@PinUrl(key, tier)">Back to this pin’s history</a>
+        }
+        else
+        {
+            <p class="muted">This request is unassociated with a pin: its routing key or tier was not recorded. No history link is guessed from the client session or model.</p>
+        }
+    </section>
+    <section class="card">
+        <h2>Usage and cost</h2>
+        <dl id="request-usage">
+            <dt>Input tokens</dt><dd>@Tokens(r.InputTokens)</dd>
+            <dt>Output tokens</dt><dd>@Tokens(r.OutputTokens)</dd>
+            <dt>Cache-read tokens</dt><dd>@Tokens(r.CacheReadTokens)</dd>
+            <dt>Cache-write tokens (total)</dt><dd>@Tokens(r.CacheWriteTokens)</dd>
+            <dt>Cache-write tokens (1-hour subset)</dt><dd>@Tokens(r.CacheWrite1hTokens)</dd>
+            <dt>Cost (USD)</dt><dd>@(r.CostSource == "unknown" ? "Unknown" : (r.CostUsdMicros / 1_000_000m).ToString("$0.000000", System.Globalization.CultureInfo.InvariantCulture))</dd>
+            <dt>Cost provenance</dt><dd>@(r.CostSource ?? "Legacy (provenance not recorded)")</dd>
+        </dl>
+        <p class="muted">Usage reflects recorded counters; failed or cancelled responses may have incomplete token counts. Unknown cost is not a zero-cost request.</p>
+    </section>
+}
+
+@code {
+    [Parameter] public long Id { get; set; }
+    private RequestRow? _request;
+    private bool _loading = true;
+    private bool _error;
+    private long _version;
+    protected override async Task OnParametersSetAsync()
+    {
+        var version = ++_version;
+        _loading = true;
+        _request = null;
+        _error = false;
+        try
+        {
+            var request = await Dashboard.RequestAsync(Id, CancellationToken.None);
+            if (version == _version) _request = request;
+        }
+        catch (Exception) { if (version == _version) _error = true; }
+        finally { if (version == _version) _loading = false; }
+    }
+}

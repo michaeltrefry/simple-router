@@ -37,4 +37,14 @@ public sealed class RequestUsage
     public string? GenerationId { get; set; }
     /// <summary>reported, estimated or unknown; null for historical records.</summary>
     public string? CostSource { get; set; }
+    /// <summary>Exact pin identity with Tier; null on historical and non-routed records.</summary>
+    public string? SessionKey { get; set; }
+    /// <summary>The configured upstream ID at request time, not a claim about the resolved model.</summary>
+    public string? UpstreamModelId { get; set; }
+    public bool? IsStreaming { get; set; }
+    /// <summary>completed, failed, client_cancelled or unknown; null on legacy rows.</summary>
+    public string? Outcome { get; set; }
+    public string? FailureKind { get; set; }
+    public string? FailureDetail { get; set; }
+    public string? StopReason { get; set; }
 }
