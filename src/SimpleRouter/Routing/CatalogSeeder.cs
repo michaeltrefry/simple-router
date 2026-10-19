@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using SimpleRouter.Data;
+using SimpleRouter.OpenRouter;
 
 namespace SimpleRouter.Routing;
 
@@ -39,7 +40,8 @@ public sealed class CatalogSeeder(
         int? MaxConversations = null,
         bool SupportsTools = true,
         bool SupportsVision = false,
-        EffortMapping? Effort = null);
+        EffortMapping? Effort = null,
+        OpenRouterRoutingOptions? OpenRouter = null);
 
     private sealed record SeedAlias(string Pattern, string Tier);
 
@@ -60,7 +62,8 @@ public sealed class CatalogSeeder(
         int? MaxConversations,
         bool? SupportsTools,
         bool? SupportsVision,
-        EffortMapping? Effort);
+        EffortMapping? Effort,
+        OpenRouterRoutingOptions? OpenRouter);
 
     private sealed record Overrides(ModelOverride[]? Models);
 
@@ -120,6 +123,7 @@ public sealed class CatalogSeeder(
             SupportsTools = m.SupportsTools,
             SupportsVision = m.SupportsVision,
             Effort = m.Effort,
+            OpenRouter = m.OpenRouter,
         }));
         foreach (var (tier, modelIds) in seed.Tiers)
         {
@@ -163,6 +167,7 @@ public sealed class CatalogSeeder(
         foreach (var m in seed.Models)
         {
             Effort.Validate(m.Effort, m.Id);
+            OpenRouterRoutingOptions.Validate(m.OpenRouter);
             ValidateConversations(m.MaxConversations, m.Id);
         }
         return seed;
@@ -212,6 +217,7 @@ public sealed class CatalogSeeder(
         foreach (var o in overrides.Models ?? [])
         {
             Effort.Validate(o.Effort, o.Id);
+            OpenRouterRoutingOptions.Validate(o.OpenRouter);
             ValidateConversations(o.MaxConversations, o.Id);
             if (await db.Models.FindAsync([o.Id], ct) is not { } model)
             {
@@ -228,6 +234,7 @@ public sealed class CatalogSeeder(
             model.SupportsTools = o.SupportsTools ?? model.SupportsTools;
             model.SupportsVision = o.SupportsVision ?? model.SupportsVision;
             model.Effort = o.Effort ?? model.Effort;
+            model.OpenRouter = o.OpenRouter ?? model.OpenRouter;
         }
         if (applied is null)
         {

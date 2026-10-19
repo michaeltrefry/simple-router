@@ -45,6 +45,8 @@ public sealed class RouterOptions
 
     public CodexOptions Codex { get; set; } = new();
 
+    public OpenRouterOptions OpenRouter { get; set; } = new();
+
     public LocalOptions Local { get; set; } = new();
 
     public LimitOptions Limits { get; set; } = new();
@@ -167,4 +169,11 @@ public sealed class LimitOptions
 
     /// <summary>The provider rejected the subscription account or credentials; applies to all of its models.</summary>
     public TimeSpan AuthRejectionCooldown { get; set; } = TimeSpan.FromMinutes(5);
+}
+
+/// <summary>OpenRouter endpoints; overridable for tests.</summary>
+public sealed class OpenRouterOptions
+{
+    public string ApiBaseUrl { get; set; } = "https://openrouter.ai/api/v1";
+    public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromSeconds(120);
 }

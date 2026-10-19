@@ -28,12 +28,17 @@
                             <td class="mono">@Time(r.At)</td>
                             <td class="mono session">@(r.ClientSessionId ?? "—")</td>
                             <td>@(r.Tier?.Name() ?? "—")</td>
-                            <td class="mono">@r.ModelId</td>
+                            <td class="mono">@r.ModelId
+                                @if (r.ResolvedModelId is { } resolved)
+                                {
+                                    <div class="muted" title="Resolved upstream model">@resolved</div>
+                                }
+                            </td>
                             <td>@(r.Effort ?? "—")</td>
                             <td class="num">@Latency(r.LatencyMs)</td>
                             <td><span class="@Pill(r.Status)">@r.Status</span></td>
                             <td class="num">@Tokens(r.InputTokens) / @Tokens(r.OutputTokens)</td>
-                            <td class="num">@Cost(r.CostUsdMicros)</td>
+                            <td class="num" title="@(r.CostSource ?? "estimated")">@(r.CostSource == "unknown" ? "Unknown" : Cost(r.CostUsdMicros))</td>
                         </tr>
                     }
                 </tbody>

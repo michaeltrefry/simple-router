@@ -73,6 +73,40 @@ The Codex models (`gpt-6-astra` in max, `gpt-6.1-sol` in high, `gpt-5.6-terra` i
 
 Each subscription's model list is fetched at login, when the server starts (if the last check is older than the interval), every 6 hours (`--SimpleRouter:ModelListRefreshInterval`, `00:00:00` disables it) and on demand with `models refresh` or the settings page's **Refresh model lists** button (each fetches every logged-in subscription's list at once and reports the outcome): Claude from `GET /v1/models` with the subscription token, Codex from `GET {codex api base}/models?client_version=...` (`--SimpleRouter:Codex:ClientVersion`, default `99.0.0`: the backend leaves out models that need a newer client, so the default stays ahead of real releases). A subscription model missing from its provider's list is never selected, its status reads "unknown model" and each refresh logs one warning naming the missing models (for Codex, suggesting `ClientVersion`); an undated configured ID matches a listed dated snapshot (`claude-sonnet-4-5` matches `claude-sonnet-4-5-20250929`). Until a provider's list has been fetched successfully, all of its configured models stay selectable. A failed or empty fetch keeps the last good list and records the error.
 
+### OpenRouter (API key)
+
+OpenRouter is a separate paid API-key provider, not a local endpoint or a Claude/Codex subscription. In `/ui/settings`, save the provider-level OpenRouter API key, then refresh model lists. The key is encrypted with `SecretProtector` in `ProviderCredentials`, shared by all OpenRouter entries, and never displayed again; saving replaces it and Remove key disconnects the provider. No key is required in the model form, seed, or source code. Without a stored key, OpenRouter models are ineligible. The paid key is not counted in subscription exhaustion.
+
+Use **Add OpenRouter model** for a fixed upstream ID (for example `provider/model`) or either auto variant, `openrouter/auto` and `openrouter/auto-beta`. The beta variant exposes early-access routing behavior, not a guarantee of better decisions. Give each catalog entry a distinct local ID, enable it, and assign its tiers. Several entries may target the same auto variant with different constraints. OpenRouter is a remote tier candidate: Mid/Low still prefer eligible local models, but OpenRouter never receives local health probes or local conversation-capacity holds. Discovered fixed models can also be added through the tier picker. Existing installs can add entries through settings; seed model entries accept `provider: "openrouter"` and an `openRouter` object:
+
+```json
+{
+  "id": "openrouter-auto-low",
+  "provider": "openrouter",
+  "upstreamModelId": "openrouter/auto",
+  "enabled": true,
+  "supportsTools": true,
+  "openRouter": {
+    "costTier": "low",
+    "allowedModels": ["provider/*"],
+    "excludedModels": ["provider/older-model"],
+    "maxPromptPrice": 1,
+    "maxCompletionPrice": 3
+  },
+  "effort": { "mode": "reasoning_effort", "levels": ["low", "medium", "high"], "default": "high" }
+}
+```
+
+Auto routing cost tiers are **low, medium, high, xhigh, max**. `costTier` is a cost band guiding the auto router, **not a hard spending cap** and not reasoning effort. `allowedModels` and `excludedModels` constrain auto model selection. They are sent through the matching `auto-router` or `auto-beta-router` plugin. Optional `maxPromptPrice` and `maxCompletionPrice` are provider price ceilings in **USD per million tokens** (`provider.max_price.prompt` / `.completion`); these also work with fixed model entries. Leave constraints empty for provider defaults. Reasoning effort is configured separately and sent as `reasoning.effort`; changing a cost band does not change reasoning effort. Per-machine seed overrides may replace `openRouter` constraints; the provider key remains managed separately on the settings page.
+
+A refresh fetches `/models` with the shared key, importing fixed entries' context windows, tool/vision capabilities, supported reasoning effort and per-token prices (converted to per-million prices). Fixed IDs must exactly match the discovered list; both auto variants are exempt and retain their configured capabilities. A failed refresh retains the last good catalog. Discovery updates configured entries only, so refresh after adding a fixed model.
+
+The router sends authenticated Chat Completions to `{OpenRouter:ApiBaseUrl}/chat/completions` (default `https://openrouter.ai/api/v1`) and translates streaming/non-streaming replies to the Messages API, reusing local Chat Completions translation. `count_tokens` is estimated without an upstream request. An idle stream ends after 120 seconds (`--SimpleRouter:OpenRouter:StreamIdleTimeout`); `--SimpleRouter:OpenRouter:ApiBaseUrl` overrides the endpoint. Failures before a response starts may fail over under the normal cooldown rules; the router never retries another model after exposing partial content.
+
+Usage keeps the configured catalog model ID (and session pin) separate from OpenRouter's actual resolved model and generation ID. Provider-reported usage cost takes precedence and is labelled `reported`; otherwise a configured price for the resolved model is used and labelled `estimated`. An auto response whose selected model has no configured price is **unknown cost**, not a falsely precise zero: dashboards mark it unknown and aggregate cost reports indicate incomplete totals. Historical usage rows remain compatible. The session cost endpoint adds `unknown_cost_request_count` and `estimated_cost_request_count`; its existing total remains the sum of known reported/estimated costs. OpenRouter structured reasoning details (including encrypted details and signatures) survive Messages thinking blocks and tool round trips. Structured reasoning details are assembled until stream completion so fragmented signatures/encrypted data can be replayed intact; answer text still streams immediately, so those thinking blocks appear after streamed answer text (before tool calls), rather than as live reasoning progress. A SHA-256-derived opaque `session_id` provides stable upstream session affinity without exposing the client session ID; auto pins always identify the configured router entry, never the model it selected.
+
+See OpenRouter's [auto-router guide](https://openrouter.ai/docs/guides/routing/routers/auto-router), [usage accounting](https://openrouter.ai/docs/guides/guides/usage-accounting) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) for provider semantics.
+
 ### Limits and failover
 
 A model that cannot serve a request before anything has been sent to the client is put on a cooldown and the request moves to the next eligible model of the same tier (local first in Mid/Low); the session is re-pinned there and stays. Each model is tried at most once per request, and another tier is never used. Once the first byte has gone to the client there is no failover; a limit reported mid-stream still cools the model for later requests. Translated streams (Codex and local) hold back `message_start` until the first content or terminal event (nothing else is buffered), so a limit, overload or context rejection that arrives before any output still moves a streaming request. The hold lasts at most 15 s (`--SimpleRouter:Limits:StreamStartGrace`): a long Codex reasoning phase without summary text, or a slow local prefill, then gets `message_start` (and the response headers) so the client is not left waiting for headers, at the cost that a failure after that point ends the stream with an error event instead of moving the request. A shorter grace answers sooner but fails over less; a longer one fails over more but leaves a slow first event without headers for longer. Once `message_start` is sent, a translated stream that writes nothing to the client for 15 s (`--SimpleRouter:Limits:KeepAliveInterval`, 0 disables) sends an Anthropic `ping` event, and keeps doing so until the stream ends, so a client that drops silent streams keeps waiting while the model reasons or prefills; upstream keep-alives that produce no client output do not count.
@@ -133,6 +167,7 @@ Each call that names a SystemOne model is recorded like a Messages request, with
 `http://127.0.0.1:8790/ui` shows live monitoring (subscription accounts, model status, session pins, recent requests). `/ui/settings` edits the router without a restart; each change applies to the next new session:
 
 - Connect Claude (open the sign-in link, paste the `code#state` it shows) and Connect Codex (enter the shown code at the link; the page polls until it is approved). Both fetch the subscription's model list afterwards, as the CLI logins do.
+- Save, replace or remove the shared OpenRouter key; add fixed or auto OpenRouter entries with independent cost constraints and reasoning effort.
 - Enable or disable models. A session pinned to a model that is disabled (or removed from its tier) moves to another model of the same tier on its next request.
 - Tier membership: add a catalog model, or a subscription model picked from its provider's discovered list (any ID can be typed before a list has been fetched).
 - The alias table (in priority order) and the default tier.

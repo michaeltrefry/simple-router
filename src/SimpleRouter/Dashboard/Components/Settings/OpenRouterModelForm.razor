@@ -1,0 +1,87 @@
+@using SimpleRouter.OpenRouter
+@inject CatalogSettings Catalog
+@inject ILogger<OpenRouterModelForm> Logger
+
+<div class="form" id="openrouter-model-form">
+    <h3>@(Existing is null ? "Add OpenRouter model" : "Edit " + Existing.Id)</h3>
+    <p class="muted">The provider-level API key is shared. Auto cost constraints and reasoning effort are independent.</p>
+    <div class="form-grid">
+        <label>Model ID <input class="id" @bind="_id" placeholder="openrouter-auto-low" /></label>
+        <label>Upstream model ID <input class="upstream" @bind="_upstream" placeholder="openrouter/auto, openrouter/auto-beta or provider/model" /></label>
+        <label>Context window (tokens) <input class="context-window" type="number" @bind="_contextWindow" /></label>
+        <label class="check"><input class="enabled" type="checkbox" @bind="_enabled" /> Enabled</label>
+        <label class="check"><input class="supports-tools" type="checkbox" @bind="_tools" /> Supports tools</label>
+        <label class="check"><input class="supports-vision" type="checkbox" @bind="_vision" /> Supports vision</label>
+        @if (IsAuto)
+        {
+            <label>Auto cost tier <select class="cost-tier" @bind="_costTier"><option value="">Provider default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
+            <label>Allowed models (comma separated) <input class="allowed-models" @bind="_allowed" placeholder="provider/*, provider/model" /></label>
+            <label>Excluded models (comma separated) <input class="excluded-models" @bind="_excluded" /></label>
+        }
+        <label>Max prompt price (USD / million tokens) <input class="max-prompt-price" type="number" step="any" @bind="_maxPromptPrice" /></label>
+        <label>Max completion price (USD / million tokens) <input class="max-completion-price" type="number" step="any" @bind="_maxCompletionPrice" /></label>
+        <fieldset class="tiers"><legend>Tiers</legend>
+            @foreach (var tier in Enum.GetValues<ModelTier>())
+            {
+                <label class="check"><input type="checkbox" class="tier-@tier.Name()" checked="@_tiers.Contains(tier)" @onchange="e => Toggle(tier, e.Value is true)" /> @tier.Name()</label>
+            }
+        </fieldset>
+        <label>Effort levels <input class="effort-levels" @bind="_effortLevels" placeholder="low, medium, high" /></label>
+        <label>Default effort <input class="effort-default" @bind="_effortDefault" /></label>
+    </div>
+    <div class="buttons">
+        <button class="save primary" disabled="@_busy" @onclick="SaveAsync">Save</button>
+        <button class="cancel" disabled="@_busy" @onclick="OnCancel">Cancel</button>
+    </div>
+    <FormStatus Error="@_error" />
+</div>
+
+@code {
+    [Parameter] public ModelRow? Existing { get; set; }
+    [Parameter] public EventCallback<string> OnSaved { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    private string _id = "", _upstream = "openrouter/auto", _costTier = "", _allowed = "", _excluded = "";
+    private string _effortLevels = "", _effortDefault = "";
+    private int? _contextWindow;
+    private decimal? _maxPromptPrice, _maxCompletionPrice;
+    private bool _enabled = true, _tools = true, _vision, _busy;
+    private string? _error;
+    private HashSet<ModelTier> _tiers = [];
+    private bool IsAuto => OpenRouterRoutingOptions.IsAuto(_upstream.Trim());
+
+    protected override void OnInitialized()
+    {
+        if (Existing is not { } m) return;
+        (_id, _upstream, _contextWindow, _enabled, _tools, _vision) = (m.Id, m.UpstreamModelId, m.ContextWindow, m.Enabled, m.SupportsTools, m.SupportsVision);
+        _tiers = m.Tiers.ToHashSet();
+        (_, _effortLevels, _, _effortDefault) = EffortInput.Format(m.Effort);
+        if (m.OpenRouter is not { } o) return;
+        (_costTier, _allowed, _excluded) = (o.CostTier ?? "", string.Join(", ", o.AllowedModels ?? []), string.Join(", ", o.ExcludedModels ?? []));
+        (_maxPromptPrice, _maxCompletionPrice) = (o.MaxPromptPrice, o.MaxCompletionPrice);
+    }
+    private void Toggle(ModelTier tier, bool on) { if (on) _tiers.Add(tier); else _tiers.Remove(tier); }
+    private static List<string>? Models(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Distinct().ToList();
+    private async Task SaveAsync()
+    {
+        (_busy, _error) = (true, null);
+        try
+        {
+            var options = new OpenRouterRoutingOptions
+            {
+                CostTier = !IsAuto || string.IsNullOrWhiteSpace(_costTier) ? null : _costTier,
+                AllowedModels = IsAuto ? Models(_allowed) : null, ExcludedModels = IsAuto ? Models(_excluded) : null, MaxPromptPrice = _maxPromptPrice, MaxCompletionPrice = _maxCompletionPrice,
+            };
+            await Catalog.SaveOpenRouterModelAsync(new(_id, _upstream, _enabled, _contextWindow, _tools, _vision,
+                (string.IsNullOrWhiteSpace(_effortLevels) && string.IsNullOrWhiteSpace(_effortDefault)
+                    ? null : EffortInput.Parse("reasoning_effort", _effortLevels, "", _effortDefault)), options, _tiers), Existing?.Id);
+            await OnSaved.InvokeAsync($"{_id.Trim()} saved.");
+        }
+        catch (SettingsException e) { _error = e.Message; }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Logger.LogWarning("Saving an OpenRouter model failed: {error}", e.GetType().Name);
+            _error = "The model could not be saved; see the server log.";
+        }
+        finally { _busy = false; }
+    }
+}

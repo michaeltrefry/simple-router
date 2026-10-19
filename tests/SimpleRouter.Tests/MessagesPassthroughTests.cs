@@ -132,6 +132,44 @@ public class MessagesPassthroughTests
         Assert.Equal("enabled", sent["thinking"]!["type"]!.GetValue<string>());
     }
 
+    [Theory]
+    [InlineData("thinking", "signature")]
+    [InlineData("redacted_thinking", "data")]
+    public async Task OpenRouter_reasoning_is_dropped_before_claude_and_tool_loop_thinking_is_disabled(string type, string marker)
+    {
+        var body = JsonNode.Parse("""
+            {"model":"claude-sonnet-4-5","max_tokens":2048,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[
+              {"role":"user","content":"hi"},
+              {"role":"assistant","content":[{}, {"type":"tool_use","id":"call_1","name":"ls","input":{}}]},
+              {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"a"}]}]}
+            """)!;
+        body["messages"]![1]!["content"]![0] = new JsonObject { ["type"] = type, [marker] = "openrouter:opaque-state" };
+        var sent = await SendThroughClaudeAsync(body.ToJsonString());
+        Assert.Null(sent["thinking"]);
+        Assert.Single(sent["messages"]![1]!["content"]!.AsArray());
+        Assert.Equal("tool_use", sent["messages"]![1]!["content"]![0]!["type"]!.GetValue<string>());
+        Assert.DoesNotContain("openrouter:", sent.ToJsonString());
+    }
+
+    [Fact]
+    public async Task Native_redacted_thinking_is_preserved_when_openrouter_markers_are_removed()
+    {
+        var sent = await SendThroughClaudeAsync("""
+            {"model":"claude-sonnet-4-5","max_tokens":2048,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[
+              {"role":"user","content":"hi"},
+              {"role":"assistant","content":[{"type":"redacted_thinking","data":"native-encrypted-state"},
+                {"type":"thinking","thinking":"native","signature":"native-signature"},
+                {"type":"redacted_thinking","data":"openrouter:opaque-state"},
+                {"type":"tool_use","id":"call_1","name":"ls","input":{}}]},
+              {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"a"}]}]}
+            """);
+        Assert.Equal("enabled", sent["thinking"]!["type"]!.GetValue<string>());
+        var blocks = sent["messages"]![1]!["content"]!.AsArray();
+        Assert.Equal(3, blocks.Count);
+        Assert.Equal("native-encrypted-state", blocks[0]!["data"]!.GetValue<string>());
+        Assert.Equal("native-signature", blocks[1]!["signature"]!.GetValue<string>());
+    }
+
     [Fact]
     public async Task Upstream_request_uses_subscription_auth_and_claude_code_identity()
     {

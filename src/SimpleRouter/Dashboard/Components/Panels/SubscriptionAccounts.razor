@@ -2,7 +2,7 @@
 @inject DashboardData Dashboard
 
 <section class="card">
-    <h2>Subscription accounts</h2>
+    <h2>Provider accounts</h2>
     @if (Data is null)
     {
         <p class="muted">Loading…</p>
@@ -19,7 +19,7 @@
                     {
                         <tr>
                             <td>@a.Provider.ToString().ToLowerInvariant()</td>
-                            <td><span class="@AccountPill(a.State)">@AccountLabel(a.State)</span></td>
+                            <td><span class="@AccountPill(a.State)">@(a.Provider == ProviderKind.OpenRouter && !a.LoggedIn ? "API key missing" : AccountLabel(a.State))</span></td>
                             <td class="mono" title="Last attempt: @Time(a.ListCheckedAt)">@Time(a.ListFetchedAt)</td>
                             <td class="num">@(a.ListedModels?.ToString() ?? "—")</td>
                             <td class="error">@(a.ListError ?? "—")</td>

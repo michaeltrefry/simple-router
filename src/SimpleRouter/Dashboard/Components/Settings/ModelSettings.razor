@@ -20,7 +20,7 @@
                         <td class="mono">@m.UpstreamModelId</td>
                         <td>@(m.Tiers.Count == 0 ? "—" : string.Join(", ", m.Tiers.Select(t => t.Name())))</td>
                         <td class="actions">
-                            @if (m.Provider is ProviderKind.Local or ProviderKind.SystemOne)
+                            @if (m.Provider is ProviderKind.Local or ProviderKind.SystemOne or ProviderKind.OpenRouter)
                             {
                                 <button class="edit" disabled="@Busy" @onclick="() => Open(m.Provider, m)">Edit</button>
                                 @if (_confirmRemove == m.Id)
@@ -47,8 +47,13 @@
     {
         <SystemOneModelForm @key="_editing?.Id" Existing="_editing" OnSaved="SavedAsync" OnCancel="Close" />
     }
+    else if (_form == ProviderKind.OpenRouter)
+    {
+        <OpenRouterModelForm @key="_editing?.Id" Existing="_editing" OnSaved="SavedAsync" OnCancel="Close" />
+    }
     else
     {
+        <button id="add-openrouter-model" @onclick="() => Open(ProviderKind.OpenRouter, null)">Add OpenRouter model</button>
         <button id="add-local-model" @onclick="() => Open(ProviderKind.Local, null)">Add local model</button>
         <button id="add-systemone-model" @onclick="() => Open(ProviderKind.SystemOne, null)">Add SystemOne model</button>
     }

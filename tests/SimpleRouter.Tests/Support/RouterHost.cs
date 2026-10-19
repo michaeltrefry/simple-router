@@ -4,6 +4,7 @@ using SimpleRouter.Claude;
 using SimpleRouter.Codex;
 using SimpleRouter.Gateway;
 using SimpleRouter.Local;
+using SimpleRouter.OpenRouter;
 using SimpleRouter.SystemOne;
 
 namespace SimpleRouter.Tests.Support;
@@ -61,6 +62,7 @@ public sealed class RouterHost : IAsyncDisposable
             $"--SimpleRouter:Claude:ApiBaseUrl={UpstreamBase}",
             $"--SimpleRouter:Claude:TokenUrl={TokenUrl}",
             $"--SimpleRouter:Claude:AuthorizeUrl={AuthorizeUrl}",
+            "--SimpleRouter:OpenRouter:ApiBaseUrl=http://openrouter.test/api/v1",
             $"--SimpleRouter:Codex:Issuer={CodexIssuer}",
             $"--SimpleRouter:Codex:ApiBaseUrl={CodexApiBase}",
             // Only the startup probe runs; tests re-check explicitly so results never race the assertions.
@@ -74,6 +76,7 @@ public sealed class RouterHost : IAsyncDisposable
     public static Action<IServiceCollection> FakeHttp(FakeHandler upstream, FakeHandler oauth, FakeHandler? local = null,
         FakeHandler? codex = null, FakeHandler? codexAuth = null) => services =>
     {
+        services.AddHttpClient(OpenRouterUpstream.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => new FakeHandler());
         services.AddHttpClient(CodexUpstream.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => codex ?? new FakeHandler());
         services.AddHttpClient(CodexOAuthClient.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => codexAuth ?? new FakeHandler());
         services.AddHttpClient(ClaudeUpstream.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => upstream);

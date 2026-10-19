@@ -95,6 +95,8 @@ public static class Effort
         return model.Provider switch
         {
             ProviderKind.Claude => requested,
+            ProviderKind.OpenRouter => (requested ?? model.Effort?.Default) is { } openRouter
+                ? model.Effort?.Levels is { Length: > 0 } supported ? Nearest(openRouter, supported) : openRouter : null,
             ProviderKind.Codex => requested is { } level ? Nearest(level, model.Effort?.Levels is { Length: > 0 } levels ? levels : CodexDefaultLevels) : null,
             _ => model.Effort is { Mode: not EffortMode.None } mapping && (requested ?? mapping.Default) is { } local ? Nearest(local, mapping.Levels ?? []) : null,
         };

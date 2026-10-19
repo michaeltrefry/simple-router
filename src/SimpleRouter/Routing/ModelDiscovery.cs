@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using SimpleRouter.Data;
+using SimpleRouter.OpenRouter;
 
 namespace SimpleRouter.Routing;
 
@@ -26,9 +27,18 @@ public sealed class ModelDiscovery(
         {
             IReadOnlyList<string>? ids = null;
             string? error = null;
+            IReadOnlyList<OpenRouterModelInfo>? metadata = null;
             try
             {
-                ids = await source.FetchAsync(ct);
+                if (source is OpenRouterModelList openRouter)
+                {
+                    metadata = await openRouter.FetchModelsAsync(ct);
+                    ids = metadata.Select(m => m.Id).ToList();
+                }
+                else
+                {
+                    ids = await source.FetchAsync(ct);
+                }
                 if (ids.Count == 0)
                 {
                     error = $"{provider} returned an empty model list.";
@@ -46,12 +56,12 @@ public sealed class ModelDiscovery(
             ProviderModelList row;
             try
             {
-                row = await SaveAsync(provider, ids, error, ct);
+                row = await SaveAsync(provider, ids, metadata, error, ct);
             }
             catch (DbUpdateException)
             {
                 // Another process (a CLI login beside the running server) may have inserted the first row meanwhile.
-                row = await SaveAsync(provider, ids, error, ct);
+                row = await SaveAsync(provider, ids, metadata, error, ct);
             }
             if (error is null)
             {
@@ -75,7 +85,7 @@ public sealed class ModelDiscovery(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var missing = (await db.Models.AsNoTracking().Where(m => m.Provider == provider && m.Enabled).OrderBy(m => m.Id).ToListAsync(ct))
-            .Where(m => !Lists(listed, m.UpstreamModelId))
+            .Where(m => !Lists(provider, listed, m.UpstreamModelId))
             .Select(m => m.Id)
             .ToList();
         if (missing.Count == 0)
@@ -89,7 +99,7 @@ public sealed class ModelDiscovery(
             provider, string.Join(", ", missing), hint);
     }
 
-    private async Task<ProviderModelList> SaveAsync(ProviderKind provider, IReadOnlyList<string>? ids, string? error, CancellationToken ct)
+    private async Task<ProviderModelList> SaveAsync(ProviderKind provider, IReadOnlyList<string>? ids, IReadOnlyList<OpenRouterModelInfo>? metadata, string? error, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var row = await db.ProviderModelLists.FindAsync([provider], ct);
@@ -105,9 +115,45 @@ public sealed class ModelDiscovery(
         {
             row.ModelIds = ids!.Distinct().Order(StringComparer.Ordinal).ToList();
             row.FetchedAt = now;
+            if (metadata is not null)
+                await UpdateOpenRouterModelsAsync(db, metadata, ct);
         }
         await db.SaveChangesAsync(ct);
         return row;
+    }
+
+    private static async Task UpdateOpenRouterModelsAsync(RouterDbContext db, IReadOnlyList<OpenRouterModelInfo> metadata, CancellationToken ct)
+    {
+        var models = await db.Models.Where(m => m.Provider == ProviderKind.OpenRouter).ToListAsync(ct);
+        var prices = await db.ModelPrices.ToDictionaryAsync(p => p.ModelId, ct);
+        var discovered = metadata.DistinctBy(m => m.Id).ToDictionary(m => m.Id, StringComparer.Ordinal);
+        foreach (var model in models)
+        {
+            // Auto routers choose a different model per request; their price and capabilities are not fixed.
+            if (OpenRouterModelList.IsAuto(model.UpstreamModelId) || !discovered.TryGetValue(model.UpstreamModelId, out var info))
+                continue;
+            if (info.ContextWindow is { } context) model.ContextWindow = context;
+            if (info.SupportsTools is { } tools) model.SupportsTools = tools;
+            if (info.SupportsVision is { } vision) model.SupportsVision = vision;
+            if (info.Effort is { } effort) model.Effort ??= effort;
+            prices.TryGetValue(model.Id, out var price);
+            // A partial or dynamic price cannot estimate a request: neither zero nor the old price is valid.
+            if (info.InputPerMTok is null || info.OutputPerMTok is null)
+            {
+                if (price is not null) db.ModelPrices.Remove(price);
+                continue;
+            }
+            if (price is null)
+            {
+                price = new ModelPrice { ModelId = model.Id };
+                db.ModelPrices.Add(price);
+            }
+            if (info.InputPerMTok is { } input) price.InputPerMTok = input;
+            if (info.OutputPerMTok is { } output) price.OutputPerMTok = output;
+            if (info.CacheReadPerMTok is { } read) price.CacheReadPerMTok = read;
+            if (info.CacheWritePerMTok is { } write) price.CacheWritePerMTok = write;
+            if (info.CacheWrite1hPerMTok is { } write1h) price.CacheWrite1hPerMTok = write1h;
+        }
     }
 
     /// <summary>Fetches right after a login and tells the user the outcome; a failed fetch or save does not fail the login.</summary>
@@ -183,6 +229,11 @@ public sealed class ModelDiscovery(
     public static bool Lists(IReadOnlyCollection<string> list, string upstreamModelId) =>
         list.Contains(upstreamModelId, StringComparer.OrdinalIgnoreCase)
         || list.Any(id => IsSnapshotOf(id, upstreamModelId) || IsSnapshotOf(upstreamModelId, id));
+
+    public static bool Lists(ProviderKind provider, IReadOnlyCollection<string> list, string upstreamModelId) =>
+        provider == ProviderKind.OpenRouter
+            ? OpenRouterModelList.IsAuto(upstreamModelId) || list.Contains(upstreamModelId, StringComparer.Ordinal)
+            : Lists(list, upstreamModelId);
 
     private static bool IsSnapshotOf(string dated, string alias) =>
         dated.Length == alias.Length + 9

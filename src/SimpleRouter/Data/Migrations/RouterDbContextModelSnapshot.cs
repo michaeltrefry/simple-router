@@ -40,6 +40,9 @@ namespace SimpleRouter.Data.Migrations
                     b.Property<int?>("MaxPromptTokens")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("OpenRouter")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("ProtectedApiKey")
                         .HasColumnType("TEXT");
 
@@ -148,6 +151,20 @@ namespace SimpleRouter.Data.Migrations
                     b.ToTable("ModelPrices");
                 });
 
+            modelBuilder.Entity("SimpleRouter.Data.ProviderCredential", b =>
+                {
+                    b.Property<string>("Provider")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ProtectedApiKey")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Provider");
+
+                    b.ToTable("ProviderCredentials");
+                });
+
             modelBuilder.Entity("SimpleRouter.Data.ProviderModelList", b =>
                 {
                     b.Property<string>("Provider")
@@ -191,10 +208,16 @@ namespace SimpleRouter.Data.Migrations
                     b.Property<string>("ClientSessionId")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("CostSource")
+                        .HasColumnType("TEXT");
+
                     b.Property<long>("CostUsdMicros")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("Effort")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("GenerationId")
                         .HasColumnType("TEXT");
 
                     b.Property<long>("InputTokens")
@@ -212,6 +235,9 @@ namespace SimpleRouter.Data.Migrations
 
                     b.Property<string>("Provider")
                         .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ResolvedModelId")
                         .HasColumnType("TEXT");
 
                     b.Property<int>("Status")

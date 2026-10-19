@@ -8,7 +8,8 @@ namespace SimpleRouter.Dashboard;
 /// <summary>One served request as the dashboard lists it.</summary>
 public sealed record RequestRow(
     DateTimeOffset At, string? ClientSessionId, ModelTier? Tier, string ModelId, ProviderKind Provider, string? Effort,
-    long LatencyMs, int Status, long InputTokens, long OutputTokens, long CostUsdMicros);
+    long LatencyMs, int Status, long InputTokens, long OutputTokens, long CostUsdMicros,
+    string? ResolvedModelId = null, string? GenerationId = null, string? CostSource = null);
 
 /// <summary>A session pin and the current status of its pinned model.</summary>
 public sealed record PinRow(string SessionKey, string? ClientSessionId, ModelTier Tier, string ModelId, DateTimeOffset CreatedAt, ModelStatusEntry? Status);
@@ -25,7 +26,7 @@ public sealed record UsageSeries(string ModelId, long[] Requests, long[] CostUsd
 
 /// <summary>Recorded usage in a <see cref="UsageRange"/>: bucket starts, one series per model (by model ID), and totals.</summary>
 public sealed record UsageChart(
-    UsageRange Range, DateTimeOffset[] Buckets, List<UsageSeries> Series, long Requests, long Tokens, long CostUsdMicros);
+    UsageRange Range, DateTimeOffset[] Buckets, List<UsageSeries> Series, long Requests, long Tokens, long CostUsdMicros, long UnknownCostRequests = 0);
 
 /// <summary>Read-only queries behind the monitoring dashboard.</summary>
 public sealed class DashboardData(
@@ -40,7 +41,7 @@ public sealed class DashboardData(
             .OrderByDescending(u => u.Id)
             .Take(RecentLimit)
             .Select(u => new RequestRow(u.At, u.ClientSessionId, u.Tier, u.ModelId, u.Provider, u.Effort, u.LatencyMs, u.Status,
-                u.InputTokens, u.OutputTokens, u.CostUsdMicros))
+                u.InputTokens, u.OutputTokens, u.CostUsdMicros, u.ResolvedModelId, u.GenerationId, u.CostSource))
             .ToListAsync(ct);
     }
 
@@ -56,13 +57,13 @@ public sealed class DashboardData(
         var end = new DateTimeOffset(now.Ticks - now.Ticks % step.Ticks, TimeSpan.Zero) + step;
         var start = end - step * count;
         var series = new SortedDictionary<string, UsageSeries>(StringComparer.Ordinal);
-        long requests = 0, tokens = 0, cost = 0;
+        long requests = 0, tokens = 0, cost = 0, unknown = 0;
 
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         // SQLite cannot compare a DateTimeOffset column; rows are written in time order, so read newest first and stop at the window's start.
         var rows = db.RequestUsages.AsNoTracking()
             .OrderByDescending(u => u.Id)
-            .Select(u => new { u.At, u.ModelId, Tokens = u.InputTokens + u.OutputTokens, u.CostUsdMicros })
+            .Select(u => new { u.At, u.ModelId, Tokens = u.InputTokens + u.OutputTokens, u.CostUsdMicros, u.CostSource })
             .AsAsyncEnumerable();
         await foreach (var u in rows.WithCancellation(ct))
         {
@@ -84,9 +85,10 @@ public sealed class DashboardData(
             requests++;
             tokens += u.Tokens;
             cost += u.CostUsdMicros;
+            if (u.CostSource == "unknown") unknown++;
         }
         var buckets = Enumerable.Range(0, count).Select(i => start + step * i).ToArray();
-        return new UsageChart(range, buckets, [.. series.Values], requests, tokens, cost);
+        return new UsageChart(range, buckets, [.. series.Values], requests, tokens, cost, unknown);
     }
 
     public async Task<List<PinRow>> PinsAsync(CancellationToken ct)
@@ -111,17 +113,32 @@ public sealed class DashboardData(
     public async Task<List<AccountRow>> AccountsAsync(CancellationToken ct)
     {
         List<ProviderModelList> lists;
+        bool openRouterKey, openRouterConfigured;
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
             lists = await db.ProviderModelLists.AsNoTracking().ToListAsync(ct);
+            openRouterKey = await db.ProviderCredentials.AnyAsync(c => c.Provider == ProviderKind.OpenRouter, ct);
+            openRouterConfigured = await db.Models.AnyAsync(m => m.Provider == ProviderKind.OpenRouter, ct);
         }
         var report = await subscriptions.ReportAsync(ct);
-        return new[] { ProviderKind.Claude, ProviderKind.Codex }.Select(provider =>
+        var accounts = new[] { ProviderKind.Claude, ProviderKind.Codex }.Select(provider =>
         {
             var credential = report.Credentials.FirstOrDefault(c => c.Provider == provider.ToString().ToLowerInvariant());
             var list = lists.FirstOrDefault(l => l.Provider == provider);
             return new AccountRow(provider, credential is not null, credential?.State ?? "not_logged_in",
                 list?.FetchedAt, list?.CheckedAt, list?.ModelIds?.Count, list?.LastError);
         }).ToList();
+        if (openRouterKey || openRouterConfigured)
+        {
+            var list = lists.FirstOrDefault(l => l.Provider == ProviderKind.OpenRouter);
+            var statuses = (await selector.StatusesAsync(ct)).Where(s => s.Provider == ProviderKind.OpenRouter).ToList();
+            var state = !openRouterKey ? "not_logged_in"
+                : statuses.Any(s => s.Status == ModelStatus.Eligible) ? "ok"
+                : statuses.Any(s => s.Status == ModelStatus.AuthRejected) ? "auth_rejected"
+                : statuses.Any(s => s.Status == ModelStatus.Cooling) ? "cooling" : "unknown";
+            accounts.Add(new AccountRow(ProviderKind.OpenRouter, openRouterKey, state,
+                list?.FetchedAt, list?.CheckedAt, list?.ModelIds?.Count, list?.LastError));
+        }
+        return accounts;
     }
 }

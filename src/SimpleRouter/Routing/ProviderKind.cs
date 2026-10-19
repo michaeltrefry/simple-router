@@ -9,4 +9,7 @@ public enum ProviderKind
 
     /// <summary>A SystemOne decision model, served only at <c>/v1/systemone</c>; never a tier member.</summary>
     SystemOne,
+
+    /// <summary>OpenRouter API-key provider, including auto-routed variants.</summary>
+    OpenRouter,
 }

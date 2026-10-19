@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using SimpleRouter.Api;
 using SimpleRouter.Codex;
 using SimpleRouter.Local;
+using SimpleRouter.OpenRouter;
 using SimpleRouter.Routing;
 
 namespace SimpleRouter.Claude;
@@ -76,11 +77,15 @@ public sealed class ClaudeUpstream(
         }
     }
 
-    private static bool IsForeignThinking(JsonNode? block) =>
-        Str(block?["type"]) == "thinking"
-        && (Str(block!["signature"]) is not { Length: > 0 } signature
+    private static bool IsForeignThinking(JsonNode? block) => Str(block?["type"]) switch
+    {
+        "thinking" => Str(block!["signature"]) is not { Length: > 0 } signature
             || signature.StartsWith(ResponsesStreamTranslator.SignaturePrefix, StringComparison.Ordinal)
-            || signature.StartsWith(ChatResponseTranslator.SignaturePrefix, StringComparison.Ordinal));
+            || signature.StartsWith(ChatResponseTranslator.SignaturePrefix, StringComparison.Ordinal)
+            || signature.StartsWith(OpenRouterReasoning.Prefix, StringComparison.Ordinal),
+        "redacted_thinking" => Str(block!["data"])?.StartsWith(OpenRouterReasoning.Prefix, StringComparison.Ordinal) == true,
+        _ => false,
+    };
 
     private static string? Str(JsonNode? node) => ChatRequestTranslator.Str(node);
 
