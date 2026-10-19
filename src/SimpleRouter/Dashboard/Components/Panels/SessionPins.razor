@@ -23,7 +23,7 @@
                     {
                         <tr>
                             <td class="mono session">@(p.ClientSessionId ?? "—")</td>
-                            <td class="mono" title="@p.SessionKey">@ShortKey(p.SessionKey)</td>
+                            <td class="mono" title="@p.SessionKey"><a href="@PinUrl(p.SessionKey, p.Tier)" aria-label="@($"History for {p.Tier.Name()} pin {ShortKey(p.SessionKey)}")">@ShortKey(p.SessionKey)</a></td>
                             <td>@p.Tier.Name()</td>
                             <td class="mono">@p.ModelId</td>
                             <td>

@@ -1,0 +1,3 @@
+.content ::deep a:not(.nav-item) { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
+.content ::deep a:hover { text-decoration-thickness: 2px; }
+.content ::deep a:focus-visible, .content ::deep [tabindex="0"]:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }

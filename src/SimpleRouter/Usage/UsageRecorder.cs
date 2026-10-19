@@ -8,7 +8,7 @@ namespace SimpleRouter.Usage;
 
 /// <summary>A served request to record: the model and tier that answered, the response status and its usage.</summary>
 public sealed record ServedRequest(
-    string? ClientSessionId, CatalogModel Model, ModelTier? Tier, int Status, TokenUsage Usage, TimeSpan Latency, string? Effort, UpstreamUsageMetadata? Upstream = null);
+    string? ClientSessionId, CatalogModel Model, ModelTier? Tier, int Status, TokenUsage Usage, TimeSpan Latency, string? Effort, UpstreamUsageMetadata? Upstream = null, string? SessionKey = null, RequestCompletion? Completion = null);
 
 /// <summary>Prices a served request from <see cref="RouterDbContext.ModelPrices"/> and stores it as a <see cref="RequestUsage"/> row.</summary>
 public sealed class UsageRecorder(
@@ -43,6 +43,13 @@ public sealed class UsageRecorder(
             {
                 At = time.GetUtcNow(),
                 ClientSessionId = served.ClientSessionId,
+                SessionKey = served.SessionKey,
+                UpstreamModelId = served.Model.UpstreamModelId,
+                IsStreaming = served.Completion?.IsStreaming,
+                Outcome = served.Completion?.Outcome,
+                FailureKind = served.Completion?.FailureKind,
+                FailureDetail = served.Completion?.FailureDetail,
+                StopReason = served.Completion?.StopReason,
                 ModelId = served.Model.Id,
                 Provider = served.Model.Provider,
                 Tier = served.Tier,
@@ -54,7 +61,8 @@ public sealed class UsageRecorder(
                 CacheWrite1hTokens = served.Usage.CacheWrite1hTokens,
                 CostUsdMicros = reported is { } dollars ? UpstreamUsageMetadata.ToMicros(dollars) : served.Usage.CostUsdMicros(price),
                 CostSource = reported is not null ? "reported" : price is not null ? "estimated" : "unknown",
-                ResolvedModelId = served.Upstream?.ResolvedModelId,
+                ResolvedModelId = served.Model.Provider == ProviderKind.OpenRouter && served.Upstream?.ResolvedModelId is { } actual
+                    && OpenRouterRoutingOptions.IsAuto(actual) ? null : served.Upstream?.ResolvedModelId,
                 GenerationId = served.Upstream?.GenerationId,
                 LatencyMs = (long)served.Latency.TotalMilliseconds,
                 Effort = served.Effort,

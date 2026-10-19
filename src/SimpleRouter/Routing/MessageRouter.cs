@@ -62,25 +62,30 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         }
 
         var started = time.GetTimestamp();
-        Task RecordServedAsync(Data.CatalogModel model, TokenUsage? tokens) =>
+        var streaming = request["stream"] is JsonValue stream && stream.TryGetValue<bool>(out var requestedStream) && requestedStream;
+        Task RecordServedAsync(Data.CatalogModel model, TokenUsage? tokens, RequestCompletion completion) =>
             usage.RecordAsync(new ServedRequest(session.ClientSessionId, model, tier, context.Response.StatusCode,
-                tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request, model), UpstreamUsageMetadata.Get(context)));
+                tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request, model), UpstreamUsageMetadata.Get(context), session.Key, completion));
 
         var tried = new HashSet<string>();
         ModelFault? overflow = null;
         var onlyOverflow = true;
+        Data.CatalogModel? lastAttempt = null;
         while (await selector.SelectAsync(tier, session, needs, ct, tried) is { } selection)
         {
             UpstreamUsageMetadata.Reset(context);
+            RequestDiagnostics.Reset(context);
             var chosen = selection.Model;
+            lastAttempt = chosen;
             tried.Add(chosen.Id);
             // Upstreams rewrite the body for their provider; a failover must start from the client's request.
             var call = new UpstreamCall(context, (JsonObject)request.DeepClone(), session, chosen, false, needs.EstimatedTokens);
             UpstreamResult result;
             TokenUsage? tokens;
+            RequestCompletion completion;
             using (selection.Hold)
             {
-                (result, tokens) = await SendTappedAsync(chosen, call, partial => RecordServedAsync(chosen, partial));
+                (result, tokens, completion) = await SendTappedAsync(chosen, call, streaming, (partial, outcome) => RecordServedAsync(chosen, partial, outcome));
             }
             if (result.Fault is { } fault)
             {
@@ -90,7 +95,7 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
             {
                 // Recorded once the response is complete, so the database never holds back the end of the stream.
                 var served = new ServedRequest(session.ClientSessionId, chosen, tier, context.Response.StatusCode,
-                    tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request, chosen), UpstreamUsageMetadata.Get(context));
+                    tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request, chosen), UpstreamUsageMetadata.Get(context), session.Key, completion);
                 context.Response.OnCompleted(() => usage.RecordAsync(served));
                 return;
             }
@@ -99,12 +104,17 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
             logger.LogWarning("Model {model} could not serve the request ({reason}); trying the next model in tier {tier}",
                 chosen.Id, result.Fault?.Kind, tier.Name());
         }
+        // No attempt served a response: do not price unserved provider accounting as the final router error.
+        UpstreamUsageMetadata.Reset(context);
         if (overflow is not null && onlyOverflow)
         {
             await WritePromptTooLongAsync(context, overflow.Message);
+            if (lastAttempt is not null) await RecordServedAsync(lastAttempt, null, RequestCompletion.Failed(streaming, "context_overflow"));
             return;
         }
         await WriteTierEmptyAsync(context, tier, needs, ct);
+        if (lastAttempt is not null) await RecordServedAsync(lastAttempt, null,
+            RequestCompletion.Failed(streaming, RequestDiagnostics.Get(context) ?? "tier_exhausted"));
     }
 
     /// <summary>Claude Code compacts on an <c>invalid_request_error</c> whose message says "prompt is too long", whatever the provider's wording.</summary>
@@ -124,8 +134,8 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
     /// after it started (the client went away mid-stream) still spent tokens, so it is passed to <paramref name="recordCutOff"/>,
     /// as is a request the client abandoned before anything was written, with status 499.
     /// </summary>
-    private async Task<(UpstreamResult Result, TokenUsage? Usage)> SendTappedAsync(Data.CatalogModel model, UpstreamCall call,
-        Func<TokenUsage?, Task> recordCutOff)
+    private async Task<(UpstreamResult Result, TokenUsage? Usage, RequestCompletion Completion)> SendTappedAsync(Data.CatalogModel model, UpstreamCall call,
+        bool streaming, Func<TokenUsage?, RequestCompletion, Task> recordCutOff)
     {
         var response = call.Context.Response;
         var body = response.Body;
@@ -139,19 +149,21 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
                 // Bytes still buffered in the response writer have not reached the tap yet; a gone client must not lose the record.
                 await response.BodyWriter.FlushAsync(CancellationToken.None);
             }
-            return (result, tap.Usage());
+            return (result, tap.Usage(), tap.Completion(streaming, RequestDiagnostics.Get(call.Context), call.Context.RequestAborted.IsCancellationRequested));
         }
-        catch (Exception) when (response.HasStarted)
+        catch (Exception error)
         {
-            await recordCutOff(tap.Usage());
-            throw;
-        }
-        catch (Exception) when (call.Context.RequestAborted.IsCancellationRequested)
-        {
-            // The client gave up before the first byte (a timeout on a slow model); recorded so it is not invisible.
-            response.StatusCode = StatusCodes.Status499ClientClosedRequest;
-            await recordCutOff(null);
-            throw;
+            var cancelled = call.Context.RequestAborted.IsCancellationRequested;
+            if (!response.HasStarted && !cancelled)
+            {
+                await AnthropicError.WriteAsync(call.Context, StatusCodes.Status502BadGateway, "api_error", "The upstream response could not be completed.");
+                return (UpstreamResult.Served, tap.Usage(), tap.Completion(streaming, RequestDiagnostics.Get(call.Context), exception: error));
+            }
+            if (!response.HasStarted) response.StatusCode = StatusCodes.Status499ClientClosedRequest;
+            await recordCutOff(tap.Usage(), tap.Completion(streaming, RequestDiagnostics.Get(call.Context), cancelled, error));
+            // Framework exception logging must not expose a provider exception's message, URL or inner exception.
+            if (cancelled) throw new OperationCanceledException(call.Context.RequestAborted);
+            throw new IOException("The upstream response was interrupted.");
         }
         finally
         {

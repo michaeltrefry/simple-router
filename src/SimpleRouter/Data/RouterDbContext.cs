@@ -66,6 +66,7 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
         modelBuilder.Entity<RequestUsage>().Property(u => u.Provider).HasConversion(p => p.ToString().ToLowerInvariant(), p => Enum.Parse<ProviderKind>(p, true));
         modelBuilder.Entity<RequestUsage>().Property(u => u.Tier).HasConversion(TierConverter);
         modelBuilder.Entity<RequestUsage>().HasIndex(u => u.ClientSessionId);
+        modelBuilder.Entity<RequestUsage>().HasIndex(u => new { u.SessionKey, u.Tier, u.Id });
     }
 
     private static readonly ValueConverter<ModelTier, string> TierConverter =

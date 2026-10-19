@@ -6,6 +6,7 @@ using SimpleRouter.Api;
 using SimpleRouter.Data;
 using SimpleRouter.Routing;
 using SimpleRouter.OpenRouter;
+using SimpleRouter.Usage;
 
 namespace SimpleRouter.Local;
 
@@ -33,12 +34,42 @@ public sealed class ChatResponseTransport(
         }
         if (chat is null)
         {
+            RequestDiagnostics.Fail(context, "malformed_response");
             await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", $"{Label} {model.Id} returned an unreadable response.");
             return;
         }
+        if (chat["error"] is not null)
+        {
+            RequestDiagnostics.Fail(context, "upstream_error");
+            await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", $"{Label} reported an error.");
+            return;
+        }
+        if ((chat["choices"] as JsonArray)?.FirstOrDefault() is not JsonObject choice || choice["message"] is not JsonObject)
+        {
+            RequestDiagnostics.Fail(context, "malformed_response");
+            await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", $"{Label} returned an invalid response.");
+            return;
+        }
+        if (ChatRequestTranslator.Str(choice["finish_reason"]) == "error")
+        {
+            RequestDiagnostics.Fail(context, "upstream_error");
+            await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", $"{Label} reported an error.");
+            return;
+        }
         capture?.Invoke(context, chat);
+        byte[] translated;
+        try
+        {
+            translated = JsonSerializer.SerializeToUtf8Bytes(ChatResponseTranslator.Translate(chat, model.Id, estimate, openRouter), WireJson.Relaxed);
+        }
+        catch (InvalidOperationException)
+        {
+            RequestDiagnostics.Fail(context, "malformed_response");
+            await AnthropicError.WriteAsync(context, StatusCodes.Status502BadGateway, "api_error", $"{Label} returned an invalid response.");
+            return;
+        }
         context.Response.ContentType = "application/json";
-        await context.Response.Body.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(ChatResponseTranslator.Translate(chat, model.Id, estimate, openRouter), WireJson.Relaxed), ct);
+        await context.Response.Body.WriteAsync(translated, ct);
     }
 
     /// <summary>
@@ -95,6 +126,7 @@ public sealed class ChatResponseTransport(
         }
         catch (Exception e) when (e is IOException or HttpRequestException && !ct.IsCancellationRequested)
         {
+            RequestDiagnostics.Fail(context, "transport_error");
             logger.LogWarning("Chat model {model} stream failed", model.Id);
             if (openRouter && !started) return new ModelFault(FaultKind.Unreachable);
             tail = translator.Abort($"{Label} {model.Id} stream was interrupted.");
@@ -125,6 +157,7 @@ public sealed class ChatResponseTransport(
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
+                    RequestDiagnostics.Fail(context, "upstream_timeout");
                     if (openRouter && !started()) return (null, new ModelFault(FaultKind.Unreachable), null);
                     return (translator.Abort($"{Label} sent nothing for {idleTimeout.TotalSeconds:0.#} s."), null, null);
                 }
@@ -151,6 +184,7 @@ public sealed class ChatResponseTransport(
             }
             if (line is null)
             {
+                if (!translator.Finished) RequestDiagnostics.Fail(context, "truncated_stream");
                 if (openRouter && !started() && !translator.Finished) return (null, new ModelFault(FaultKind.Overloaded), null);
                 return (translator.Finished ? translator.Finish() : translator.Abort($"{Label} stream ended before completion."), null, null);
             }
@@ -163,8 +197,12 @@ public sealed class ChatResponseTransport(
     {
         if (payload == "[DONE]")
         {
-            if (openRouter && !translator.Finished)
-                return started() ? (translator.Abort("OpenRouter stream ended before completion."), null, null) : (null, new ModelFault(FaultKind.Overloaded), null);
+            if (!translator.Finished)
+            {
+                RequestDiagnostics.Fail(context, "truncated_stream");
+                return openRouter && !started() ? (null, new ModelFault(FaultKind.Overloaded), null)
+                    : (translator.Abort($"{Label} stream ended before completion."), null, null);
+            }
             return (translator.Finish(), null, null);
         }
         JsonObject? chunk;
@@ -178,14 +216,16 @@ public sealed class ChatResponseTransport(
         }
         if (chunk is null)
         {
+            RequestDiagnostics.Fail(context, "malformed_response");
             if (openRouter && !started()) return (null, new ModelFault(FaultKind.Overloaded), null);
             return (translator.Abort($"{Label} sent a malformed stream chunk."), null, null);
         }
         capture?.Invoke(context, chunk);
-        if (openRouter && ChatRequestTranslator.Str((chunk["choices"] as JsonArray)?.FirstOrDefault()?["finish_reason"]) == "error" && chunk["error"] is null)
+        if (ChatRequestTranslator.Str((chunk["choices"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault()?["finish_reason"]) == "error" && chunk["error"] is null)
             chunk["error"] = new JsonObject { ["code"] = 502 };
         if (chunk["error"] is { } error)
         {
+            RequestDiagnostics.Fail(context, "upstream_error");
             if (openRouter)
             {
                 var code = error is JsonObject obj && int.TryParse(obj["code"]?.ToString(), out var status) ? status : 502;
@@ -208,7 +248,25 @@ public sealed class ChatResponseTransport(
             }
             return (translator.Abort(message ?? $"{Label} reported an error mid-stream."), null, null);
         }
-        await write(translator.Feed(chunk));
+        if (chunk["choices"] is not JsonArray choices || (choices.Count == 0 && chunk["usage"] is not JsonObject)
+            || (choices.Count > 0 && choices[0] is not JsonObject))
+        {
+            RequestDiagnostics.Fail(context, "malformed_response");
+            if (openRouter && !started()) return (null, new ModelFault(FaultKind.Overloaded), null);
+            return (translator.Abort($"{Label} sent an invalid stream chunk."), null, null);
+        }
+        string translated;
+        try
+        {
+            translated = translator.Feed(chunk);
+        }
+        catch (InvalidOperationException)
+        {
+            RequestDiagnostics.Fail(context, "malformed_response");
+            if (openRouter && !started()) return (null, new ModelFault(FaultKind.Overloaded), null);
+            return (translator.Abort($"{Label} sent an invalid stream chunk."), null, null);
+        }
+        await write(translated);
         return null;
     }
 

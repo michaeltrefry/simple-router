@@ -1,0 +1,119 @@
+@page "/ui/pins"
+@inject DashboardData Dashboard
+
+<PageTitle>Pin history · Simple Router</PageTitle>
+<nav aria-label="Breadcrumb"><a href="/ui">Monitoring</a> / Pin history</nav>
+<header class="page-header">
+    <h1>Pin history</h1>
+    <p class="muted">Requests for one routing key and tier, including requests before a model change. This history is a snapshot; refresh to include new requests.</p>
+    @if (Valid) { <button type="button" @onclick="OnParametersSetAsync" disabled="@(_page is null && !_error)">Refresh history</button> }
+</header>
+@if (!Valid)
+{
+    <section class="card"><p>Select a pin from <a href="/ui">Monitoring</a> to view its history. A session key and valid tier are required.</p></section>
+}
+else if (_error)
+{
+    <p role="alert">Could not load pin history. Please reload this page to try again.</p>
+}
+else if (_page is null)
+{
+    <p role="status">Loading pin history…</p>
+}
+else
+{
+    <section class="card">
+        <h2>Pin identity</h2>
+        <dl>
+            <dt>Routing session key</dt><dd class="mono">@SessionKey</dd>
+            <dt>Tier</dt><dd>@_tier.Name()</dd>
+            <dt>Current configured entry</dt><dd class="mono">@(_pin?.ModelId ?? "No current pin")</dd>
+            @if (_pin is { } pin)
+            {
+                <dt>Client session</dt><dd class="mono">@(pin.ClientSessionId ?? "Not recorded")</dd>
+                <dt>Pinned (UTC)</dt><dd>@Time(pin.CreatedAt)</dd>
+            }
+        </dl>
+        @if (_pin is null)
+        {
+            <p class="muted">This pin is missing or was deleted. Recorded requests for this exact key and tier remain available below.</p>
+        }
+        <p class="muted">Legacy requests without a recorded routing key cannot be associated with this pin. Client session IDs alone are not sufficient.</p>
+    </section>
+    <section class="card">
+        <h2>Recorded requests</h2>
+        @if (_page.Rows.Count == 0)
+        {
+            <p class="muted">No recorded requests on this page for this exact pin.</p>
+        }
+        else
+        {
+            <div class="table-wrap" tabindex="0" aria-label="Pin request history">
+                <table id="pin-requests">
+                    <thead><tr><th>Request / time (UTC)</th><th>Configured entry</th><th>Upstream model</th><th>Outcome</th><th>HTTP</th><th class="num">Latency</th><th class="num">In / out tokens</th><th class="num">Cost</th></tr></thead>
+                    <tbody>
+                        @foreach (var r in _page.Rows)
+                        {
+                            <tr>
+                                <td><a href="@RequestUrl(r.Id)">#@r.Id · @Time(r.At)</a></td>
+                                <td class="mono">@r.ModelId</td>
+                                <td class="mono">
+                                    @if (ActualModel(r) is { } resolved)
+                                    {
+                                        @resolved <span class="muted">(resolved)</span>
+                                    }
+                                    else if (r.UpstreamModelId is { } configured)
+                                    {
+                                        @configured <span class="muted">(configured; actual unknown)</span>
+                                    }
+                                    else { <span class="muted">Unknown</span> }
+                                </td>
+                                <td>@OutcomeLabel(r.Outcome)</td>
+                                <td><span class="@Pill(r.Status)">@r.Status</span></td>
+                                <td class="num">@Latency(r.LatencyMs)</td>
+                                <td class="num">@Tokens(r.InputTokens) / @Tokens(r.OutputTokens)</td>
+                                <td class="num">@(r.CostSource == "unknown" ? "Unknown" : Cost(r.CostUsdMicros))</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        <nav class="pagination" aria-label="Request history pages">
+            @if (BeforeId is not null) { <a href="@PinUrl(SessionKey!, _tier)">Newest requests</a> }
+            @if (_page.NextBeforeId is { } cursor) { <a href="@PinUrl(SessionKey!, _tier, cursor)">Older requests</a> }
+        </nav>
+    </section>
+}
+
+@code {
+    [Parameter, SupplyParameterFromQuery(Name = "sessionKey")] public string? SessionKey { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "tier")] public string? Tier { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "beforeId")] public long? BeforeId { get; set; }
+    private ModelTier _tier;
+    private bool Valid => !string.IsNullOrEmpty(SessionKey) && ModelTiers.TryParse(Tier, out _tier);
+    private PinRow? _pin;
+    private RequestPage? _page;
+    private bool _error;
+    private long _version;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var version = ++_version;
+        _page = null;
+        _error = false;
+        if (!Valid) return;
+        var key = SessionKey!;
+        var tier = _tier;
+        var before = BeforeId;
+        try
+        {
+            var pin = await Dashboard.PinAsync(key, tier, CancellationToken.None);
+            var page = await Dashboard.PinRequestsAsync(key, tier, before, CancellationToken.None);
+            if (version != _version) return;
+            _pin = pin;
+            _page = page;
+        }
+        catch (Exception) { if (version == _version) _error = true; }
+    }
+}

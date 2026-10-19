@@ -10,6 +10,7 @@ using SimpleRouter.Codex;
 using SimpleRouter.Local;
 using SimpleRouter.OpenRouter;
 using SimpleRouter.Routing;
+using SimpleRouter.Usage;
 
 namespace SimpleRouter.Claude;
 
@@ -124,9 +125,10 @@ public sealed class ClaudeUpstream(
             }
             return await EstimateAsync(call);
         }
-        catch (HttpRequestException e)
+        catch (Exception e) when (e is HttpRequestException || message && e is OperationCanceledException && !ct.IsCancellationRequested)
         {
-            logger.LogWarning("Claude upstream request failed: {error}", e.Message);
+            RequestDiagnostics.Fail(context, e is OperationCanceledException ? "upstream_timeout" : "upstream_unreachable");
+            logger.LogWarning("Claude upstream request failed");
             if (message)
             {
                 return UpstreamResult.NotServed(new ModelFault(FaultKind.Unreachable));
@@ -138,6 +140,7 @@ public sealed class ClaudeUpstream(
         using (response)
         {
             var status = (int)response.StatusCode;
+            if (message && !response.IsSuccessStatusCode) RequestDiagnostics.Fail(context, "http_error");
             if (!message && status is 401 or 403)
             {
                 // Passed through, a rejected subscription credential would make the client ask for its own login.

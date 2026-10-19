@@ -42,7 +42,7 @@ public class DashboardTests
         await File.WriteAllTextAsync(seedPath, Seed);
         var host = await RouterHost.StartInAsync(RouterHost.NewDataDirectory(), $"--SimpleRouter:SeedFile={seedPath}");
         await host.LoginAsync(accessToken: "secret-access-token", refreshToken: "secret-refresh-token");
-        host.Upstream.Respond = _ => Json("""{"id":"msg","type":"message","usage":{"input_tokens":12,"output_tokens":34}}""");
+        host.Upstream.Respond = _ => Json("""{"id":"msg","type":"message","content":[],"stop_reason":"end_turn","usage":{"input_tokens":12,"output_tokens":34}}""");
         await host.AuthorizedClientAsync();
         return host;
     }
@@ -97,8 +97,8 @@ public class DashboardTests
         var cut = dashboard.Render<RecentRequests>();
 
         cut.WaitForAssertion(() => Assert.Equal(2, cut.FindAll("#recent-requests tbody tr").Count), Wait);
-        Assert.Equal("2026-10-14 12:01:00Z|session-new|low|codex-c|high|2.3 s|429|0 / 0|$0.0000", Cells(cut, 0));
-        Assert.Equal("2026-10-14 12:00:00Z|session-old|high|claude-a|low|850 ms|200|1,200 / 30|$0.0125", Cells(cut, 1));
+        Assert.Equal("2026-10-14 12:01:00Z|session-new|low|codex-c|high|2.3 s|429|0 / 0|$0.0000|Unknown", Cells(cut, 0));
+        Assert.Equal("2026-10-14 12:00:00Z|session-old|high|claude-a|low|850 ms|200|1,200 / 30|$0.0125|Unknown", Cells(cut, 1));
         Assert.Equal("pill warn", cut.FindAll("#recent-requests tbody tr")[0].QuerySelector(".pill")!.ClassName);
     }
 
@@ -116,7 +116,7 @@ public class DashboardTests
         var cut = dashboard.Render<RecentRequests>();
 
         cut.WaitForAssertion(() => Assert.Single(cut.FindAll("#recent-requests tbody tr")), Wait);
-        Assert.Equal("2026-10-16 09:00:00Z|—|—|d3|—|54 ms|200|213 / 0|$0.0000", Cells(cut, 0));
+        Assert.Equal("2026-10-16 09:00:00Z|—|—|d3|—|54 ms|200|213 / 0|$0.0000|Unknown", Cells(cut, 0));
     }
 
     [Fact]
@@ -184,6 +184,7 @@ public class DashboardTests
         Assert.Equal(["live-session", "high", "claude-a"], cells[1..4]);
         Assert.Equal("200", cells[6]);
         Assert.Equal("12 / 34", cells[7]);
+        Assert.Equal("Completed", cells[9]);
     }
 
     [Fact]

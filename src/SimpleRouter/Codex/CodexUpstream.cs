@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 using SimpleRouter.Api;
 using SimpleRouter.Local;
 using SimpleRouter.Routing;
+using SimpleRouter.Usage;
 
 namespace SimpleRouter.Codex;
 
@@ -56,9 +57,10 @@ public sealed class CodexUpstream(
                 (response, _) = await SendOnceAsync(context, body, cacheKey, rejected: accessToken);
             }
         }
-        catch (HttpRequestException e)
+        catch (Exception e) when (e is HttpRequestException || e is OperationCanceledException && !ct.IsCancellationRequested)
         {
-            logger.LogWarning("Codex upstream request failed: {error}", e.Message);
+            RequestDiagnostics.Fail(context, e is OperationCanceledException ? "upstream_timeout" : "upstream_unreachable");
+            logger.LogWarning("Codex upstream request failed");
             return UpstreamResult.NotServed(new ModelFault(FaultKind.Unreachable));
         }
         catch (CodexOAuthException e)
@@ -166,7 +168,7 @@ public sealed class CodexUpstream(
                 await WriteAsync(output, events, translator.Ended);
             }
         });
-        await TranslateAsync(translator, response, async events =>
+        await TranslateAsync(context, translator, response, async events =>
         {
             if (!started)
             {
@@ -186,7 +188,7 @@ public sealed class CodexUpstream(
     {
         var builder = new AnthropicMessageBuilder();
         builder.Apply(translator.Start());
-        await TranslateAsync(translator, response, events =>
+        await TranslateAsync(context, translator, response, events =>
         {
             events.ForEach(builder.Apply);
             return Task.CompletedTask;
@@ -208,7 +210,7 @@ public sealed class CodexUpstream(
     }
 
     /// <summary>Feeds every upstream event to the translator until it ends; a stalled, broken or truncated stream ends with an error event.</summary>
-    private async Task TranslateAsync(ResponsesStreamTranslator translator, HttpResponseMessage response, Func<List<JsonObject>, Task> emit,
+    private async Task TranslateAsync(HttpContext context, ResponsesStreamTranslator translator, HttpResponseMessage response, Func<List<JsonObject>, Task> emit,
         CancellationToken ct, StreamStartGrace? grace)
     {
         try
@@ -229,6 +231,7 @@ public sealed class CodexUpstream(
                     }
                     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                     {
+                        RequestDiagnostics.Fail(context, "upstream_timeout");
                         await emit(translator.Abort($"Codex sent nothing for {idleTimeout.TotalSeconds:0.#} s."));
                         return;
                     }
@@ -248,17 +251,36 @@ public sealed class CodexUpstream(
                 {
                     var payload = string.Join("\n", data).Trim();
                     data.Clear();
-                    await emit(Parse(payload) is { } evt ? translator.Feed(evt) : translator.Abort("Codex sent a malformed stream event."));
+                    var evt = Parse(payload);
+                    if (evt is not null && (Str(evt["type"]) is null
+                        || (Str(evt["type"]) is "response.completed" or "response.incomplete" && evt["response"] is not JsonObject)))
+                        evt = null;
+                    if (evt is null) RequestDiagnostics.Fail(context, "malformed_response");
+                    List<JsonObject> events;
+                    try
+                    {
+                        events = evt is not null ? translator.Feed(evt) : translator.Abort("Codex sent a malformed stream event.");
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        RequestDiagnostics.Fail(context, "malformed_response");
+                        events = translator.Abort("Codex sent an invalid stream event.");
+                    }
+                    if (events.Any(e => Str(e["type"]) == "error") && RequestDiagnostics.Get(context) is null)
+                        RequestDiagnostics.Fail(context, "upstream_error");
+                    await emit(events);
                 }
                 if (line is null && !translator.Ended)
                 {
+                    RequestDiagnostics.Fail(context, "truncated_stream");
                     await emit(translator.Abort("Codex stream ended before completion."));
                 }
             }
         }
         catch (Exception e) when (e is IOException or HttpRequestException && !ct.IsCancellationRequested)
         {
-            logger.LogWarning("Codex stream failed: {error}", e.Message);
+            RequestDiagnostics.Fail(context, "transport_error");
+            logger.LogWarning("Codex stream failed");
             await emit(translator.Abort("Codex stream was interrupted."));
         }
     }
@@ -294,6 +316,7 @@ public sealed class CodexUpstream(
     /// </summary>
     private async Task<UpstreamResult> ErrorAsync(HttpContext context, HttpResponseMessage response, LimitReading limits, DateTimeOffset now, CancellationToken ct)
     {
+        RequestDiagnostics.Fail(context, "http_error");
         var status = (int)response.StatusCode;
         // Read at most one character past the limit, so an oversized or endless body is never buffered whole.
         using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct), Encoding.UTF8);
@@ -316,7 +339,7 @@ public sealed class CodexUpstream(
         }
         if (Fault(status, code, message, (limits.Exhausted ? limits.ResetAt : null) ?? bodyReset ?? LimitHeaders.RetryAfter(response.Headers, now)) is { } fault)
         {
-            logger.LogWarning("Codex answered HTTP {status} ({code}); not serving this request from it", status, code);
+            logger.LogWarning("Codex answered HTTP {status}; not serving this request from it", status);
             return UpstreamResult.NotServed(fault);
         }
         var type = CodexErrors.TypeForStatus(status);
