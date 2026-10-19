@@ -29,7 +29,7 @@ Any setting can be overridden with `--SimpleRouter:<Name>=<value>` or `SimpleRou
 
 ## Conventions
 
-- Bind loopback by default; `ListenAddress` opts into the LAN for `/v1` only, so never let a non-`/v1` path skip the dashboard filter; when a certificate exists, plain HTTP stays on loopback. Secrets at rest go through `SecretProtector` (ASP.NET Data Protection).
+- Bind every IPv4 interface (`0.0.0.0`) by default; `ListenAddress=127.0.0.1` restricts access to this machine. LAN access is for `/v1` only, so never let a non-`/v1` path skip the dashboard filter; when a certificate exists, plain HTTP stays on loopback. Secrets at rest go through `SecretProtector` (ASP.NET Data Protection).
 - Never log secrets, tokens, keys or request/response bodies.
 - Real local endpoint hosts and keys belong in `seed.local.json` (gitignored), never in `seed.json`.
 - This repo is public: no private identifiers (emails, org names, account IDs, personal paths) in code, commits, fixtures or PR text.

@@ -148,7 +148,7 @@ public class HttpsServingTests
     {
         var dataDirectory = RouterHost.NewDataDirectory();
         Assert.Equal(0, (await HttpsSupport.CreateCertificateAsync(dataDirectory)).ExitCode);
-        await using var host = await StartAsync(dataDirectory, null, []);
+        await using var host = await StartAsync(dataDirectory, null, ["--SimpleRouter:ListenAddress=127.0.0.1"]);
 
         Assert.All(HttpsSupport.Addresses(host), a => Assert.Equal("127.0.0.1", a.Host));
         Assert.Equal(2, HttpsSupport.Addresses(host).Count);

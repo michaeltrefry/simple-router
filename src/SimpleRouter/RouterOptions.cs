@@ -12,10 +12,10 @@ public sealed class RouterOptions
     public int Port { get; set; } = 8790;
 
     /// <summary>
-    /// IP address the router listens on: loopback by default; <c>0.0.0.0</c>, <c>::</c> or a LAN IP lets other machines
-    /// reach <c>/v1</c>. The dashboard answers only connections from this machine whatever the bind.
+    /// IP address the router listens on: <c>0.0.0.0</c> (every IPv4 interface) by default. Use <c>127.0.0.1</c>
+    /// for this machine only. The dashboard answers only connections from this machine whatever the bind.
     /// </summary>
-    public string ListenAddress { get; set; } = "127.0.0.1";
+    public string ListenAddress { get; set; } = "0.0.0.0";
 
     /// <summary>
     /// Port for HTTPS on <see cref="ListenAddress"/>, served only when a certificate exists (<c>cert create</c> or
@@ -119,7 +119,7 @@ public sealed class CodexOptions
 public sealed class LocalOptions
 {
     /// <summary>Seconds between endpoint health checks after the one at startup; 0 disables the periodic check.</summary>
-    public int HealthCheckIntervalSeconds { get; set; } = 30;
+    public int HealthCheckIntervalSeconds { get; set; } = 300;
 
     /// <summary>A streaming response that sends nothing for this long is ended with an error event.</summary>
     public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromSeconds(120);

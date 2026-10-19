@@ -8,7 +8,7 @@ using SimpleRouter.Tests.Support;
 
 namespace SimpleRouter.Tests;
 
-/// <summary>The opt-in LAN bind: <c>/v1</c> serves other machines with the key; the dashboard answers only this one.</summary>
+/// <summary>The default LAN bind: <c>/v1</c> serves other machines with the key; the dashboard answers only this one.</summary>
 public class LanAccessTests
 {
     private const string LanClient = "192.168.1.50";
@@ -34,23 +34,25 @@ public class LanAccessTests
     }
 
     [Fact]
-    public async Task By_default_the_router_listens_on_loopback_only()
+    public async Task By_default_the_router_listens_on_all_IPv4_interfaces()
     {
         await using var host = await StartAsync();
 
         var address = Assert.Single(Addresses(host));
 
-        Assert.Equal("127.0.0.1", address.Host);
+        Assert.Equal("0.0.0.0", address.Host);
     }
 
-    [Fact]
-    public async Task The_configured_listen_address_is_the_one_bound()
+    [Theory]
+    [InlineData("127.0.0.1", "127.0.0.1")]
+    [InlineData("::1", "[::1]")]
+    public async Task The_configured_listen_address_is_the_one_bound(string configured, string expected)
     {
-        await using var host = await StartAsync("--SimpleRouter:ListenAddress=::1");
+        await using var host = await StartAsync($"--SimpleRouter:ListenAddress={configured}");
 
         var address = Assert.Single(Addresses(host));
 
-        Assert.Equal("[::1]", address.Host);
+        Assert.Equal(expected, address.Host);
     }
 
     [Theory]
@@ -130,7 +132,7 @@ public class LanAccessTests
         using var response = await host.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains($"Listening on {host.Client.BaseAddress!.ToString().TrimEnd('/')}", await response.Content.ReadAsStringAsync());
+        Assert.Contains($"Listening on {Assert.Single(Addresses(host)).ToString().TrimEnd('/')}", await response.Content.ReadAsStringAsync());
     }
 
     [Fact]

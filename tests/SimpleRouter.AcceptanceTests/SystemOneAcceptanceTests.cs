@@ -50,7 +50,7 @@ public class SystemOneAcceptanceTests
         try
         {
             var key = await app.Services.GetRequiredService<GatewayKeyStore>().GetAsync();
-            var baseUri = new Uri(app.Urls.First());
+            var baseUri = new UriBuilder(app.Urls.First()) { Host = "127.0.0.1" }.Uri;
             using var client = new HttpClient { BaseAddress = baseUri };
             client.DefaultRequestHeaders.Add("x-api-key", key);
 
