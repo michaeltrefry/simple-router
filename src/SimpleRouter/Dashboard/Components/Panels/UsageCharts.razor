@@ -22,6 +22,10 @@
             <div class="stat"><span class="stat-label">In + out tokens</span><span class="stat-value" id="usage-tokens">@Compact(Data.Tokens)</span></div>
             <div class="stat"><span class="stat-label">Cost</span><span class="stat-value" id="usage-cost">@Dollars(Data.CostUsdMicros / 1_000_000d)</span></div>
         </div>
+        @if (Data.UnknownCostRequests > 0)
+        {
+            <p class="muted">Cost excludes @Tokens(Data.UnknownCostRequests) request(s) with unknown cost; totals are incomplete.</p>
+        }
         <div class="grid">
             <div>
                 <h3>Model usage</h3>

@@ -101,7 +101,11 @@ public class CertificateCreationTests
         var keyBearing = new List<X509Certificate2>();
         foreach (var file in Directory.EnumerateFiles(dataDirectory, "*", SearchOption.AllDirectories).Where(f => !f.EndsWith("-shm") && !f.EndsWith("-wal")))
         {
-            var bytes = await File.ReadAllBytesAsync(file);
+            // The live router's SQLite connection has this file open for writing on Windows.
+            await using var input = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var copy = new MemoryStream();
+            await input.CopyToAsync(copy);
+            var bytes = copy.ToArray();
             Assert.False(bytes.AsSpan().IndexOf(modulus) >= 0, $"{file} holds the CA key material");
             Assert.DoesNotContain("PRIVATE KEY", System.Text.Encoding.Latin1.GetString(bytes));
             if (TryUnprotectPkcs12(protector, bytes) is { } stored)

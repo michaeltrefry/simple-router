@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using SimpleRouter.Data;
 using SimpleRouter.Local;
+using SimpleRouter.OpenRouter;
 using SimpleRouter.Routing;
 
 namespace SimpleRouter.Dashboard;
@@ -16,7 +17,8 @@ public sealed partial class CatalogSettings(
     SecretProtector secrets,
     LocalHealth health,
     LocalConversations conversations,
-    DashboardEvents events)
+    DashboardEvents events,
+    OpenRouterCredentialStore openRouterCredentials)
 {
     /// <summary>Alias globs run against every request's model; these caps bound their matching cost.</summary>
     public const int MaxAliasPatternLength = 200, MaxAliasWildcards = 4;
@@ -42,7 +44,7 @@ public sealed partial class CatalogSettings(
         return new SettingsSnapshot(
             models.Select(m => new ModelRow(m.Id, m.Provider, m.UpstreamModelId, m.Enabled, m.BaseUrl, m.ProtectedApiKey is not null,
                 m.ContextWindow, m.SupportsTools, m.SupportsVision, m.Effort,
-                tiers.Where(t => t.Value.Contains(m.Id)).Select(t => t.Key).ToList(), m.MaxPromptTokens, m.MaxConversations)).ToList(),
+                tiers.Where(t => t.Value.Contains(m.Id)).Select(t => t.Key).ToList(), m.MaxPromptTokens, m.MaxConversations, m.OpenRouter)).ToList(),
             tiers,
             aliases.Select(a => new AliasRow(a.Pattern, a.Tier)).ToList(),
             ModelTiers.TryParse(setting?.Value, out var defaultTier) ? defaultTier : ModelTier.High,
@@ -390,16 +392,18 @@ public sealed partial class CatalogSettings(
         return model;
     }
 
-    /// <summary>Removes a local or SystemOne model; subscription models are only disabled or taken out of tiers.</summary>
+    /// <summary>Removes an editable model; subscription models are only disabled or taken out of tiers.</summary>
     public async Task RemoveModelAsync(string modelId, CancellationToken ct = default)
     {
+        bool probe;
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
             var model = await FindAsync(db, modelId, ct);
-            if (!Probed(model.Provider))
+            if (!Probed(model.Provider) && model.Provider != ProviderKind.OpenRouter)
             {
-                throw new SettingsException($"'{modelId}' is not a local or SystemOne model.");
+                throw new SettingsException($"'{modelId}' is not a local, SystemOne or OpenRouter model.");
             }
+            probe = Probed(model.Provider);
             await using var transaction = await db.Database.BeginTransactionAsync(ct);
             await db.TierMembers.Where(m => m.ModelId == modelId).ExecuteDeleteAsync(ct);
             await db.ModelPrices.Where(p => p.ModelId == modelId).ExecuteDeleteAsync(ct);
@@ -408,7 +412,7 @@ public sealed partial class CatalogSettings(
             await db.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
         }
-        await ChangedAsync(true, ct);
+        await ChangedAsync(probe, ct);
     }
 
     /// <summary>

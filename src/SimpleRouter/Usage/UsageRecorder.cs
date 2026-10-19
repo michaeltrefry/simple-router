@@ -2,12 +2,13 @@ using Microsoft.EntityFrameworkCore;
 using SimpleRouter.Dashboard;
 using SimpleRouter.Data;
 using SimpleRouter.Routing;
+using SimpleRouter.OpenRouter;
 
 namespace SimpleRouter.Usage;
 
 /// <summary>A served request to record: the model and tier that answered, the response status and its usage.</summary>
 public sealed record ServedRequest(
-    string? ClientSessionId, CatalogModel Model, ModelTier? Tier, int Status, TokenUsage Usage, TimeSpan Latency, string? Effort);
+    string? ClientSessionId, CatalogModel Model, ModelTier? Tier, int Status, TokenUsage Usage, TimeSpan Latency, string? Effort, UpstreamUsageMetadata? Upstream = null);
 
 /// <summary>Prices a served request from <see cref="RouterDbContext.ModelPrices"/> and stores it as a <see cref="RequestUsage"/> row.</summary>
 public sealed class UsageRecorder(
@@ -19,7 +20,25 @@ public sealed class UsageRecorder(
         try
         {
             await using var db = await dbFactory.CreateDbContextAsync();
-            var price = await db.ModelPrices.AsNoTracking().FirstOrDefaultAsync(p => p.ModelId == served.Model.Id);
+            var reported = served.Upstream?.CostUsd;
+            ModelPrice? price = null;
+            if (reported is null)
+            {
+                price = await db.ModelPrices.AsNoTracking().FirstOrDefaultAsync(p => p.ModelId == served.Model.Id);
+                if (served.Model.Provider == ProviderKind.OpenRouter && served.Upstream?.ResolvedModelId is { } resolved
+                    && resolved != served.Model.UpstreamModelId)
+                {
+                    var configuredId = await db.Models.AsNoTracking()
+                        .Where(m => m.Provider == ProviderKind.OpenRouter && m.UpstreamModelId == resolved)
+                        .Select(m => m.Id).FirstOrDefaultAsync();
+                    price = configuredId is null ? null : await db.ModelPrices.AsNoTracking().FirstOrDefaultAsync(p => p.ModelId == configuredId);
+                }
+                if (served.Model.Provider == ProviderKind.OpenRouter && OpenRouterRoutingOptions.IsAuto(served.Model.UpstreamModelId)
+                    && (served.Upstream?.ResolvedModelId is not { } target || OpenRouterRoutingOptions.IsAuto(target)))
+                {
+                    price = null;
+                }
+            }
             db.RequestUsages.Add(new RequestUsage
             {
                 At = time.GetUtcNow(),
@@ -33,7 +52,10 @@ public sealed class UsageRecorder(
                 CacheReadTokens = served.Usage.CacheReadTokens,
                 CacheWriteTokens = served.Usage.CacheWriteTokens,
                 CacheWrite1hTokens = served.Usage.CacheWrite1hTokens,
-                CostUsdMicros = served.Usage.CostUsdMicros(price),
+                CostUsdMicros = reported is { } dollars ? UpstreamUsageMetadata.ToMicros(dollars) : served.Usage.CostUsdMicros(price),
+                CostSource = reported is not null ? "reported" : price is not null ? "estimated" : "unknown",
+                ResolvedModelId = served.Upstream?.ResolvedModelId,
+                GenerationId = served.Upstream?.GenerationId,
                 LatencyMs = (long)served.Latency.TotalMilliseconds,
                 Effort = served.Effort,
             });
@@ -48,13 +70,13 @@ public sealed class UsageRecorder(
     }
 
     /// <summary>The recorded requests and their summed cost for a client session ID; null when none is recorded.</summary>
-    public async Task<(long Count, long CostUsdMicros)?> SessionCostAsync(string clientSessionId, CancellationToken ct)
+    public async Task<(long Count, long CostUsdMicros, long UnknownCount, long EstimatedCount)?> SessionCostAsync(string clientSessionId, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var totals = await db.RequestUsages.Where(u => u.ClientSessionId == clientSessionId)
             .GroupBy(u => u.ClientSessionId)
-            .Select(g => new { Count = g.LongCount(), Cost = g.Sum(u => u.CostUsdMicros) })
+            .Select(g => new { Count = g.LongCount(), Cost = g.Sum(u => u.CostUsdMicros), Unknown = g.LongCount(u => u.CostSource == "unknown"), Estimated = g.LongCount(u => u.CostSource == "estimated" || u.CostSource == null) })
             .FirstOrDefaultAsync(ct);
-        return totals is null ? null : (totals.Count, totals.Cost);
+        return totals is null ? null : (totals.Count, totals.Cost, totals.Unknown, totals.Estimated);
     }
 }

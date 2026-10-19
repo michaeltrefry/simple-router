@@ -72,6 +72,29 @@ public class UsageChartTests
     }
 
     [Fact]
+    public async Task Unknown_cost_is_counted_and_the_panel_labels_totals_incomplete()
+    {
+        var (host, data) = await StartAsync();
+        await using var _ = host;
+        await using (var db = await host.Services.GetRequiredService<IDbContextFactory<RouterDbContext>>().CreateDbContextAsync())
+        {
+            var row = Row("auto", Now, 0);
+            row.Provider = ProviderKind.OpenRouter;
+            row.CostSource = "unknown";
+            db.RequestUsages.Add(row);
+            await db.SaveChangesAsync();
+        }
+        Assert.Equal(1, (await data.UsageChartAsync(UsageRange.Week, default)).UnknownCostRequests);
+        using var context = new BunitContext();
+        context.Services.AddLogging();
+        context.Services.AddSingleton(TimeProvider.System);
+        context.Services.AddSingleton(host.Services.GetRequiredService<DashboardEvents>());
+        context.Services.AddSingleton(data);
+        var cut = context.Render<UsageCharts>();
+        cut.WaitForAssertion(() => Assert.Contains("totals are incomplete", cut.Markup), TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
     public async Task The_panel_draws_both_charts_with_a_legend_and_redraws_for_a_picked_range()
     {
         var (host, data) = await StartAsync();

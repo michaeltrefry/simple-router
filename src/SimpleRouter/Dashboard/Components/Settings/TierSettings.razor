@@ -44,14 +44,14 @@
                             @onclick="() => AddExistingAsync(tier)">Add</button>
                 </div>
                 <div class="inline">
-                    <select class="subscription-provider" aria-label="Subscription for @tier.Name()" @bind="_provider[tier]">
+                    <select class="subscription-provider" aria-label="Provider for @tier.Name()" @bind="_provider[tier]">
                         @foreach (var provider in Subscriptions)
                         {
                             <option value="@provider">@Name(provider)</option>
                         }
                     </select>
                     <input class="subscription-model" list="discovered-@Name(_provider[tier])" @bind="_upstream[tier]"
-                           placeholder="@Placeholder(_provider[tier])" aria-label="Subscription model ID for @tier.Name()" />
+                           placeholder="@Placeholder(_provider[tier])" aria-label="Provider model ID for @tier.Name()" />
                     <button class="add-subscription-button" disabled="@(Busy || string.IsNullOrWhiteSpace(_upstream[tier]))"
                             @onclick="() => AddSubscriptionAsync(tier)">Add</button>
                 </div>
@@ -62,7 +62,7 @@
 </section>
 
 @code {
-    private static readonly ProviderKind[] Subscriptions = [ProviderKind.Claude, ProviderKind.Codex];
+    private static readonly ProviderKind[] Subscriptions = [ProviderKind.Claude, ProviderKind.Codex, ProviderKind.OpenRouter];
 
     private readonly Dictionary<ModelTier, string> _existing = Enum.GetValues<ModelTier>().ToDictionary(t => t, _ => "");
     private readonly Dictionary<ModelTier, ProviderKind> _provider = Enum.GetValues<ModelTier>().ToDictionary(t => t, _ => ProviderKind.Claude);

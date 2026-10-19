@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SimpleRouter.Routing;
+using SimpleRouter.OpenRouter;
 
 namespace SimpleRouter.Data;
 
@@ -11,6 +12,7 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
     public DbSet<Setting> Settings => Set<Setting>();
     public DbSet<ClaudeCredential> ClaudeCredentials => Set<ClaudeCredential>();
     public DbSet<CodexCredential> CodexCredentials => Set<CodexCredential>();
+    public DbSet<ProviderCredential> ProviderCredentials => Set<ProviderCredential>();
     public DbSet<CatalogModel> Models => Set<CatalogModel>();
     public DbSet<TierMember> TierMembers => Set<TierMember>();
     public DbSet<TierAlias> TierAliases => Set<TierAlias>();
@@ -37,6 +39,15 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
                 (a, b) => JsonSerializer.Serialize(a, Effort.Json) == JsonSerializer.Serialize(b, Effort.Json),
                 e => JsonSerializer.Serialize(e, Effort.Json).GetHashCode(),
                 e => e == null ? null : JsonSerializer.Deserialize<EffortMapping>(JsonSerializer.Serialize(e, Effort.Json), Effort.Json)));
+        modelBuilder.Entity<ProviderCredential>().HasKey(c => c.Provider);
+        modelBuilder.Entity<ProviderCredential>().Property(c => c.Provider).HasConversion(p => p.ToString().ToLowerInvariant(), p => Enum.Parse<ProviderKind>(p, true));
+        modelBuilder.Entity<CatalogModel>().Property(m => m.OpenRouter).HasConversion(
+            o => o == null ? null : JsonSerializer.Serialize(o, OpenRouterRoutingOptions.Json),
+            o => o == null ? null : JsonSerializer.Deserialize<OpenRouterRoutingOptions>(o, OpenRouterRoutingOptions.Json),
+            new ValueComparer<OpenRouterRoutingOptions?>(
+                (a, b) => JsonSerializer.Serialize(a, OpenRouterRoutingOptions.Json) == JsonSerializer.Serialize(b, OpenRouterRoutingOptions.Json),
+                o => JsonSerializer.Serialize(o, OpenRouterRoutingOptions.Json).GetHashCode(),
+                o => o == null ? null : JsonSerializer.Deserialize<OpenRouterRoutingOptions>(JsonSerializer.Serialize(o, OpenRouterRoutingOptions.Json), OpenRouterRoutingOptions.Json)));
         modelBuilder.Entity<TierMember>().HasKey(m => new { m.Tier, m.ModelId });
         modelBuilder.Entity<TierMember>().Property(m => m.Tier).HasConversion(TierConverter);
         modelBuilder.Entity<TierMember>().HasOne<CatalogModel>().WithMany().HasForeignKey(m => m.ModelId);

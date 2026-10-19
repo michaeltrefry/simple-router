@@ -64,13 +64,14 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         var started = time.GetTimestamp();
         Task RecordServedAsync(Data.CatalogModel model, TokenUsage? tokens) =>
             usage.RecordAsync(new ServedRequest(session.ClientSessionId, model, tier, context.Response.StatusCode,
-                tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request, model)));
+                tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request, model), UpstreamUsageMetadata.Get(context)));
 
         var tried = new HashSet<string>();
         ModelFault? overflow = null;
         var onlyOverflow = true;
         while (await selector.SelectAsync(tier, session, needs, ct, tried) is { } selection)
         {
+            UpstreamUsageMetadata.Reset(context);
             var chosen = selection.Model;
             tried.Add(chosen.Id);
             // Upstreams rewrite the body for their provider; a failover must start from the client's request.
@@ -89,7 +90,7 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
             {
                 // Recorded once the response is complete, so the database never holds back the end of the stream.
                 var served = new ServedRequest(session.ClientSessionId, chosen, tier, context.Response.StatusCode,
-                    tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request, chosen));
+                    tokens ?? TokenUsage.None, time.GetElapsedTime(started), RecordedEffort(request, chosen), UpstreamUsageMetadata.Get(context));
                 context.Response.OnCompleted(() => usage.RecordAsync(served));
                 return;
             }
@@ -176,7 +177,7 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         var missing = await selector.MissingLoginsAsync(tier, needs, ct);
         var hint = missing.Count == 0
             ? ""
-            : " Run " + string.Join(" or ", missing.Select(p => $"'simple-router login {p.ToString().ToLowerInvariant()}'")) + ".";
+            : " Run " + string.Join(" or ", missing.Select(p => p == ProviderKind.OpenRouter ? "set the OpenRouter API key in /ui/settings" : $"'simple-router login {p.ToString().ToLowerInvariant()}'")) + ".";
         var when = reset is { } at ? $"the earliest resets at {at.UtcDateTime:u}" : $"retry in {seconds} s";
         await AnthropicError.WriteAsync(context, StatusCodes.Status429TooManyRequests, "rate_limit_error",
             $"{Unavailable}: no model in the {tier.Name()} tier can serve this request now (usage limit, login or availability); {when}.{hint}");

@@ -33,4 +33,8 @@ public sealed class RequestUsage
     public long CostUsdMicros { get; set; }
     public long LatencyMs { get; set; }
     public string? Effort { get; set; }
+    public string? ResolvedModelId { get; set; }
+    public string? GenerationId { get; set; }
+    /// <summary>reported, estimated or unknown; null for historical records.</summary>
+    public string? CostSource { get; set; }
 }

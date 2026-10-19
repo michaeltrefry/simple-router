@@ -1,0 +1,43 @@
+@inject CatalogSettings Catalog
+@inject ILogger<OpenRouterConnect> Logger
+
+<section class="card" id="openrouter-connect">
+    <h2>OpenRouter</h2>
+    <p class="muted api-key-state">API key @(_hasKey ? "set" : "not set"). Shared by all OpenRouter models.</p>
+    <label>API key <input class="api-key" type="password" autocomplete="off" @bind="_key" placeholder="Enter a new key to replace it" /></label>
+    <div class="buttons">
+        <button class="save primary" disabled="@(_busy || string.IsNullOrWhiteSpace(_key))" @onclick="() => SaveAsync(false)">Save key</button>
+        @if (_hasKey)
+        {
+            <button class="remove danger" disabled="@_busy" @onclick="() => SaveAsync(true)">Remove key</button>
+        }
+    </div>
+    <FormStatus Error="@_error" Notice="@_notice" />
+</section>
+
+@code {
+    [Parameter] public EventCallback OnChanged { get; set; }
+    private string _key = "";
+    private bool _hasKey, _busy;
+    private string? _error, _notice;
+    protected override async Task OnInitializedAsync() => _hasKey = await Catalog.HasOpenRouterKeyAsync();
+
+    private async Task SaveAsync(bool remove)
+    {
+        _busy = true;
+        (_error, _notice) = (null, null);
+        try
+        {
+            await Catalog.SetOpenRouterKeyAsync(remove ? null : _key);
+            _hasKey = await Catalog.HasOpenRouterKeyAsync();
+            _notice = remove ? "OpenRouter key removed." : "OpenRouter key saved. Refresh model lists to discover available models.";
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Logger.LogWarning("Saving an OpenRouter key failed: {error}", e.GetType().Name);
+            _error = "The key could not be saved; see the server log.";
+        }
+        finally { (_busy, _key) = (false, ""); }
+    }
+}

@@ -313,7 +313,7 @@ public sealed class ModelSelector(
             {
                 return ModelStatus.NotLoggedIn;
             }
-            if (m.Provider != ProviderKind.Local && lists.TryGetValue(m.Provider, out var list) && !ModelDiscovery.Lists(list, m.UpstreamModelId))
+            if (m.Provider != ProviderKind.Local && lists.TryGetValue(m.Provider, out var list) && !ModelDiscovery.Lists(m.Provider, list, m.UpstreamModelId))
             {
                 return ModelStatus.UnknownModel;
             }
@@ -329,6 +329,13 @@ public sealed class ModelSelector(
     {
         var hasClaude = await db.ClaudeCredentials.AnyAsync(ct);
         var hasCodex = await db.CodexCredentials.AnyAsync(ct);
-        return provider => provider switch { ProviderKind.Claude => hasClaude, ProviderKind.Codex => hasCodex, _ => true };
+        var hasOpenRouter = await db.ProviderCredentials.AnyAsync(c => c.Provider == ProviderKind.OpenRouter && c.ProtectedApiKey != "", ct);
+        return provider => provider switch
+        {
+            ProviderKind.Claude => hasClaude,
+            ProviderKind.Codex => hasCodex,
+            ProviderKind.OpenRouter => hasOpenRouter,
+            _ => true
+        };
     }
 }

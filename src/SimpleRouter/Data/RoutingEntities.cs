@@ -1,4 +1,5 @@
 using SimpleRouter.Routing;
+using SimpleRouter.OpenRouter;
 
 namespace SimpleRouter.Data;
 
@@ -36,6 +37,9 @@ public sealed class CatalogModel
 
     /// <summary>Supported reasoning-effort levels and how they are sent; null means the provider's defaults.</summary>
     public EffortMapping? Effort { get; set; }
+
+    /// <summary>Auto-routing constraints, independent of reasoning effort.</summary>
+    public OpenRouterRoutingOptions? OpenRouter { get; set; }
 }
 
 /// <summary>Membership of a model in a tier; a model may belong to several tiers.</summary>
@@ -93,4 +97,11 @@ public sealed class ModelCooldown
     public required string ModelId { get; set; }
     public DateTimeOffset Until { get; set; }
     public FaultKind Reason { get; set; }
+}
+
+/// <summary>A provider-level API key encrypted with SecretProtector.</summary>
+public sealed class ProviderCredential
+{
+    public ProviderKind Provider { get; set; }
+    public required string ProtectedApiKey { get; set; }
 }

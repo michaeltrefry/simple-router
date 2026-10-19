@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using SimpleRouter.Api;
+using SimpleRouter.OpenRouter;
 
 namespace SimpleRouter.Local;
 
@@ -10,7 +11,7 @@ namespace SimpleRouter.Local;
 /// index (their arguments may arrive fragmented and interleaved) and emitted after them as sequential <c>tool_use</c>
 /// blocks once each call's JSON is complete.
 /// </summary>
-public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
+public sealed class ChatStreamTranslator(string model, int estimatedInputTokens, bool openRouter = false)
 {
     private sealed class ToolCall
     {
@@ -20,6 +21,7 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
     }
 
     private readonly ThinkTagFilter _think = new();
+    private readonly JsonArray _reasoningDetails = [];
     private readonly SortedDictionary<int, ToolCall> _tools = [];
     private int _blocks;
     private bool _reasoningField;
@@ -61,7 +63,12 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
 
         var sse = new StringBuilder();
         var delta = choice["delta"];
-        var reasoning = ChatResponseTranslator.Reasoning(delta);
+        if (openRouter && delta?["reasoning_details"] is JsonArray details)
+        {
+            OpenRouterReasoning.Accumulate(_reasoningDetails, details);
+            _reasoningField |= details.Count > 0;
+        }
+        var reasoning = openRouter && _reasoningDetails.Count > 0 ? "" : ChatResponseTranslator.Reasoning(delta);
         _reasoningField |= reasoning.Length > 0;
         Append(sse, "thinking", reasoning);
         if (ChatRequestTranslator.Str(delta?["content"]) is { } content)
@@ -90,6 +97,23 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
         Append(sse, "text", text);
         Close(sse);
 
+        foreach (var block in OpenRouterReasoning.Blocks(_reasoningDetails))
+        {
+            var index = _blocks++;
+            var isThinking = ChatRequestTranslator.Str(block?["type"]) == "thinking";
+            sse.Append(Event("content_block_start", new JsonObject
+            {
+                ["type"] = "content_block_start", ["index"] = index,
+                ["content_block"] = isThinking ? new JsonObject { ["type"] = "thinking", ["thinking"] = "" } : block!.DeepClone(),
+            }));
+            if (isThinking)
+            {
+                sse.Append(Delta(index, new JsonObject { ["type"] = "thinking_delta", ["thinking"] = block!["thinking"]!.DeepClone() }));
+                sse.Append(Delta(index, new JsonObject { ["type"] = "signature_delta", ["signature"] = block!["signature"]!.DeepClone() }));
+            }
+            sse.Append(Stop(index));
+        }
+
         var toolUses = 0;
         foreach (var call in _tools.Values.Where(c => c.Name.Length > 0))
         {
@@ -115,7 +139,7 @@ public sealed class ChatStreamTranslator(string model, int estimatedInputTokens)
         {
             ["type"] = "message_delta",
             ["delta"] = new JsonObject { ["stop_reason"] = ChatResponseTranslator.StopReason(_finishReason, toolUses > 0), ["stop_sequence"] = null },
-            ["usage"] = ChatResponseTranslator.Usage(_usage, estimatedInputTokens),
+            ["usage"] = ChatResponseTranslator.Usage(_usage, estimatedInputTokens, openRouter),
         }));
         sse.Append(Event("message_stop", new JsonObject { ["type"] = "message_stop" }));
         return sse.ToString();

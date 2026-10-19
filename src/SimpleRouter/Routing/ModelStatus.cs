@@ -33,5 +33,7 @@ public sealed record ModelStatusEntry(string ModelId, ProviderKind Provider, Mod
 {
     public string Label => Status == ModelStatus.Cooling && CoolingUntil is { } until
         ? $"cooling until {until.UtcDateTime:u}"
+        : Provider == ProviderKind.OpenRouter && Status == ModelStatus.NotLoggedIn ? "API key missing"
+        : Provider == ProviderKind.OpenRouter && Status == ModelStatus.AuthRejected ? "API key rejected"
         : Status.Label();
 }

@@ -243,6 +243,7 @@ public class SettingsFormsTests
         using var context = Context(host);
         var cut = Render(context);
 
+        Assert.Contains("Missing prices are reported as unknown, not free.", cut.Find("#price-settings").TextContent);
         await cut.Row("price-settings", "claude-a").QuerySelector(".price-0")!.ChangeAsync(new() { Value = "7" });
         await cut.Row("price-settings", "claude-a").QuerySelector(".price-1")!.ChangeAsync(new() { Value = "11" });
         await cut.Row("price-settings", "claude-a").QuerySelector(".save-price")!.ClickAsync(new());

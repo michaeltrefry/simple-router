@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using SimpleRouter.OpenRouter;
 
 namespace SimpleRouter.Local;
 
@@ -17,7 +18,7 @@ public static partial class ChatResponseTranslator
     [GeneratedRegex("^[a-zA-Z0-9_-]+$")]
     private static partial Regex ValidToolUseId();
 
-    public static JsonObject Translate(JsonObject chat, string model, int estimatedInputTokens)
+    public static JsonObject Translate(JsonObject chat, string model, int estimatedInputTokens, bool openRouter = false)
     {
         var choice = (chat["choices"] as JsonArray)?.FirstOrDefault();
         var message = choice?["message"];
@@ -29,7 +30,11 @@ public static partial class ChatResponseTranslator
         text += textRest;
         // A server that fills a reasoning field may also leave the same reasoning in <think> tags (llama.cpp's deepseek-legacy format).
         var thinking = Reasoning(message) is { Length: > 0 } field ? field : tagged + taggedRest;
-        if (thinking.Length > 0)
+        if (openRouter && message?["reasoning_details"] is JsonArray details && details.Count > 0)
+        {
+            content = OpenRouterReasoning.Blocks(details);
+        }
+        else if (thinking.Length > 0)
         {
             content.Add(new JsonObject { ["type"] = "thinking", ["thinking"] = thinking, ["signature"] = SignaturePrefix });
         }
@@ -62,7 +67,7 @@ public static partial class ChatResponseTranslator
             ["content"] = content,
             ["stop_reason"] = StopReason(ChatRequestTranslator.Str(choice?["finish_reason"]), content.Any(b => b!["type"]!.GetValue<string>() == "tool_use")),
             ["stop_sequence"] = null,
-            ["usage"] = Usage(chat["usage"], estimatedInputTokens),
+            ["usage"] = Usage(chat["usage"], estimatedInputTokens, openRouter),
         };
     }
 
@@ -79,11 +84,24 @@ public static partial class ChatResponseTranslator
         _ => "end_turn",
     };
 
-    public static JsonObject Usage(JsonNode? usage, int estimatedInputTokens) => new()
+    public static JsonObject Usage(JsonNode? usage, int estimatedInputTokens, bool openRouter = false)
     {
-        ["input_tokens"] = Int(usage?["prompt_tokens"]) ?? estimatedInputTokens,
-        ["output_tokens"] = Int(usage?["completion_tokens"]) ?? 0,
-    };
+        var input = Int(usage?["prompt_tokens"]) ?? estimatedInputTokens;
+        var result = new JsonObject
+        {
+            ["input_tokens"] = input,
+            ["output_tokens"] = Int(usage?["completion_tokens"]) ?? 0,
+        };
+        if (openRouter)
+        {
+            var cached = Math.Clamp(Int(usage?["prompt_tokens_details"]?["cached_tokens"]) ?? 0, 0, input);
+            var created = Math.Clamp(Int(usage?["prompt_tokens_details"]?["cache_write_tokens"]) ?? 0, 0, input - cached);
+            result["input_tokens"] = input - cached - created;
+            result["cache_read_input_tokens"] = cached;
+            result["cache_creation_input_tokens"] = created;
+        }
+        return result;
+    }
 
     /// <summary>Anthropic clients require ids matching <c>^[a-zA-Z0-9_-]+$</c>; the replacement is reused on the next turn.</summary>
     public static string ToolUseId(string? id) =>

@@ -11,7 +11,7 @@ public static class ChatRequestTranslator
     public const string ImageOmitted = "[image omitted: this model does not accept images]";
 
     /// <param name="estimatedInputTokens">Used to keep <c>max_tokens</c> within what the model's context window leaves after the prompt.</param>
-    public static JsonObject Translate(JsonObject request, CatalogModel model, int estimatedInputTokens)
+    public static JsonObject Translate(JsonObject request, CatalogModel model, int estimatedInputTokens, bool applyLocalOptions = true)
     {
         var messages = new JsonArray();
         if (Text(request["system"], "\n\n") is { Length: > 0 } system)
@@ -38,7 +38,7 @@ public static class ChatRequestTranslator
                 chat[to] = value.DeepClone();
             }
         }
-        if (model.ContextWindow is { } window && chat["max_tokens"] is JsonValue max && max.TryGetValue<int>(out var maxTokens))
+        if (applyLocalOptions && model.ContextWindow is { } window && chat["max_tokens"] is JsonValue max && max.TryGetValue<int>(out var maxTokens))
         {
             chat["max_tokens"] = Math.Max(1, Math.Min(maxTokens, window - estimatedInputTokens));
         }
@@ -51,7 +51,10 @@ public static class ChatRequestTranslator
         {
             AddTools(chat, request);
         }
-        AddEffort(chat, request, model);
+        if (applyLocalOptions)
+        {
+            AddEffort(chat, request, model);
+        }
         return chat;
     }
 

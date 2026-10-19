@@ -34,6 +34,8 @@ public static class DarkFactoryEndpoints
                 session_id = clientSessionId,
                 request_count = cost.Count,
                 actual_cost_usd_micros = cost.CostUsdMicros,
+                unknown_cost_request_count = cost.UnknownCount,
+                estimated_cost_request_count = cost.EstimatedCount,
             }, context.RequestAborted);
         });
     }
