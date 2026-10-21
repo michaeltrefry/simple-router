@@ -152,4 +152,19 @@ public class OpenRouterSettingsTests
         await using var db = await DbAsync(host);
         Assert.Null(await db.Models.FindAsync("invalid-or"));
     }
+
+    [Fact]
+    public async Task Upstream_latest_aliases_keep_their_tilde_but_router_ids_cannot_start_with_one()
+    {
+        var (host, _) = await StartAsync();
+        await using var lifetime = host;
+        var catalog = host.Services.GetRequiredService<CatalogSettings>();
+        var input = new OpenRouterModelInput("deepseek-pro", "~deepseek/deepseek-pro-latest", true, null, true, false, null, null, [ModelTier.Mid]);
+        await catalog.SaveOpenRouterModelAsync(input, null);
+        await Assert.ThrowsAsync<SettingsException>(() => catalog.SaveOpenRouterModelAsync(input with { Id = "~deepseek-pro" }, null));
+        await Assert.ThrowsAsync<SettingsException>(() => catalog.SaveOpenRouterModelAsync(input with { Id = "other", UpstreamModelId = "~~deepseek/x" }, null));
+        await using var db = await DbAsync(host);
+        Assert.Equal("~deepseek/deepseek-pro-latest", (await db.Models.FindAsync("deepseek-pro"))!.UpstreamModelId);
+        Assert.Null(await db.Models.FindAsync("other"));
+    }
 }
