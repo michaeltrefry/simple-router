@@ -34,7 +34,7 @@ public static class SystemOneEndpoints
         app.MapGet("/v1/systemone/models", async (HttpContext context, SystemOneProxy proxy) =>
             await context.Response.WriteAsJsonAsync(new
             {
-                data = (await proxy.ModelsAsync(context.RequestAborted)).Select(m => new { id = m.Id, healthy = m.Healthy }),
+                data = (await proxy.ModelsAsync(context.RequestAborted)).Select(m => m.Wire()),
             }, context.RequestAborted));
 
         app.MapPost("/v1/systemone", async (HttpContext context, SystemOneProxy proxy, IOptions<RouterOptions> options) =>
