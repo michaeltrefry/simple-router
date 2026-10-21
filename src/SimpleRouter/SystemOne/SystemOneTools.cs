@@ -13,16 +13,18 @@ namespace SimpleRouter.SystemOne;
 public sealed class SystemOneTools
 {
     [McpServerTool(Name = "systemone_models", ReadOnly = true, Idempotent = true)]
-    [Description("Lists the SystemOne decision models this router serves, with whether each endpoint passed its last health check. Pass an id as systemone_decide's model.")]
+    [Description("Lists the SystemOne decision models this router serves: whether each endpoint passed its last health check, the question types it answers, and whether it accepts images and videos. Pass an id as systemone_decide's model.")]
     public static async Task<string> ModelsAsync(SystemOneProxy proxy, CancellationToken ct) =>
-        JsonSerializer.Serialize(new { data = (await proxy.ModelsAsync(ct)).Select(m => new { id = m.Id, healthy = m.Healthy }) });
+        JsonSerializer.Serialize(new { data = (await proxy.ModelsAsync(ct)).Select(m => m.Wire()) });
 
     [McpServerTool(Name = "systemone_decide", ReadOnly = true)]
     [Description("""
         Asks a decision model questions about an input and returns a probability for every answer, without generating text.
-        Each question is {"type": "choice" | "noul" | "score", "instructions": "...", "criteria": ...}: choice takes an object
-        of option name to description (or null), noul is yes/no, score takes an ordered array of labels. All questions are
-        answered in one call. Returns the model's JSON: answers per question (pick, probabilities, confidence) and usage.
+        Each question is {"type": "choice" | "noul" | "score" | "box", "instructions": "...", "criteria": ...}: choice takes an object
+        of option name to description (or null), noul is yes/no, score takes an ordered array of labels, box locates the target
+        its instructions describe in an image and takes no criteria. All questions are answered in one call. Use only the
+        question types, images and videos systemone_models lists for the model; anything else is refused. Returns the model's
+        JSON: answers per question (pick, probabilities, confidence; box: edges as fractions) and usage.
         """)]
     public static async Task<CallToolResult> DecideAsync(
         SystemOneProxy proxy,
