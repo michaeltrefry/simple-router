@@ -29,6 +29,10 @@ public sealed partial class CatalogSettings(
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,199}$")]
     private static partial Regex ModelIdPattern();
 
+    // OpenRouter's "latest" aliases (~vendor/model-latest) lead with a tilde.
+    [GeneratedRegex("^~?[A-Za-z0-9][A-Za-z0-9._:/@-]{0,199}$")]
+    private static partial Regex OpenRouterUpstreamIdPattern();
+
     public async Task<SettingsSnapshot> GetAsync(CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);

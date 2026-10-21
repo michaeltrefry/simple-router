@@ -19,7 +19,9 @@ public sealed partial class CatalogSettings
     public async Task SaveOpenRouterModelAsync(OpenRouterModelInput input, string? existingId, CancellationToken ct = default)
     {
         var id = ValidModelId(input.Id, "Model ID");
-        var upstream = ValidModelId(input.UpstreamModelId, "Upstream model ID");
+        var upstream = input.UpstreamModelId?.Trim() ?? "";
+        if (!OpenRouterUpstreamIdPattern().IsMatch(upstream))
+            throw new SettingsException("Upstream model ID must be 1-200 letters, digits or . _ : / @ - and start with a letter, digit or ~.");
         if (input.ContextWindow is <= 0)
             throw new SettingsException("Context window must be positive, or empty for unlimited.");
         ValidEffort(input.Effort, id);
