@@ -1,5 +1,6 @@
 using SimpleRouter.Routing;
 using SimpleRouter.OpenRouter;
+using SimpleRouter.SystemOne;
 
 namespace SimpleRouter.Data;
 
@@ -34,6 +35,9 @@ public sealed class CatalogModel
 
     public bool SupportsTools { get; set; } = true;
     public bool SupportsVision { get; set; }
+
+    /// <summary>What a SystemOne model accepts; other providers ignore it.</summary>
+    public DecisionSupport Decisions { get; set; } = DecisionSupport.All;
 
     /// <summary>Supported reasoning-effort levels and how they are sent; null means the provider's defaults.</summary>
     public EffortMapping? Effort { get; set; }

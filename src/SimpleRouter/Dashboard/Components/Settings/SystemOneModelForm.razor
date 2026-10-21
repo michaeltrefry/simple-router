@@ -1,3 +1,4 @@
+@using SimpleRouter.SystemOne
 @inject CatalogSettings Catalog
 @inject ILogger<SystemOneModelForm> Logger
 
@@ -19,6 +20,16 @@
         }
         <label class="check"><input class="systemone-enabled" type="checkbox" @bind="_enabled" /> Enabled</label>
     </div>
+    <p class="muted">Accepts (requests using anything else are refused before the model is called):</p>
+    <div class="form-grid">
+        @foreach (var (flag, label) in Capabilities)
+        {
+            <label class="check">
+                <input class="supports-@flag.ToString().ToLowerInvariant()" type="checkbox" checked="@_supports.HasFlag(flag)"
+                       @onchange="e => _supports = e.Value is true ? _supports | flag : _supports & ~flag" /> @label
+            </label>
+        }
+    </div>
     <div class="buttons">
         <button class="test-connection" disabled="@_busy" @onclick="TestAsync">Test connection</button>
         <button class="save primary" disabled="@_busy" @onclick="SaveAsync">Save</button>
@@ -36,15 +47,22 @@
     [Parameter] public EventCallback<string> OnSaved { get; set; }
     [Parameter] public EventCallback OnCancel { get; set; }
 
+    private static readonly (DecisionSupport Flag, string Label)[] Capabilities =
+    [
+        (DecisionSupport.Choice, "Choice questions"), (DecisionSupport.Noul, "Noul questions"), (DecisionSupport.Score, "Score questions"),
+        (DecisionSupport.Box, "Box questions"), (DecisionSupport.Images, "Images"), (DecisionSupport.Videos, "Videos"),
+    ];
+
     private string _id = "", _upstream = "", _baseUrl = "", _apiKey = "";
     private bool _enabled = true, _clearApiKey, _busy, _testOk;
+    private DecisionSupport _supports = DecisionSupport.All;
     private string? _test, _error;
 
     protected override void OnInitialized()
     {
         if (Existing is { } m)
         {
-            (_id, _upstream, _baseUrl, _enabled) = (m.Id, m.UpstreamModelId, m.BaseUrl ?? "", m.Enabled);
+            (_id, _upstream, _baseUrl, _enabled, _supports) = (m.Id, m.UpstreamModelId, m.BaseUrl ?? "", m.Enabled, m.Decisions);
         }
     }
 
@@ -77,7 +95,7 @@
         _error = null;
         try
         {
-            await Catalog.SaveSystemOneModelAsync(new SystemOneModelInput(_id, _upstream, _baseUrl, _enabled, _apiKey, _clearApiKey), existingId: Existing?.Id);
+            await Catalog.SaveSystemOneModelAsync(new SystemOneModelInput(_id, _upstream, _baseUrl, _enabled, _apiKey, _clearApiKey, _supports), existingId: Existing?.Id);
             _apiKey = "";
             await OnSaved.InvokeAsync($"{_id.Trim()} saved.");
         }

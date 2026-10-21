@@ -70,7 +70,7 @@ public class SystemOneAcceptanceTests
                 ["questions"] = JsonNode.Parse(Questions),
             });
 
-            Assert.Equal("""{"data":[{"id":"d3","healthy":true}]}""", listed);
+            Assert.Equal("""{"data":[{"id":"d3","healthy":true,"question_types":["choice","noul","score","box"],"images":true,"videos":true}]}""", listed);
             Assert.Equal(HttpStatusCode.OK, http.StatusCode);
             Assert.Equal(Answer, await http.Content.ReadAsStringAsync());
             Assert.NotEqual(true, tool.IsError);

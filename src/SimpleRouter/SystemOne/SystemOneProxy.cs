@@ -21,8 +21,19 @@ public sealed record SystemOneReply(int Status, byte[] Body, string? ContentType
         new(status, [], null, model, type, message);
 }
 
-/// <summary>An enabled SystemOne model a client can call, and whether its endpoint passed its last health check.</summary>
-public sealed record SystemOneModel(string Id, bool Healthy);
+/// <summary>An enabled SystemOne model a client can call, whether its endpoint passed its last health check, and what it accepts.</summary>
+public sealed record SystemOneModel(string Id, bool Healthy, DecisionSupport Supports)
+{
+    /// <summary>The listing shape shared by <c>/v1/systemone/models</c> and the <c>systemone_models</c> tool.</summary>
+    public object Wire() => new
+    {
+        id = Id,
+        healthy = Healthy,
+        question_types = Supports.QuestionTypeNames(),
+        images = Supports.HasFlag(DecisionSupport.Images),
+        videos = Supports.HasFlag(DecisionSupport.Videos),
+    };
+}
 
 /// <summary>
 /// Forwards a SystemOne decision request to the catalog model it names: <c>model</c> becomes the upstream model ID and
@@ -43,9 +54,9 @@ public sealed class SystemOneProxy(
     public async Task<List<SystemOneModel>> ModelsAsync(CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var ids = await db.Models.AsNoTracking().Where(m => m.Provider == ProviderKind.SystemOne && m.Enabled)
-            .OrderBy(m => m.Id).Select(m => m.Id).ToListAsync(ct);
-        return ids.Select(id => new SystemOneModel(id, health.IsHealthy(id))).ToList();
+        var models = await db.Models.AsNoTracking().Where(m => m.Provider == ProviderKind.SystemOne && m.Enabled)
+            .OrderBy(m => m.Id).Select(m => new { m.Id, m.Decisions }).ToListAsync(ct);
+        return models.Select(m => new SystemOneModel(m.Id, health.IsHealthy(m.Id), m.Decisions)).ToList();
     }
 
     /// <summary>
@@ -100,6 +111,11 @@ public sealed class SystemOneProxy(
 
     private async Task<SystemOneReply> SendAsync(CatalogModel model, JsonObject request, CancellationToken ct)
     {
+        if (model.Decisions.Unsupported(request) is { } unsupported)
+        {
+            return SystemOneReply.Error(StatusCodes.Status400BadRequest, "invalid_request_error",
+                $"SystemOne model {model.Id} does not support {unsupported}.", model);
+        }
         if (!health.IsHealthy(model.Id))
         {
             return SystemOneReply.Error(StatusCodes.Status503ServiceUnavailable, "overloaded_error",

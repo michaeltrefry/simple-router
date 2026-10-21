@@ -4,6 +4,7 @@ using SimpleRouter.Data;
 using SimpleRouter.Local;
 using SimpleRouter.OpenRouter;
 using SimpleRouter.Routing;
+using SimpleRouter.SystemOne;
 
 namespace SimpleRouter.Dashboard;
 
@@ -48,7 +49,7 @@ public sealed partial class CatalogSettings(
         return new SettingsSnapshot(
             models.Select(m => new ModelRow(m.Id, m.Provider, m.UpstreamModelId, m.Enabled, m.BaseUrl, m.ProtectedApiKey is not null,
                 m.ContextWindow, m.SupportsTools, m.SupportsVision, m.Effort,
-                tiers.Where(t => t.Value.Contains(m.Id)).Select(t => t.Key).ToList(), m.MaxPromptTokens, m.MaxConversations, m.OpenRouter)).ToList(),
+                tiers.Where(t => t.Value.Contains(m.Id)).Select(t => t.Key).ToList(), m.MaxPromptTokens, m.MaxConversations, m.OpenRouter, m.Decisions)).ToList(),
             tiers,
             aliases.Select(a => new AliasRow(a.Pattern, a.Tier)).ToList(),
             ModelTiers.TryParse(setting?.Value, out var defaultTier) ? defaultTier : ModelTier.High,
@@ -311,6 +312,10 @@ public sealed partial class CatalogSettings(
             throw new SettingsException("Upstream model ID is required.");
         }
         var baseUrl = ValidBaseUrl(input.BaseUrl);
+        if (!input.Supports.QuestionTypeNames().Any())
+        {
+            throw new SettingsException("Choose at least one question type the model answers.");
+        }
 
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
@@ -341,6 +346,7 @@ public sealed partial class CatalogSettings(
             model.UpstreamModelId = upstreamId;
             model.BaseUrl = baseUrl;
             model.Enabled = input.Enabled;
+            model.Decisions = input.Supports & DecisionSupport.All;
             if (!string.IsNullOrEmpty(input.NewApiKey))
             {
                 model.ProtectedApiKey = secrets.Protect(input.NewApiKey);

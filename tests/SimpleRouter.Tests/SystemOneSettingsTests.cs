@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using SimpleRouter.Dashboard;
 using SimpleRouter.Data;
 using SimpleRouter.Routing;
+using SimpleRouter.SystemOne;
 using SimpleRouter.Tests.Support;
 using static SimpleRouter.Tests.Support.SettingsHarness;
 
@@ -83,6 +84,42 @@ public class SystemOneSettingsTests
         await using var db = await DbAsync(host);
         Assert.Null(await db.Models.FindAsync("d3-renamed"));
         Assert.Equal(["d3-renamed", "d3-renamed"], await db.RequestUsages.Where(u => u.Provider == ProviderKind.SystemOne).Select(u => u.ModelId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Capabilities_unticked_in_the_form_are_refused_at_once_and_shown_when_editing_again()
+    {
+        var (host, healthy) = await StartAsync();
+        await using var _ = host;
+        healthy.Add("decide.test");
+        var settings = host.Services.GetRequiredService<CatalogSettings>();
+        await settings.SaveSystemOneModelAsync(new SystemOneModelInput("jev", "~typesafe/jev-latest", "http://decide.test/v1", true), existingId: null);
+        async Task<HttpStatusCode> BoxAsync()
+        {
+            var body = new JsonObject { ["model"] = "jev", ["state"] = "s", ["questions"] = new JsonObject { ["where"] = new JsonObject { ["type"] = "box", ["instructions"] = "the logo" } } };
+            using var response = await host.Client.PostAsync("/v1/systemone", new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"));
+            return response.StatusCode;
+        }
+        var before = await BoxAsync();
+        using var context = Context(host);
+        var cut = Render(context);
+
+        await cut.Row("model-settings", "jev").QuerySelector(".edit")!.ClickAsync(new());
+        await cut.ChangeAsync("#systemone-model-form .supports-box", false);
+        await cut.ChangeAsync("#systemone-model-form .supports-videos", false);
+        await cut.ClickAsync("#systemone-model-form .save");
+        var after = await BoxAsync();
+        await cut.Row("model-settings", "jev").QuerySelector(".edit")!.ClickAsync(new());
+
+        Assert.Equal(HttpStatusCode.OK, before);
+        Assert.Equal(HttpStatusCode.BadRequest, after);
+        Assert.False(cut.Find("#systemone-model-form .supports-box").HasAttribute("checked"));
+        Assert.True(cut.Find("#systemone-model-form .supports-images").HasAttribute("checked"));
+        await Assert.ThrowsAsync<SettingsException>(() => settings.SaveSystemOneModelAsync(
+            new SystemOneModelInput("jev", "~typesafe/jev-latest", "http://decide.test/v1", true, Supports: DecisionSupport.Images), existingId: "jev"));
+        await using var db = await DbAsync(host);
+        Assert.Equal(DecisionSupport.All & ~(DecisionSupport.Box | DecisionSupport.Videos),
+            (await db.Models.FindAsync("jev"))!.Decisions);
     }
 
     [Fact]

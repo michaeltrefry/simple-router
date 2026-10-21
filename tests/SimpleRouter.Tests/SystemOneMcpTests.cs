@@ -97,7 +97,7 @@ public class SystemOneMcpTests
         var models = await client.CallToolAsync("systemone_models");
         var result = await client.CallToolAsync("systemone_decide", Decision("d3"));
 
-        Assert.Equal("""{"data":[{"id":"d3","healthy":true}]}""", Text(models));
+        Assert.Equal("""{"data":[{"id":"d3","healthy":true,"question_types":["choice","noul","score","box"],"images":true,"videos":true}]}""", Text(models));
         Assert.NotEqual(true, result.IsError);
         Assert.Equal(Answer, Text(result));
         var sent = JsonNode.Parse(host.Local.Requests.Last(r => r.Uri.AbsolutePath.EndsWith("/systemone")).Body)!;

@@ -20,7 +20,8 @@ public class SystemOneTests
           "models": [
             { "id": "sub-high", "provider": "claude", "upstreamModelId": "upstream-sub", "enabled": true },
             { "id": "d3", "provider": "systemone", "upstreamModelId": "vllm-d3", "enabled": true, "baseUrl": "http://decide.test/v1/", "apiKey": "decide-secret" },
-            { "id": "d3-off", "provider": "systemone", "upstreamModelId": "vllm-d3", "enabled": false, "baseUrl": "http://decide-off.test/v1" }
+            { "id": "d3-off", "provider": "systemone", "upstreamModelId": "vllm-d3", "enabled": false, "baseUrl": "http://decide-off.test/v1" },
+            { "id": "jev", "provider": "systemone", "upstreamModelId": "~typesafe/jev-latest", "enabled": true, "baseUrl": "http://jev.test/api/v1", "decisions": "Choice, Noul, Box, Images" }
           ],
           "tiers": { "high": [ "sub-high" ] },
           "aliases": []
@@ -310,8 +311,55 @@ public class SystemOneTests
         await CheckHealthAsync(host);
         var down = JsonNode.Parse(await host.Client.GetStringAsync("/v1/systemone/models"))!.ToJsonString();
 
-        Assert.Equal("""{"data":[{"id":"d3","healthy":true}]}""", up);
-        Assert.Equal("""{"data":[{"id":"d3","healthy":false}]}""", down);
+        Assert.Equal("""{"data":[{"id":"d3","healthy":true,"question_types":["choice","noul","score","box"],"images":true,"videos":true},"""
+            + """{"id":"jev","healthy":true,"question_types":["choice","noul","box"],"images":true,"videos":false}]}""", up);
+        Assert.Contains("""{"id":"d3","healthy":false,""", down);
+    }
+
+    public static TheoryData<string, string> Unsupported => new()
+    {
+        { """{"q":{"type":"score","instructions":"How formal?","criteria":["low","high"]}}""", """[]""" },
+        { """{"q":{"type":"noul","instructions":"Is it red?"}}""", """["Watch this", {"type":"video_url","video_url":{"url":"data:video/mp4;base64,AAAA"}}]""" },
+        { """{"q":{"type":"noul","instructions":["Same as", {"type":"video_url","video_url":{"url":"data:video/mp4;base64,AAAA"}}]}}""", """[]""" },
+    };
+
+    [Theory]
+    [MemberData(nameof(Unsupported))]
+    public async Task A_question_type_or_media_the_model_does_not_accept_is_400_without_calling_upstream(string questions, string state)
+    {
+        var (host, decide, _) = await StartAsync();
+        await using var __ = host;
+        var body = $$"""{"model":"jev","state":{{state}},"questions":{{questions}}}""";
+
+        using var response = await host.Client.PostAsync("/v1/systemone", new StringContent(body, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("jev does not support", JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["message"]!.GetValue<string>());
+        Assert.Empty(decide.Requests);
+        Assert.Equal(400, Assert.Single(await UsageAsync(host)).Status);
+    }
+
+    [Fact]
+    public async Task Top_level_videos_are_refused_but_images_and_box_questions_reach_a_model_that_accepts_them()
+    {
+        var (host, decide, _) = await StartAsync();
+        await using var __ = host;
+        var image = new JsonObject { ["type"] = "image_url", ["image_url"] = new JsonObject { ["url"] = "data:image/png;base64,AAAA" } };
+        JsonObject Request(JsonNode? videos) => new()
+        {
+            ["model"] = "jev",
+            ["state"] = new JsonArray("Listing photo", image.DeepClone()),
+            ["questions"] = new JsonObject { ["where"] = new JsonObject { ["type"] = "box", ["instructions"] = "the product in the listing photo" } },
+            ["images"] = new JsonArray("data:image/png;base64,AAAA"),
+            ["videos"] = videos,
+        };
+
+        using var refused = await host.Client.PostAsync("/v1/systemone", new StringContent(Request(new JsonArray("data:video/mp4;base64,AAAA")).ToJsonString(), Encoding.UTF8, "application/json"));
+        using var served = await host.Client.PostAsync("/v1/systemone", new StringContent(Request(new JsonArray()).ToJsonString(), Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, served.StatusCode);
+        Assert.Equal("~typesafe/jev-latest", JsonNode.Parse(Assert.Single(decide.Requests).Body)!["model"]!.GetValue<string>());
     }
 
     [Fact]
