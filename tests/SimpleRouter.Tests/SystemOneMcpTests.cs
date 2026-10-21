@@ -6,9 +6,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
 using SimpleRouter.Data;
 using SimpleRouter.Gateway;
 using SimpleRouter.Routing;
+using SimpleRouter.SystemOne;
 using SimpleRouter.Tests.Support;
 
 namespace SimpleRouter.Tests;
@@ -86,6 +88,21 @@ public class SystemOneMcpTests
         Assert.Equal(["systemone_decide", "systemone_models"], tools.Select(t => t.Name).Order());
         var properties = tools.Single(t => t.Name == "systemone_decide").JsonSchema.GetProperty("properties");
         Assert.Equal(["images", "model", "questions", "state", "videos"], properties.EnumerateObject().Select(p => p.Name).Order());
+    }
+
+    [Fact]
+    public void The_schemas_do_not_depend_on_recognising_service_parameters()
+    {
+        // A provider that knows none of the router's services, so the SDK cannot tell a service parameter from an input:
+        // the same outcome a reflection race during concurrent startup produces. The schema must not change.
+        using var unknown = new ServiceCollection().BuildServiceProvider();
+        var schemas = new ServiceCollection().AddMcpServer().WithTools<SystemOneTools>().Services
+            .Where(d => d.ServiceType == typeof(McpServerTool))
+            .Select(d => ((McpServerTool)d.ImplementationFactory!(unknown)).ProtocolTool)
+            .ToDictionary(t => t.Name, t => t.InputSchema.GetProperty("properties").EnumerateObject().Select(p => p.Name).Order().ToArray());
+
+        Assert.Empty(schemas["systemone_models"]);
+        Assert.Equal(["images", "model", "questions", "state", "videos"], schemas["systemone_decide"]);
     }
 
     [Fact]
