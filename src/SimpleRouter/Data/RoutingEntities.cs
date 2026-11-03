@@ -1,5 +1,6 @@
 using SimpleRouter.Routing;
 using SimpleRouter.OpenRouter;
+using SimpleRouter.RouterCom;
 using SimpleRouter.SystemOne;
 
 namespace SimpleRouter.Data;
@@ -44,6 +45,8 @@ public sealed class CatalogModel
 
     /// <summary>Auto-routing constraints, independent of reasoning effort.</summary>
     public OpenRouterRoutingOptions? OpenRouter { get; set; }
+
+    public RouterComRoutingOptions? RouterCom { get; set; }
 }
 
 /// <summary>Membership of a model in a tier; a model may belong to several tiers.</summary>

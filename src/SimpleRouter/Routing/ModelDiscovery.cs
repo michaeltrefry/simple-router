@@ -27,12 +27,12 @@ public sealed class ModelDiscovery(
         {
             IReadOnlyList<string>? ids = null;
             string? error = null;
-            IReadOnlyList<OpenRouterModelInfo>? metadata = null;
+            IReadOnlyList<DiscoveredModel>? metadata = null;
             try
             {
-                if (source is OpenRouterModelList openRouter)
+                if (source is IModelMetadataSource richSource)
                 {
-                    metadata = await openRouter.FetchModelsAsync(ct);
+                    metadata = await richSource.FetchModelsAsync(ct);
                     ids = metadata.Select(m => m.Id).ToList();
                 }
                 else
@@ -99,7 +99,7 @@ public sealed class ModelDiscovery(
             provider, string.Join(", ", missing), hint);
     }
 
-    private async Task<ProviderModelList> SaveAsync(ProviderKind provider, IReadOnlyList<string>? ids, IReadOnlyList<OpenRouterModelInfo>? metadata, string? error, CancellationToken ct)
+    private async Task<ProviderModelList> SaveAsync(ProviderKind provider, IReadOnlyList<string>? ids, IReadOnlyList<DiscoveredModel>? metadata, string? error, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var row = await db.ProviderModelLists.FindAsync([provider], ct);
@@ -116,21 +116,21 @@ public sealed class ModelDiscovery(
             row.ModelIds = ids!.Distinct().Order(StringComparer.Ordinal).ToList();
             row.FetchedAt = now;
             if (metadata is not null)
-                await UpdateOpenRouterModelsAsync(db, metadata, ct);
+                await UpdateModelsAsync(db, provider, metadata, ct);
         }
         await db.SaveChangesAsync(ct);
         return row;
     }
 
-    private static async Task UpdateOpenRouterModelsAsync(RouterDbContext db, IReadOnlyList<OpenRouterModelInfo> metadata, CancellationToken ct)
+    private static async Task UpdateModelsAsync(RouterDbContext db, ProviderKind provider, IReadOnlyList<DiscoveredModel> metadata, CancellationToken ct)
     {
-        var models = await db.Models.Where(m => m.Provider == ProviderKind.OpenRouter).ToListAsync(ct);
+        var models = await db.Models.Where(m => m.Provider == provider).ToListAsync(ct);
         var prices = await db.ModelPrices.ToDictionaryAsync(p => p.ModelId, ct);
         var discovered = metadata.DistinctBy(m => m.Id).ToDictionary(m => m.Id, StringComparer.Ordinal);
         foreach (var model in models)
         {
             // Auto routers choose a different model per request; their price and capabilities are not fixed.
-            if (OpenRouterModelList.IsAuto(model.UpstreamModelId) || !discovered.TryGetValue(model.UpstreamModelId, out var info))
+            if (provider == ProviderKind.OpenRouter && OpenRouterModelList.IsAuto(model.UpstreamModelId) || !discovered.TryGetValue(model.UpstreamModelId, out var info))
                 continue;
             if (info.ContextWindow is { } context) model.ContextWindow = context;
             if (info.SupportsTools is { } tools) model.SupportsTools = tools;
@@ -233,7 +233,7 @@ public sealed class ModelDiscovery(
     public static bool Lists(ProviderKind provider, IReadOnlyCollection<string> list, string upstreamModelId) =>
         provider == ProviderKind.OpenRouter
             ? OpenRouterModelList.IsAuto(upstreamModelId) || list.Contains(upstreamModelId, StringComparer.Ordinal)
-            : Lists(list, upstreamModelId);
+            : provider == ProviderKind.RouterCom ? list.Contains(upstreamModelId, StringComparer.Ordinal) : Lists(list, upstreamModelId);
 
     private static bool IsSnapshotOf(string dated, string alias) =>
         dated.Length == alias.Length + 9

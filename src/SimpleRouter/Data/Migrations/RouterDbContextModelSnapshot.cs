@@ -53,6 +53,9 @@ namespace SimpleRouter.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("RouterCom")
+                        .HasColumnType("TEXT");
+
                     b.Property<bool>("SupportsTools")
                         .HasColumnType("INTEGER");
 

@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SimpleRouter.Routing;
 using SimpleRouter.OpenRouter;
+using SimpleRouter.RouterCom;
 
 namespace SimpleRouter.Data;
 
@@ -48,6 +49,13 @@ public sealed class RouterDbContext(DbContextOptions<RouterDbContext> options) :
                 (a, b) => JsonSerializer.Serialize(a, OpenRouterRoutingOptions.Json) == JsonSerializer.Serialize(b, OpenRouterRoutingOptions.Json),
                 o => JsonSerializer.Serialize(o, OpenRouterRoutingOptions.Json).GetHashCode(),
                 o => o == null ? null : JsonSerializer.Deserialize<OpenRouterRoutingOptions>(JsonSerializer.Serialize(o, OpenRouterRoutingOptions.Json), OpenRouterRoutingOptions.Json)));
+        modelBuilder.Entity<CatalogModel>().Property(m => m.RouterCom).HasConversion(
+            o => o == null ? null : JsonSerializer.Serialize(o, RouterComRoutingOptions.Json),
+            o => o == null ? null : JsonSerializer.Deserialize<RouterComRoutingOptions>(o, RouterComRoutingOptions.Json),
+            new ValueComparer<RouterComRoutingOptions?>(
+                (a, b) => JsonSerializer.Serialize(a, RouterComRoutingOptions.Json) == JsonSerializer.Serialize(b, RouterComRoutingOptions.Json),
+                o => JsonSerializer.Serialize(o, RouterComRoutingOptions.Json).GetHashCode(),
+                o => o == null ? null : JsonSerializer.Deserialize<RouterComRoutingOptions>(JsonSerializer.Serialize(o, RouterComRoutingOptions.Json), RouterComRoutingOptions.Json)));
         modelBuilder.Entity<TierMember>().HasKey(m => new { m.Tier, m.ModelId });
         modelBuilder.Entity<TierMember>().Property(m => m.Tier).HasConversion(TierConverter);
         modelBuilder.Entity<TierMember>().HasOne<CatalogModel>().WithMany().HasForeignKey(m => m.ModelId);

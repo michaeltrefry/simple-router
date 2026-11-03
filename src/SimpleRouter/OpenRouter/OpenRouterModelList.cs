@@ -10,14 +10,14 @@ namespace SimpleRouter.OpenRouter;
 public sealed class OpenRouterModelList(
     IHttpClientFactory httpClientFactory,
     OpenRouterCredentialStore credentials,
-    IOptions<RouterOptions> options) : IModelListSource
+    IOptions<RouterOptions> options) : IModelMetadataSource
 {
     public ProviderKind Provider => ProviderKind.OpenRouter;
 
     public async Task<IReadOnlyList<string>> FetchAsync(CancellationToken ct) =>
         (await FetchModelsAsync(ct)).Select(m => m.Id).ToList();
 
-    public async Task<IReadOnlyList<OpenRouterModelInfo>> FetchModelsAsync(CancellationToken ct)
+    public async Task<IReadOnlyList<DiscoveredModel>> FetchModelsAsync(CancellationToken ct)
     {
         try
         {
@@ -44,7 +44,7 @@ public sealed class OpenRouterModelList(
 
     public static bool IsAuto(string id) => OpenRouterRoutingOptions.IsAuto(id);
 
-    private static OpenRouterModelInfo Parse(JsonNode? node)
+    private static DiscoveredModel Parse(JsonNode? node)
     {
         if (node is not JsonObject model || model["id"]?.GetValue<string>() is not { Length: > 0 } id)
             throw new ModelListException("OpenRouter sent a malformed model list.");
@@ -83,6 +83,3 @@ public sealed class OpenRouterModelList(
         return price < 0 ? null : checked(price * 1_000_000m);
     }
 }
-
-public sealed record OpenRouterModelInfo(string Id, int? ContextWindow, bool? SupportsTools, bool? SupportsVision,
-    decimal? InputPerMTok, decimal? OutputPerMTok, decimal? CacheReadPerMTok, decimal? CacheWritePerMTok, decimal? CacheWrite1hPerMTok, EffortMapping? Effort);

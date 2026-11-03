@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using SimpleRouter.Data;
 using SimpleRouter.Local;
 using SimpleRouter.OpenRouter;
+using SimpleRouter.RouterCom;
 using SimpleRouter.Routing;
 using SimpleRouter.SystemOne;
 
@@ -19,7 +20,8 @@ public sealed partial class CatalogSettings(
     LocalHealth health,
     LocalConversations conversations,
     DashboardEvents events,
-    OpenRouterCredentialStore openRouterCredentials)
+    OpenRouterCredentialStore openRouterCredentials,
+    RouterComCredentialStore routerComCredentials)
 {
     /// <summary>Alias globs run against every request's model; these caps bound their matching cost.</summary>
     public const int MaxAliasPatternLength = 200, MaxAliasWildcards = 4;
@@ -49,7 +51,7 @@ public sealed partial class CatalogSettings(
         return new SettingsSnapshot(
             models.Select(m => new ModelRow(m.Id, m.Provider, m.UpstreamModelId, m.Enabled, m.BaseUrl, m.ProtectedApiKey is not null,
                 m.ContextWindow, m.SupportsTools, m.SupportsVision, m.Effort,
-                tiers.Where(t => t.Value.Contains(m.Id)).Select(t => t.Key).ToList(), m.MaxPromptTokens, m.MaxConversations, m.OpenRouter, m.Decisions)).ToList(),
+                tiers.Where(t => t.Value.Contains(m.Id)).Select(t => t.Key).ToList(), m.MaxPromptTokens, m.MaxConversations, m.OpenRouter, m.Decisions, m.RouterCom)).ToList(),
             tiers,
             aliases.Select(a => new AliasRow(a.Pattern, a.Tier)).ToList(),
             ModelTiers.TryParse(setting?.Value, out var defaultTier) ? defaultTier : ModelTier.High,
@@ -409,9 +411,9 @@ public sealed partial class CatalogSettings(
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
             var model = await FindAsync(db, modelId, ct);
-            if (!Probed(model.Provider) && model.Provider != ProviderKind.OpenRouter)
+            if (!Probed(model.Provider) && model.Provider is not (ProviderKind.OpenRouter or ProviderKind.RouterCom))
             {
-                throw new SettingsException($"'{modelId}' is not a local, SystemOne or OpenRouter model.");
+                throw new SettingsException($"'{modelId}' is not a local, SystemOne, OpenRouter or Router.com model.");
             }
             probe = Probed(model.Provider);
             await using var transaction = await db.Database.BeginTransactionAsync(ct);

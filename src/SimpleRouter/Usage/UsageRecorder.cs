@@ -25,11 +25,11 @@ public sealed class UsageRecorder(
             if (reported is null)
             {
                 price = await db.ModelPrices.AsNoTracking().FirstOrDefaultAsync(p => p.ModelId == served.Model.Id);
-                if (served.Model.Provider == ProviderKind.OpenRouter && served.Upstream?.ResolvedModelId is { } resolved
+                if (served.Model.Provider is ProviderKind.OpenRouter or ProviderKind.RouterCom && served.Upstream?.ResolvedModelId is { } resolved
                     && resolved != served.Model.UpstreamModelId)
                 {
                     var configuredId = await db.Models.AsNoTracking()
-                        .Where(m => m.Provider == ProviderKind.OpenRouter && m.UpstreamModelId == resolved)
+                        .Where(m => m.Provider == served.Model.Provider && m.UpstreamModelId == resolved)
                         .Select(m => m.Id).FirstOrDefaultAsync();
                     price = configuredId is null ? null : await db.ModelPrices.AsNoTracking().FirstOrDefaultAsync(p => p.ModelId == configuredId);
                 }
@@ -39,6 +39,9 @@ public sealed class UsageRecorder(
                     price = null;
                 }
             }
+            // Flex and account strategies may change the applied rate; missing accounting is not a standard-tier bill.
+            if (reported is null && served.Model.Provider == ProviderKind.RouterCom && served.Model.RouterCom?.AllowFlexTier != false)
+                price = null;
             db.RequestUsages.Add(new RequestUsage
             {
                 At = time.GetUtcNow(),

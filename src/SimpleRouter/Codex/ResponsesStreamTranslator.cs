@@ -12,7 +12,7 @@ namespace SimpleRouter.Codex;
 /// are buffered per output item, since their arguments arrive in fragments, and emitted whole as a <c>tool_use</c> block
 /// (id = <c>call_id</c>) when the item is done. Blocks never interleave, so indexes stay sequential.
 /// </summary>
-public sealed class ResponsesStreamTranslator(string model, int estimatedInputTokens)
+public sealed class ResponsesStreamTranslator(string model, int estimatedInputTokens, string signaturePrefix = ResponsesStreamTranslator.SignaturePrefix)
 {
     /// <summary>Marks a thinking signature as Codex encrypted reasoning rather than an Anthropic signature.</summary>
     public const string SignaturePrefix = "codex:";
@@ -189,7 +189,7 @@ public sealed class ResponsesStreamTranslator(string model, int estimatedInputTo
                 if (Str(item?["encrypted_content"]) is { Length: > 0 } encrypted)
                 {
                     Open(events, outputIndex, "thinking");
-                    events.Add(Delta(_openBlock!.Value, new JsonObject { ["type"] = "signature_delta", ["signature"] = SignaturePrefix + encrypted }));
+                    events.Add(Delta(_openBlock!.Value, new JsonObject { ["type"] = "signature_delta", ["signature"] = signaturePrefix + encrypted }));
                 }
                 break;
         }

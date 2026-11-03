@@ -14,7 +14,7 @@ namespace SimpleRouter.Codex;
 /// </summary>
 public static class ResponsesRequestTranslator
 {
-    public static JsonObject Translate(JsonObject request, CatalogModel model, string promptCacheKey)
+    public static JsonObject Translate(JsonObject request, CatalogModel model, string promptCacheKey, string signaturePrefix = ResponsesStreamTranslator.SignaturePrefix)
     {
         var responses = new JsonObject
         {
@@ -31,7 +31,7 @@ public static class ResponsesRequestTranslator
         {
             if (Str(message?["role"]) == "assistant")
             {
-                AddAssistant(input, message!["content"]);
+                AddAssistant(input, message!["content"], signaturePrefix);
             }
             else
             {
@@ -55,7 +55,7 @@ public static class ResponsesRequestTranslator
         return reasoning;
     }
 
-    private static void AddAssistant(JsonArray input, JsonNode? content)
+    private static void AddAssistant(JsonArray input, JsonNode? content, string signaturePrefix)
     {
         if (content is not JsonArray blocks)
         {
@@ -71,13 +71,13 @@ public static class ResponsesRequestTranslator
                     parts.Add(OutputText(Str(block!["text"]) ?? ""));
                     break;
                 case "thinking" when Str(block!["signature"]) is { } signature
-                    && signature.StartsWith(ResponsesStreamTranslator.SignaturePrefix, StringComparison.Ordinal):
+                    && signature.StartsWith(signaturePrefix, StringComparison.Ordinal):
                     AddMessage(input, "assistant", parts);
                     parts = [];
                     input.Add(new JsonObject
                     {
                         ["type"] = "reasoning",
-                        ["encrypted_content"] = signature[ResponsesStreamTranslator.SignaturePrefix.Length..],
+                        ["encrypted_content"] = signature[signaturePrefix.Length..],
                         ["summary"] = new JsonArray(),
                     });
                     break;

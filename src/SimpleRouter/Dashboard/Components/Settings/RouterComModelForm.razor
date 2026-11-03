@@ -1,0 +1,75 @@
+@using SimpleRouter.RouterCom
+@inject CatalogSettings Catalog
+@inject ILogger<RouterComModelForm> Logger
+
+<div class="form" id="routercom-model-form">
+    <h3>@(Existing is null ? "Add Router.com model" : "Edit " + Existing.Id)</h3>
+    <p class="muted">Use a model ID or alias from Router.com's catalog. Flex can reduce cost on eligible models, with higher and less predictable latency. Prefer Flex allows Router.com to fall back to standard capacity.</p>
+    <div class="form-grid">
+        <label>Model ID <input class="id" @bind="_id" placeholder="routercom-model" /></label>
+        <label>Upstream model ID <input class="upstream" @bind="_upstream" placeholder="Model ID or alias from Router.com" /></label>
+        <label>Context window (tokens) <input class="context-window" type="number" @bind="_contextWindow" /></label>
+        <label class="check"><input class="enabled" type="checkbox" @bind="_enabled" /> Enabled</label>
+        <label class="check"><input class="supports-tools" type="checkbox" @bind="_tools" /> Supports tools</label>
+        <label class="check"><input class="supports-vision" type="checkbox" @bind="_vision" /> Supports vision</label>
+        <label>Flex routing <select class="flex-tier" @bind="_flex"><option value="">Provider default</option><option value="true">Prefer Flex, with standard fallback</option><option value="false">Standard only</option></select></label>
+        <label>Fallback timeout (seconds) <input class="fallback-timeout" type="number" min="1" @bind="_fallbackTimeout" /></label>
+        <label>Provider timeout (seconds) <input class="provider-timeout" type="number" min="1" @bind="_providerTimeout" /></label>
+        <fieldset class="tiers"><legend>Tiers</legend>
+            @foreach (var tier in Enum.GetValues<ModelTier>())
+            {
+                <label class="check"><input type="checkbox" class="tier-@tier.Name()" checked="@_tiers.Contains(tier)" @onchange="e => Toggle(tier, e.Value is true)" /> @tier.Name()</label>
+            }
+        </fieldset>
+    </div>
+    <div class="buttons">
+        <button class="save primary" disabled="@_busy" @onclick="SaveAsync">Save</button>
+        <button class="cancel" disabled="@_busy" @onclick="OnCancel">Cancel</button>
+    </div>
+    <FormStatus Error="@_error" />
+</div>
+
+@code {
+    [Parameter] public ModelRow? Existing { get; set; }
+    [Parameter] public EventCallback<string> OnSaved { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    private string _id = "", _upstream = "", _flex = "true";
+    private int? _contextWindow, _fallbackTimeout = 30, _providerTimeout = 140;
+    private bool _enabled = true, _tools = true, _vision, _busy;
+    private string? _error;
+    private HashSet<ModelTier> _tiers = [];
+
+    protected override void OnInitialized()
+    {
+        if (Existing is not { } m) return;
+        (_id, _upstream, _contextWindow, _enabled, _tools, _vision) = (m.Id, m.UpstreamModelId, m.ContextWindow, m.Enabled, m.SupportsTools, m.SupportsVision);
+        _tiers = m.Tiers.ToHashSet();
+        if (m.RouterCom is { } routing)
+        {
+            _flex = routing.AllowFlexTier?.ToString().ToLowerInvariant() ?? "";
+            (_fallbackTimeout, _providerTimeout) = (routing.FallbackTimeoutSeconds, routing.ProviderTimeoutSeconds);
+        }
+    }
+    private void Toggle(ModelTier tier, bool on) { if (on) _tiers.Add(tier); else _tiers.Remove(tier); }
+    private async Task SaveAsync()
+    {
+        (_busy, _error) = (true, null);
+        try
+        {
+            var routing = new RouterComRoutingOptions
+            {
+                AllowFlexTier = bool.TryParse(_flex, out var allow) ? allow : null,
+                FallbackTimeoutSeconds = _fallbackTimeout, ProviderTimeoutSeconds = _providerTimeout,
+            };
+            await Catalog.SaveRouterComModelAsync(new(_id, _upstream, _enabled, _contextWindow, _tools, _vision, _tiers, routing), Existing?.Id);
+            await OnSaved.InvokeAsync($"{_id.Trim()} saved.");
+        }
+        catch (SettingsException e) { _error = e.Message; }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Logger.LogWarning("Saving a Router.com model failed: {error}", e.GetType().Name);
+            _error = "The model could not be saved; see the server log.";
+        }
+        finally { _busy = false; }
+    }
+}

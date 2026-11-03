@@ -62,7 +62,7 @@
 </section>
 
 @code {
-    private static readonly ProviderKind[] Subscriptions = [ProviderKind.Claude, ProviderKind.Codex, ProviderKind.OpenRouter];
+    private static readonly ProviderKind[] Subscriptions = [ProviderKind.Claude, ProviderKind.Codex, ProviderKind.OpenRouter, ProviderKind.RouterCom];
 
     private readonly Dictionary<ModelTier, string> _existing = Enum.GetValues<ModelTier>().ToDictionary(t => t, _ => "");
     private readonly Dictionary<ModelTier, ProviderKind> _provider = Enum.GetValues<ModelTier>().ToDictionary(t => t, _ => ProviderKind.Claude);
