@@ -1,5 +1,6 @@
 using SimpleRouter.Routing;
 using SimpleRouter.OpenRouter;
+using SimpleRouter.RouterCom;
 using SimpleRouter.SystemOne;
 
 namespace SimpleRouter.Dashboard;
@@ -8,7 +9,7 @@ namespace SimpleRouter.Dashboard;
 public sealed record ModelRow(
     string Id, ProviderKind Provider, string UpstreamModelId, bool Enabled, string? BaseUrl, bool HasApiKey, int? ContextWindow,
     bool SupportsTools, bool SupportsVision, EffortMapping? Effort, IReadOnlyList<ModelTier> Tiers, int? MaxPromptTokens = null,
-    int? MaxConversations = null, OpenRouterRoutingOptions? OpenRouter = null, DecisionSupport Decisions = DecisionSupport.All);
+    int? MaxConversations = null, OpenRouterRoutingOptions? OpenRouter = null, DecisionSupport Decisions = DecisionSupport.All, RouterComRoutingOptions? RouterCom = null);
 
 /// <summary>A model's prices in USD per million tokens; a model without a stored row shows zeros with <see cref="Stored"/> false.</summary>
 public sealed record PriceRow(
@@ -41,6 +42,10 @@ public sealed record SystemOneModelInput(string Id, string UpstreamModelId, stri
 
 /// <summary>A settings edit that was refused; the message is shown to the user.</summary>
 public sealed class SettingsException(string message) : Exception(message);
+
+public sealed record RouterComModelInput(
+    string Id, string UpstreamModelId, bool Enabled, int? ContextWindow, bool SupportsTools, bool SupportsVision,
+    IReadOnlyCollection<ModelTier> Tiers, RouterComRoutingOptions? RouterCom = null);
 
 public sealed record OpenRouterModelInput(
     string Id, string UpstreamModelId, bool Enabled, int? ContextWindow, bool SupportsTools, bool SupportsVision,

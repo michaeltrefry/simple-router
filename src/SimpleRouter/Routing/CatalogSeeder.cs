@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using SimpleRouter.Data;
 using SimpleRouter.OpenRouter;
+using SimpleRouter.RouterCom;
 using SimpleRouter.SystemOne;
 
 namespace SimpleRouter.Routing;
@@ -43,7 +44,8 @@ public sealed class CatalogSeeder(
         bool SupportsVision = false,
         EffortMapping? Effort = null,
         OpenRouterRoutingOptions? OpenRouter = null,
-        DecisionSupport Decisions = DecisionSupport.All);
+        DecisionSupport Decisions = DecisionSupport.All,
+        RouterComRoutingOptions? RouterCom = null);
 
     private sealed record SeedAlias(string Pattern, string Tier);
 
@@ -66,7 +68,8 @@ public sealed class CatalogSeeder(
         bool? SupportsVision,
         EffortMapping? Effort,
         OpenRouterRoutingOptions? OpenRouter,
-        DecisionSupport? Decisions = null);
+        DecisionSupport? Decisions = null,
+        RouterComRoutingOptions? RouterCom = null);
 
     private sealed record Overrides(ModelOverride[]? Models);
 
@@ -127,6 +130,7 @@ public sealed class CatalogSeeder(
             SupportsVision = m.SupportsVision,
             Effort = m.Effort,
             OpenRouter = m.OpenRouter,
+            RouterCom = m.RouterCom,
             Decisions = m.Decisions,
         }));
         foreach (var (tier, modelIds) in seed.Tiers)
@@ -172,6 +176,7 @@ public sealed class CatalogSeeder(
         {
             Effort.Validate(m.Effort, m.Id);
             OpenRouterRoutingOptions.Validate(m.OpenRouter);
+            RouterComRoutingOptions.Validate(m.RouterCom);
             ValidateConversations(m.MaxConversations, m.Id);
         }
         return seed;
@@ -222,6 +227,7 @@ public sealed class CatalogSeeder(
         {
             Effort.Validate(o.Effort, o.Id);
             OpenRouterRoutingOptions.Validate(o.OpenRouter);
+            RouterComRoutingOptions.Validate(o.RouterCom);
             ValidateConversations(o.MaxConversations, o.Id);
             if (await db.Models.FindAsync([o.Id], ct) is not { } model)
             {
@@ -239,6 +245,7 @@ public sealed class CatalogSeeder(
             model.SupportsVision = o.SupportsVision ?? model.SupportsVision;
             model.Effort = o.Effort ?? model.Effort;
             model.OpenRouter = o.OpenRouter ?? model.OpenRouter;
+            model.RouterCom = o.RouterCom ?? model.RouterCom;
             model.Decisions = o.Decisions ?? model.Decisions;
         }
         if (applied is null)

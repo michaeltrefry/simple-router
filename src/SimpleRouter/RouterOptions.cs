@@ -47,6 +47,8 @@ public sealed class RouterOptions
 
     public OpenRouterOptions OpenRouter { get; set; } = new();
 
+    public RouterComOptions RouterCom { get; set; } = new();
+
     public LocalOptions Local { get; set; } = new();
 
     public LimitOptions Limits { get; set; } = new();
@@ -175,5 +177,12 @@ public sealed class LimitOptions
 public sealed class OpenRouterOptions
 {
     public string ApiBaseUrl { get; set; } = "https://openrouter.ai/api/v1";
+    public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromSeconds(120);
+}
+
+/// <summary>Router.com endpoints; overridable for tests.</summary>
+public sealed class RouterComOptions
+{
+    public string ApiBaseUrl { get; set; } = "https://api.router.com/v1";
     public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromSeconds(120);
 }

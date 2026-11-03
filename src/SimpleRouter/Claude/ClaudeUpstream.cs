@@ -9,6 +9,7 @@ using SimpleRouter.Api;
 using SimpleRouter.Codex;
 using SimpleRouter.Local;
 using SimpleRouter.OpenRouter;
+using SimpleRouter.RouterCom;
 using SimpleRouter.Routing;
 using SimpleRouter.Usage;
 
@@ -83,7 +84,8 @@ public sealed class ClaudeUpstream(
         "thinking" => Str(block!["signature"]) is not { Length: > 0 } signature
             || signature.StartsWith(ResponsesStreamTranslator.SignaturePrefix, StringComparison.Ordinal)
             || signature.StartsWith(ChatResponseTranslator.SignaturePrefix, StringComparison.Ordinal)
-            || signature.StartsWith(OpenRouterReasoning.Prefix, StringComparison.Ordinal),
+            || signature.StartsWith(OpenRouterReasoning.Prefix, StringComparison.Ordinal)
+            || signature.StartsWith(RouterComResponses.SignaturePrefix, StringComparison.Ordinal),
         "redacted_thinking" => Str(block!["data"])?.StartsWith(OpenRouterReasoning.Prefix, StringComparison.Ordinal) == true,
         _ => false,
     };

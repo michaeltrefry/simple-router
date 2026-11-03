@@ -189,7 +189,7 @@ public sealed class MessageRouter(ModelSelector selector, IEnumerable<IModelUpst
         var missing = await selector.MissingLoginsAsync(tier, needs, ct);
         var hint = missing.Count == 0
             ? ""
-            : " Run " + string.Join(" or ", missing.Select(p => p == ProviderKind.OpenRouter ? "set the OpenRouter API key in /ui/settings" : $"'simple-router login {p.ToString().ToLowerInvariant()}'")) + ".";
+            : " Run " + string.Join(" or ", missing.Select(p => p is ProviderKind.OpenRouter or ProviderKind.RouterCom ? $"set the {(p == ProviderKind.OpenRouter ? "OpenRouter" : "Router.com")} API key in /ui/settings" : $"'simple-router login {p.ToString().ToLowerInvariant()}'")) + ".";
         var when = reset is { } at ? $"the earliest resets at {at.UtcDateTime:u}" : $"retry in {seconds} s";
         await AnthropicError.WriteAsync(context, StatusCodes.Status429TooManyRequests, "rate_limit_error",
             $"{Unavailable}: no model in the {tier.Name()} tier can serve this request now (usage limit, login or availability); {when}.{hint}");

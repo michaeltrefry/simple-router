@@ -12,4 +12,7 @@ public enum ProviderKind
 
     /// <summary>OpenRouter API-key provider, including auto-routed variants.</summary>
     OpenRouter,
+
+    /// <summary>Router.com API-key provider, with explicit Flex routing.</summary>
+    RouterCom,
 }

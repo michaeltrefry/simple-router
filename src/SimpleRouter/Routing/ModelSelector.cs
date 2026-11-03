@@ -329,12 +329,12 @@ public sealed class ModelSelector(
     {
         var hasClaude = await db.ClaudeCredentials.AnyAsync(ct);
         var hasCodex = await db.CodexCredentials.AnyAsync(ct);
-        var hasOpenRouter = await db.ProviderCredentials.AnyAsync(c => c.Provider == ProviderKind.OpenRouter && c.ProtectedApiKey != "", ct);
+        var keyedProviders = await db.ProviderCredentials.Where(c => c.ProtectedApiKey != "").Select(c => c.Provider).ToListAsync(ct);
         return provider => provider switch
         {
             ProviderKind.Claude => hasClaude,
             ProviderKind.Codex => hasCodex,
-            ProviderKind.OpenRouter => hasOpenRouter,
+            ProviderKind.OpenRouter or ProviderKind.RouterCom => keyedProviders.Contains(provider),
             _ => true
         };
     }

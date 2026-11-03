@@ -151,12 +151,12 @@ public sealed class DashboardData(
     public async Task<List<AccountRow>> AccountsAsync(CancellationToken ct)
     {
         List<ProviderModelList> lists;
-        bool openRouterKey, openRouterConfigured;
+        List<ProviderKind> keyed, configured;
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
             lists = await db.ProviderModelLists.AsNoTracking().ToListAsync(ct);
-            openRouterKey = await db.ProviderCredentials.AnyAsync(c => c.Provider == ProviderKind.OpenRouter, ct);
-            openRouterConfigured = await db.Models.AnyAsync(m => m.Provider == ProviderKind.OpenRouter, ct);
+            keyed = await db.ProviderCredentials.Select(c => c.Provider).ToListAsync(ct);
+            configured = await db.Models.Select(m => m.Provider).Distinct().ToListAsync(ct);
         }
         var report = await subscriptions.ReportAsync(ct);
         var accounts = new[] { ProviderKind.Claude, ProviderKind.Codex }.Select(provider =>
@@ -166,15 +166,16 @@ public sealed class DashboardData(
             return new AccountRow(provider, credential is not null, credential?.State ?? "not_logged_in",
                 list?.FetchedAt, list?.CheckedAt, list?.ModelIds?.Count, list?.LastError);
         }).ToList();
-        if (openRouterKey || openRouterConfigured)
+        var allStatuses = await selector.StatusesAsync(ct);
+        foreach (var provider in new[] { ProviderKind.OpenRouter, ProviderKind.RouterCom }.Where(p => keyed.Contains(p) || configured.Contains(p)))
         {
-            var list = lists.FirstOrDefault(l => l.Provider == ProviderKind.OpenRouter);
-            var statuses = (await selector.StatusesAsync(ct)).Where(s => s.Provider == ProviderKind.OpenRouter).ToList();
-            var state = !openRouterKey ? "not_logged_in"
+            var list = lists.FirstOrDefault(l => l.Provider == provider);
+            var statuses = allStatuses.Where(s => s.Provider == provider).ToList();
+            var state = !keyed.Contains(provider) ? "not_logged_in"
                 : statuses.Any(s => s.Status == ModelStatus.Eligible) ? "ok"
                 : statuses.Any(s => s.Status == ModelStatus.AuthRejected) ? "auth_rejected"
                 : statuses.Any(s => s.Status == ModelStatus.Cooling) ? "cooling" : "unknown";
-            accounts.Add(new AccountRow(ProviderKind.OpenRouter, openRouterKey, state,
+            accounts.Add(new AccountRow(provider, keyed.Contains(provider), state,
                 list?.FetchedAt, list?.CheckedAt, list?.ModelIds?.Count, list?.LastError));
         }
         return accounts;

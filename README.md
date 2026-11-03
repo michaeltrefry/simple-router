@@ -107,6 +107,36 @@ Usage keeps the configured catalog model ID (and session pin) separate from Open
 
 See OpenRouter's [auto-router guide](https://openrouter.ai/docs/guides/routing/routers/auto-router), [usage accounting](https://openrouter.ai/docs/guides/guides/usage-accounting) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) for provider semantics.
 
+### Router.com and Flex (API key)
+
+In `/ui/settings`, save the **Router.com** API key, then refresh model lists. This is a separate provider from OpenRouter: its key is encrypted, shared by its models, never redisplayed, and excluded from subscription exhaustion. Use **Add Router.com model**, give the entry a unique local ID, enter a model ID or alias from Router.com's catalog, and assign its tiers. Router.com entries use `provider: "routercom"` in seed files. They participate in normal remote routing and failover, without local health probes or conversation limits.
+
+New entries **prefer Flex with standard fallback**, sending `allow_flex_tier: true`. Router.com chooses Flex only for eligible models and can retry standard capacity when Flex fails or takes too long; this is not a guarantee that every call uses discounted capacity. The model form also offers **Standard only** (`false`) and **Provider default** (omits the field). Flex routing is independent of reasoning effort and the router's max/high/mid/low tiers. The default fallback budget is 30 seconds and the provider timeout is 140 seconds; both are editable per entry, or can be cleared to use Router.com's defaults. Router.com may reject timeout values above its gateway's maximum.
+
+```json
+{
+  "id": "routercom-flex",
+  "provider": "routercom",
+  "upstreamModelId": "your-model-id",
+  "enabled": true,
+  "routerCom": {
+    "allowFlexTier": true,
+    "fallbackTimeoutSeconds": 30,
+    "providerTimeoutSeconds": 140
+  }
+}
+```
+
+The same `routerCom` object works in per-machine seed overrides. Omitting the object uses the Flex preference and timeout defaults above. Set `allowFlexTier` to `null` to follow the account's strategy. Keep keys in settings rather than seed files.
+
+Router.com requests use `{RouterCom:ApiBaseUrl}/responses` (default `https://api.router.com/v1`) because Flex controls are available on the Responses API. Responses are translated to streaming or buffered Anthropic Messages replies, including text, image input, function tools and opaque reasoning continuation. Anthropic-specific server tools and explicit `cache_control` directives are not translated; provider prompt caching uses a stable, hashed session key. Token counting uses the local estimate. `--SimpleRouter:RouterCom:StreamIdleTimeout` defaults to 120 seconds. Provider errors are sanitized, and failures before output can move to the next model in the same tier.
+
+Discovery reads Router.com's `router` metadata, imports configured models' limits, tool/vision capabilities, reasoning levels and prices, and excludes decision-only models. Prices are already USD per million tokens. A failed refresh retains the last good list. Refresh again after adding a model to import its metadata. Exact model IDs are required after discovery; OpenRouter's special auto IDs have no special meaning here.
+
+Usage records the actual resolved model and response ID separately from the configured entry and pin. Router.com's reported `usage.cost` takes precedence, including when it chose Flex or fell back to standard. If cost is absent while Flex or account strategies are enabled, cost is **unknown**, rather than estimated at the standard rate. Standard-only entries can use configured prices for estimates.
+
+See Router.com's [API documentation](https://docs.router.com/api/responses-and-messages), [cost-efficient routing](https://docs.router.com/strategies/cost-efficient-routing), and [model catalog](https://docs.router.com/api/models).
+
 ### Limits and failover
 
 A model that cannot serve a request before anything has been sent to the client is put on a cooldown and the request moves to the next eligible model of the same tier (local first in Mid/Low); the session is re-pinned there and stays. Each model is tried at most once per request, and another tier is never used. Once the first byte has gone to the client there is no failover; a limit reported mid-stream still cools the model for later requests. Translated streams (Codex and local) hold back `message_start` until the first content or terminal event (nothing else is buffered), so a limit, overload or context rejection that arrives before any output still moves a streaming request. The hold lasts at most 15 s (`--SimpleRouter:Limits:StreamStartGrace`): a long Codex reasoning phase without summary text, or a slow local prefill, then gets `message_start` (and the response headers) so the client is not left waiting for headers, at the cost that a failure after that point ends the stream with an error event instead of moving the request. A shorter grace answers sooner but fails over less; a longer one fails over more but leaves a slow first event without headers for longer. Once `message_start` is sent, a translated stream that writes nothing to the client for 15 s (`--SimpleRouter:Limits:KeepAliveInterval`, 0 disables) sends an Anthropic `ping` event, and keeps doing so until the stream ends, so a client that drops silent streams keeps waiting while the model reasons or prefills; upstream keep-alives that produce no client output do not count.

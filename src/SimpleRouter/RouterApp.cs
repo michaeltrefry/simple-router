@@ -13,6 +13,7 @@ using SimpleRouter.Gateway;
 using SimpleRouter.Https;
 using SimpleRouter.Local;
 using SimpleRouter.OpenRouter;
+using SimpleRouter.RouterCom;
 using SimpleRouter.Routing;
 using SimpleRouter.SystemOne;
 using SimpleRouter.Usage;
@@ -90,6 +91,9 @@ public static class RouterApp
         builder.Services.AddSingleton<CodexLoginCommand>();
         builder.Services.AddSingleton<IModelUpstream, CodexUpstream>();
         builder.Services.AddSingleton<IModelUpstream, LocalUpstream>();
+        builder.Services.AddSingleton<RouterComCredentialStore>();
+        builder.Services.AddSingleton<IModelUpstream, RouterComUpstream>();
+        builder.Services.AddSingleton<IModelListSource, RouterComModelList>();
         builder.Services.AddSingleton<OpenRouterCredentialStore>();
         builder.Services.AddSingleton<IModelUpstream, OpenRouterUpstream>();
         builder.Services.AddSingleton<LocalHealth>();
@@ -120,6 +124,7 @@ public static class RouterApp
         builder.Services.AddHttpClient(CodexOAuthClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30));
         builder.Services.AddHttpClient(CodexUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
         builder.Services.AddHttpClient(LocalUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
+        builder.Services.AddHttpClient(RouterComUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
         builder.Services.AddHttpClient(OpenRouterUpstream.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
         builder.Services.AddHttpClient(SystemOneProxy.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
         builder.Services.AddHttpClient(LocalHealth.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(5));
